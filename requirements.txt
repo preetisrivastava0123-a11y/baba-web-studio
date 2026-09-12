@@ -8,3 +8,4 @@ pydub==0.25.1
 pillow>=10.4.0
 setuptools
 audioop-lts
+pypdf

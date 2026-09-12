@@ -358,6 +358,7 @@ def compile_cinematic_video(
     climax_layers = create_climax_layer(
         video_duration=total_video_duration,
         outro_text=outro_text,
+        aspect_ratio=aspect_ratio,
     )
 
     # ---------------------------------------------------------

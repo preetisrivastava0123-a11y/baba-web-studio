@@ -383,22 +383,23 @@ def main():
         try:
             with st.spinner("🎥 आपका सिनेमैटिक वीडियो बन रहा है... कृपया प्रतीक्षा करें"):
 
-                # सभी क्रम में सजाई गई फाइलों को अस्थायी पाथ पर सेव करना
+                # सभी क्रम में सजाई गई फाइलों को अस्थायी पाथ पर सेव करना (प्रोसेसिंग के लिए ज़रूरी)
                 temp_media_paths = _save_all_ordered_files_to_temp(inputs["ordered_media_files"])
 
-                output_video_path = os.path.join(
-                    tempfile.gettempdir(), "final_cinematic_output.mp4"
-                )
+                # -------------------------------------------------------------
+                # परमानेंट फोल्डर लॉजिक: generated_video फ़ोल्डर बनाना और सेव करना
+                # -------------------------------------------------------------
+                output_dir = "generated_video"
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                output_video_path = os.path.join(output_dir, "final_cinematic_output.mp4")
 
-                # ---- मुख्य कॉल: अब फॉर्मेट, ड्यूरेशन और क्वालिटी भी भेजी जा रही है ----
-                # ⚠️ नोट: engine.py को अगले चरण में अपडेट करना होगा ताकि यह
-                # aspect_ratio / duration_seconds / quality और मल्टीपल
-                # फाइलों (list) को सही से इस्तेमाल कर सके।
+                # ---- मुख्य कॉल: अब सारे प्रो-लेवल पैरामीटर्स परफेक्ट सिंक हैं ----
                 final_video_path = compile_cinematic_video(
-                    user_media=temp_media_paths,
+                    user_media_list=temp_media_paths,   # ← यहाँ नाम बिल्कुल सही user_media_list कर दिया है
                     script_text=inputs["story_script"],
                     outro_text=inputs["ticker_text"],
-                    output_video_path=output_video_path,
+                    output_video_path=output_video_path, # ← अब यह generated_video फ़ोल्डर का रास्ता लेगा
                     aspect_ratio=inputs["aspect_ratio"],
                     duration_seconds=inputs["duration_seconds"],
                     quality=inputs["quality"],
@@ -412,6 +413,7 @@ def main():
             with st.expander("🔍 पूरी तकनीकी जानकारी (Technical Details) देखें"):
                 st.code(traceback.format_exc())
             return
+
 
         # ------------------------------------------------------
         # वीडियो सफलतापूर्वक बनने के बाद

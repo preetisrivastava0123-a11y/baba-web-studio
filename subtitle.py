@@ -22,24 +22,34 @@ from playwright.sync_api import sync_playwright
 
 # --------------------------------------------------------------
 # सेटिंग्स (Constants) — ज़रूरत पड़ने पर आसानी से बदले जा सकते हैं
+# (ये अब सिर्फ़ "डिफ़ॉल्ट" मान हैं — कॉलर चाहे तो इन्हें ओवरराइड कर सकता है)
 # --------------------------------------------------------------
-CANVAS_WIDTH = 1600          # स्क्रीनशॉट कैनवस की चौड़ाई (px)
-CANVAS_HEIGHT = 400           # स्क्रीनशॉट कैनवस की ऊँचाई (px)
-FONT_SIZE_PX = 75             # टेक्स्ट का फॉन्ट साइज़
+CANVAS_WIDTH = 1600          # स्क्रीनशॉट कैनवस की चौड़ाई (px) — डिफ़ॉल्ट
+CANVAS_HEIGHT = 400           # स्क्रीनशॉट कैनवस की ऊँचाई (px) — डिफ़ॉल्ट
+FONT_SIZE_PX = 75             # टेक्स्ट का फॉन्ट साइज़ — डिफ़ॉल्ट
+TEXT_COLOR = "#ffffff"        # टेक्स्ट का रंग — डिफ़ॉल्ट (सफ़ेद)
 
 
 # --------------------------------------------------------------
 # 1) HTML टेम्पलेट बनाने वाला फंक्शन
 #    यह टेक्स्ट को एक स्टाइल्ड (styled) HTML पेज में लपेटता है
 # --------------------------------------------------------------
-def _build_subtitle_html(text_string: str) -> str:
+def _build_subtitle_html(
+    text_string: str,
+    canvas_width: int,
+    canvas_height: int,
+    font_size: int,
+    text_color: str,
+) -> str:
     """
     दिए गए हिंदी टेक्स्ट (text_string) को एक HTML पेज में डालता है।
 
     ज़रूरी स्टाइल:
       - बैकग्राउंड पूरी तरह पारदर्शी (transparent) रहे
-      - फॉन्ट साइज़ 75px हो
-      - टेक्स्ट का रंग सफेद (white) हो
+      - फॉन्ट साइज़, रंग और कैनवस-साइज़ अब कॉलर के अनुसार बदल सकते हैं
+        (जैसे climax.py सोने के रंग/छोटे फॉन्ट में सब्सक्राइब-मैसेज
+        बनवाता है, जबकि engine.py सबटाइटल के लिए डिफ़ॉल्ट सफ़ेद रंग
+        और बड़ा फॉन्ट इस्तेमाल करता है)
       - गहरा 3D ब्लैक शैडो (text-shadow) लगा हो ताकि अक्षर
         किसी भी बैकग्राउंड पर साफ (readable) दिखें
     """
@@ -54,8 +64,8 @@ def _build_subtitle_html(text_string: str) -> str:
                 margin: 0;
                 padding: 0;
                 background: transparent;
-                width: {CANVAS_WIDTH}px;
-                height: {CANVAS_HEIGHT}px;
+                width: {canvas_width}px;
+                height: {canvas_height}px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -65,9 +75,9 @@ def _build_subtitle_html(text_string: str) -> str:
             /* सबटाइटल टेक्स्ट का मुख्य कंटेनर */
             .subtitle-box {{
                 font-family: 'Noto Sans Devanagari', 'Mangal', sans-serif;
-                font-size: {FONT_SIZE_PX}px;
+                font-size: {font_size}px;
                 font-weight: 700;
-                color: #ffffff;               /* सफेद टेक्स्ट */
+                color: {text_color};
                 text-align: center;
                 white-space: pre-wrap;         /* मात्राएँ/लाइन-ब्रेक सही रहें */
                 line-height: 1.3;
@@ -92,9 +102,16 @@ def _build_subtitle_html(text_string: str) -> str:
 
 
 # --------------------------------------------------------------
-# 2) मुख्य फंक्शन — यही बाहर से (app.py से) बुलाया जाएगा
+# 2) मुख्य फंक्शन — यही बाहर से (app.py / engine.py / climax.py से) बुलाया जाएगा
 # --------------------------------------------------------------
-def render_subtitle_html_to_png(text_string: str, output_image_path: str) -> str:
+def render_subtitle_html_to_png(
+    text_string: str,
+    output_image_path: str,
+    font_size: int = FONT_SIZE_PX,
+    text_color: str = TEXT_COLOR,
+    canvas_width: int = CANVAS_WIDTH,
+    canvas_height: int = CANVAS_HEIGHT,
+) -> str:
     """
     दिए गए हिंदी टेक्स्ट (text_string) का एक पारदर्शी PNG सबटाइटल
     बनाता है और उसे output_image_path पर सेव करता है।
@@ -109,6 +126,10 @@ def render_subtitle_html_to_png(text_string: str, output_image_path: str) -> str
     पैरामीटर:
         text_string (str)        -> जो हिंदी टेक्स्ट सबटाइटल में दिखेगा
         output_image_path (str)  -> PNG फाइल कहाँ सेव करनी है
+        font_size (int)          -> फॉन्ट साइज़ (डिफ़ॉल्ट: 75px)
+        text_color (str)         -> टेक्स्ट का रंग (डिफ़ॉल्ट: सफ़ेद)
+        canvas_width (int)       -> कैनवस चौड़ाई (डिफ़ॉल्ट: 1600px)
+        canvas_height (int)      -> कैनवस ऊँचाई (डिफ़ॉल्ट: 400px)
 
     रिटर्न:
         output_image_path (str)  -> सफल होने पर फाइनल PNG का पथ
@@ -118,7 +139,9 @@ def render_subtitle_html_to_png(text_string: str, output_image_path: str) -> str
         raise ValueError("सबटाइटल टेक्स्ट खाली है! कृपया कोई टेक्स्ट दें।")
 
     # --- चरण 1: स्टाइल्ड HTML तैयार करना ---
-    html_content = _build_subtitle_html(text_string)
+    html_content = _build_subtitle_html(
+        text_string, canvas_width, canvas_height, font_size, text_color
+    )
 
     # --- चरण 2 से 5: Playwright के साथ स्क्रीनशॉट लेना ---
     with sync_playwright() as playwright_engine:
@@ -129,7 +152,7 @@ def render_subtitle_html_to_png(text_string: str, output_image_path: str) -> str
 
         # एक नया पेज (टैब) खोलना, जिसका बैकग्राउंड पारदर्शी हो
         page = browser.new_page(
-            viewport={"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT}
+            viewport={"width": canvas_width, "height": canvas_height}
         )
 
         # हमारा तैयार किया हुआ HTML पेज में डालना

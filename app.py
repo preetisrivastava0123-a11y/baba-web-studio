@@ -32,7 +32,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-from moviepy.editor import VideoFileClip
+from moviepy import VideoFileClip
 
 # --------------------------------------------------------------
 # हमारे कोर वीडियो-कंपाइलर इंजन को इम्पोर्ट करना

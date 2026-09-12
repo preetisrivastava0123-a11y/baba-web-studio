@@ -1,6 +1,8 @@
-streamlit==1.32.0
-moviepy==1.0.3
-playwright==1.42.0
+streamlit>=1.40.0
+moviepy>=1.0.3
+playwright>=1.49.0
+greenlet>=3.2.5
 edge-tts==6.1.9
 imageio-ffmpeg==0.4.9
 pydub==0.25.1
+pillow>=10.4.0

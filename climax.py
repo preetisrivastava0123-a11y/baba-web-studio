@@ -28,7 +28,7 @@ import math
 import os
 import tempfile
 
-from moviepy.editor import ImageClip
+from moviepy import ImageClip
 
 # --------------------------------------------------------------
 # subtitle.py से Playwright-आधारित PNG रेंडरर इम्पोर्ट करना

@@ -287,13 +287,13 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
 # 7) मुख्य फंक्शन — यही बाहर से (app.py से) बुलाया जाएगा
 # --------------------------------------------------------------
 def compile_cinematic_video(
-    user_media_list: list,
+    user_media: str,
     script_text: str,
     outro_text: str,
     output_video_path: str,
     aspect_ratio: str = "9:16",
-    duration_seconds=None,
-    quality: str = "720p",
+    duration_seconds: int = 15,
+    quality: str = "1080p Full HD",
 ) -> str:
     """
     पूरी सिनेमैटिक वीडियो-निर्माण प्रक्रिया को एक जगह जोड़ता है:

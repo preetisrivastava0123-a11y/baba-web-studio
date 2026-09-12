@@ -33,13 +33,7 @@ import imageio_ffmpeg as im_ffmpeg
 import moviepy.config as change_config
 change_config.change_settings({"FFMPEG_BINARY": im_ffmpeg.get_ffmpeg_exe()})
 
-from moviepy.editor import (
-    AudioFileClip,
-    CompositeVideoClip,
-    ImageClip,
-    VideoFileClip,
-    concatenate_videoclips,
-)
+from moviepy import AudioFileClip, CompositeVideoClip, ImageClip, VideoFileClip, concatenate_videoclips
 
 
 # --------------------------------------------------------------

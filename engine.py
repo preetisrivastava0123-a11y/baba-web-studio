@@ -139,9 +139,15 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float):
     """
     # Playwright से सबटाइटल PNG बनवाना (पूरा टेक्स्ट पूरे वीडियो पर दिखेगा,
     # अगर टाइम-सिंक्ड सबटाइटल चाहिए तो subtitle.py को टाइमिंग-लिस्ट देनी होगी)
+    # ⚠️ फिक्स: पहले यहाँ text=/output_path= नाम से कॉल हो रहा था, जबकि
+    # असली subtitle.py फंक्शन text_string/output_image_path लेता है
+    # (TypeError आता)। साथ ही canvas_width को SHORTS_WIDTH (1080px) पर
+    # सेट किया है ताकि सबटाइटल 1080px चौड़े वीडियो से बाहर न छलके
+    # (डिफ़ॉल्ट कैनवस 1600px चौड़ा है)।
     rendered_subtitle_png_path = render_subtitle_html_to_png(
-        text=script_text,
-        output_path=SUBTITLE_TEMP_PNG,
+        text_string=script_text,
+        output_image_path=SUBTITLE_TEMP_PNG,
+        canvas_width=SHORTS_WIDTH,
     )
 
     subtitle_clip = (

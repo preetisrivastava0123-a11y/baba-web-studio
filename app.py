@@ -186,7 +186,7 @@ def render_input_section():
     uploaded_media = st.file_uploader(
         label="यहाँ फाइल अपलोड करें (Image या Video)",
         type=["jpg", "jpeg", "png", "mp4", "mov"],
-        accept_multiple_files=False,
+        accept_multiple_files=True,
         help="मंदिर की तस्वीर या छोटा वीडियो क्लिप अपलोड करें"
     )
 

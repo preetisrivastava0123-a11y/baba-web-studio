@@ -108,11 +108,14 @@ def _text_to_image_clip(
 
     # Playwright के ज़रिए पारदर्शी PNG बनवाना
     # (font_size और color subtitle.py के अंदर HTML/CSS में इस्तेमाल होंगे)
-    rendered_png_path = render_text_png(
-        text=text,
-        output_path=output_path,
+    # ⚠️ फिक्स: पहले यहाँ "render_text_png" नाम का कभी-न-import हुआ फंक्शन
+    # कॉल हो रहा था (NameError), और पैरामीटर-नाम भी असली subtitle.py से
+    # मेल नहीं खाते थे। अब सही फंक्शन-नाम व सही पैरामीटर-नाम इस्तेमाल हुए हैं।
+    rendered_png_path = render_subtitle_html_to_png(
+        text_string=text,
+        output_image_path=output_path,
         font_size=font_size,
-        color=color,
+        text_color=color,
     )
 
     # PNG को ImageClip के रूप में लोड करना और समय (timing) सेट करना

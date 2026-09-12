@@ -11,7 +11,7 @@
 
 import os
 # क्लाउड सर्वर पर प्लेराइट के क्रोमियम ब्राउज़र को 1-क्लिक में ऑटोमैटिक इंस्टॉल करना
-
+os.system("playwright install chromium")
 
 import tempfile
 
@@ -251,18 +251,22 @@ def main():
             return  # आगे कुछ भी न करें
 
         # --- लोडिंग स्पिनर दिखाते हुए असली वीडियो जनरेट करना ---
-        with st.spinner("🎥 आपका सिनेमैटिक वीडियो बन रहा है... कृपया प्रतीक्षा करें (लगभग 40 सेकंड)"):
+        # ⚠️ फिक्स: अब सारा जोखिम भरा (risky) कोड try/except के अंदर है,
+        # ताकि कोई भी अनदेखी गड़बड़ी generic "Error running app" स्क्रीन
+        # दिखाने की बजाय एक साफ़, पढ़ने लायक st.error संदेश दिखाए —
+        # इससे असली वजह पकड़ना आसान हो जाएगा।
+        try:
+            with st.spinner("🎥 आपका सिनेमैटिक वीडियो बन रहा है... कृपया प्रतीक्षा करें (लगभग 40 सेकंड)"):
 
-            # अपलोड की गई फाइल को अस्थायी पाथ पर सेव करना
-            temp_media_path = _save_uploaded_file_to_temp(inputs["media_file"])
+                # अपलोड की गई फाइल को अस्थायी पाथ पर सेव करना
+                temp_media_path = _save_uploaded_file_to_temp(inputs["media_file"])
 
-            # फाइनल आउटपुट वीडियो कहाँ सेव होगी, उसकी पाथ तय करना
-            output_video_path = os.path.join(
-                tempfile.gettempdir(), "final_cinematic_output.mp4"
-            )
+                # फाइनल आउटपुट वीडियो कहाँ सेव होगी, उसकी पाथ तय करना
+                output_video_path = os.path.join(
+                    tempfile.gettempdir(), "final_cinematic_output.mp4"
+                )
 
-            # ---- यही वह मुख्य कॉल है जो सब कुछ जोड़ती है ----
-            try:
+                # ---- यही वह मुख्य कॉल है जो सब कुछ जोड़ती है ----
                 final_video_path = compile_cinematic_video(
                     user_media=temp_media_path,
                     script_text=inputs["story_script"],
@@ -273,10 +277,15 @@ def main():
                 # वीडियो से एक थंबनेल निकालना
                 final_thumbnail_path = _generate_thumbnail_from_video(final_video_path)
 
-            except Exception as error:
-                # अगर इंजन में कहीं भी गड़बड़ी हो, तो यूज़र को साफ़ संदेश दिखाना
-                st.error(f"❌ वीडियो बनाते समय एक त्रुटि आई: {error}")
-                return
+        except Exception as error:
+            # अगर कहीं भी (फाइल सेव, वीडियो जनरेशन, थंबनेल) कोई गड़बड़ी हो,
+            # तो यूज़र को साफ़ संदेश दिखाना, पूरा ऐप क्रैश नहीं होने देना
+            st.error(f"❌ वीडियो बनाते समय एक त्रुटि आई: {error}")
+            # पूरा traceback भी दिखाना ताकि डिबग करना आसान हो
+            import traceback
+            with st.expander("🔍 पूरी तकनीकी जानकारी (Technical Details) देखें"):
+                st.code(traceback.format_exc())
+            return
 
         # ------------------------------------------------------
         # वीडियो सफलतापूर्वक बनने के बाद: सफलता संदेश + डाउनलोड बटन

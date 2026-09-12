@@ -10,12 +10,44 @@
 """
 
 import os
-# क्लाउड सर्वर पर प्लेराइट के क्रोमियम ब्राउज़र को 1-क्लिक में ऑटोमैटिक इंस्टॉल करना
-os.system("playwright install chromium")
+import subprocess
+
+import streamlit as st
+
+# --------------------------------------------------------------
+# Playwright का Chromium ब्राउज़र इंस्टॉल करना — सिर्फ़ एक बार
+# --------------------------------------------------------------
+# ⚠️ फिक्स: पहले यह "os.system(...)" कॉल module-level पर था, यानी
+# हर बार जब भी यूज़र कोई भी बटन/इनपुट छूता, स्ट्रीमलिट पूरी स्क्रिप्ट
+# दोबारा (rerun) चलाता — और यह भारी install कमांड बार-बार चलता,
+# जिससे टाइमआउट/क्रैश हो सकता था। अब @st.cache_resource की वजह से
+# यह पूरे ऐप के जीवनकाल में सिर्फ़ एक बार चलेगा।
+@st.cache_resource
+def _ensure_playwright_chromium_installed():
+    """
+    Playwright का हेडलेस Chromium ब्राउज़र इंस्टॉल करता है (अगर पहले
+    से इंस्टॉल न हो)। @st.cache_resource की वजह से यह पूरे ऐप के
+    जीवनकाल में सिर्फ़ एक बार चलेगा, हर rerun पर नहीं।
+    """
+    try:
+        result = subprocess.run(
+            ["playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=180,   # ज़्यादा से ज़्यादा 3 मिनट इंतज़ार करना
+        )
+        return result.returncode == 0
+    except Exception as install_error:
+        # अगर इंस्टॉल फेल भी हो जाए, तो पूरा ऐप क्रैश नहीं होना चाहिए —
+        # सिर्फ़ बाद में सबटाइटल/क्लाइमेक्स बनाते समय एरर दिखेगा
+        st.warning(f"⚠️ Playwright Chromium इंस्टॉल करते समय समस्या आई: {install_error}")
+        return False
+
+
+_ensure_playwright_chromium_installed()
 
 import tempfile
 
-import streamlit as st
 from moviepy.editor import VideoFileClip
 
 # --------------------------------------------------------------

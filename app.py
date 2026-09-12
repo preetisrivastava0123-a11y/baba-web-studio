@@ -11,42 +11,26 @@
 
 import os
 import subprocess
+import tempfile
 
 import streamlit as st
 
 # --------------------------------------------------------------
-# Playwright का Chromium ब्राउज़र इंस्टॉल करना — सिर्फ़ एक बार
+# 1) पेज की बुनियादी सेटिंग (Page Configuration)
 # --------------------------------------------------------------
-# ⚠️ फिक्स: पहले यह "os.system(...)" कॉल module-level पर था, यानी
-# हर बार जब भी यूज़र कोई भी बटन/इनपुट छूता, स्ट्रीमलिट पूरी स्क्रिप्ट
-# दोबारा (rerun) चलाता — और यह भारी install कमांड बार-बार चलता,
-# जिससे टाइमआउट/क्रैश हो सकता था। अब @st.cache_resource की वजह से
-# यह पूरे ऐप के जीवनकाल में सिर्फ़ एक बार चलेगा।
-@st.cache_resource
-def _ensure_playwright_chromium_installed():
-    """
-    Playwright का हेडलेस Chromium ब्राउज़र इंस्टॉल करता है (अगर पहले
-    से इंस्टॉल न हो)। @st.cache_resource की वजह से यह पूरे ऐप के
-    जीवनकाल में सिर्फ़ एक बार चलेगा, हर rerun पर नहीं।
-    """
-    try:
-        result = subprocess.run(
-            ["playwright", "install", "chromium"],
-            capture_output=True,
-            text=True,
-            timeout=180,   # ज़्यादा से ज़्यादा 3 मिनट इंतज़ार करना
-        )
-        return result.returncode == 0
-    except Exception as install_error:
-        # अगर इंस्टॉल फेल भी हो जाए, तो पूरा ऐप क्रैश नहीं होना चाहिए —
-        # सिर्फ़ बाद में सबटाइटल/क्लाइमेक्स बनाते समय एरर दिखेगा
-        st.warning(f"⚠️ Playwright Chromium इंस्टॉल करते समय समस्या आई: {install_error}")
-        return False
-
-
-_ensure_playwright_chromium_installed()
-
-import tempfile
+# ⚠️ फिक्स: Streamlit का सख़्त नियम है कि set_page_config() स्क्रिप्ट
+# का सबसे पहला Streamlit-कमांड होना चाहिए — कोई भी और st.* कॉल
+# (जैसे st.warning, st.cache_resource के अंदर की कोई भी st.-कॉल)
+# उससे पहले चली, तो StreamlitAPIException के साथ पूरा ऐप क्रैश हो
+# जाता है। पिछली बार यही गलती हुई थी: playwright-install फंक्शन
+# (जो अंदर st.warning कॉल करता था) set_page_config() से पहले चल
+# रहा था। अब set_page_config() सबसे ऊपर, बाकी सब कुछ उसके बाद है।
+st.set_page_config(
+    page_title="बाबा जनरेटिव वेब स्टूडियो",
+    page_icon="🎬",
+    layout="centered",          # पेज को बीच में केंद्रित रखें
+    initial_sidebar_state="collapsed"
+)
 
 from moviepy.editor import VideoFileClip
 
@@ -57,14 +41,34 @@ from engine import compile_cinematic_video
 
 
 # --------------------------------------------------------------
-# 1) पेज की बुनियादी सेटिंग (Page Configuration)
+# 1.1) Playwright का Chromium ब्राउज़र इंस्टॉल करना — सिर्फ़ एक बार
 # --------------------------------------------------------------
-st.set_page_config(
-    page_title="बाबा जनरेटिव वेब स्टूडियो",
-    page_icon="🎬",
-    layout="centered",          # पेज को बीच में केंद्रित रखें
-    initial_sidebar_state="collapsed"
-)
+# @st.cache_resource की वजह से यह पूरे ऐप के जीवनकाल में सिर्फ़ एक
+# बार चलेगा, हर rerun पर नहीं। यह फंक्शन अब कोई भी st.* कमांड कॉल
+# नहीं करता (सिर्फ़ True/False + एरर-मैसेज स्ट्रिंग लौटाता है),
+# ताकि set_page_config() से जुड़ा नियम कभी न टूटे।
+@st.cache_resource
+def _ensure_playwright_chromium_installed():
+    """
+    Playwright का हेडलेस Chromium ब्राउज़र इंस्टॉल करता है (अगर पहले
+    से इंस्टॉल न हो)।
+
+    रिटर्न:
+        (success: bool, error_message: str | None)
+    """
+    try:
+        result = subprocess.run(
+            ["playwright", "install", "chromium"],
+            capture_output=True,
+            text=True,
+            timeout=180,   # ज़्यादा से ज़्यादा 3 मिनट इंतज़ार करना
+        )
+        if result.returncode == 0:
+            return True, None
+        return False, (result.stderr or result.stdout or "अज्ञात त्रुटि (unknown error)")
+    except Exception as install_error:
+        return False, str(install_error)
+
 
 # --------------------------------------------------------------
 # 2) कस्टम डार्क-थीम स्टाइलिंग (CSS के ज़रिए)
@@ -270,6 +274,15 @@ def _generate_thumbnail_from_video(video_path: str) -> str:
 def main():
     apply_dark_theme()      # डार्क थीम लगाओ
     render_header()          # टाइटल दिखाओ
+
+    # Playwright Chromium इंस्टॉल स्टेटस चेक करना (यह set_page_config
+    # के बाद है, इसलिए यहाँ st.warning कॉल करना पूरी तरह सुरक्षित है)
+    playwright_ok, playwright_error = _ensure_playwright_chromium_installed()
+    if not playwright_error is None and not playwright_ok:
+        st.warning(
+            f"⚠️ Playwright Chromium इंस्टॉल करते समय समस्या आई: {playwright_error}"
+        )
+
     inputs = render_input_section()   # सारा इनपुट लो
 
     # ------------------------------------------------------

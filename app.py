@@ -10,6 +10,9 @@
 """
 
 import os
+# क्लाउड सर्वर पर प्लेराइट के क्रोमियम ब्राउज़र को 1-क्लिक में ऑटोमैटिक इंस्टॉल करना
+os.system("playwright install chromium")
+
 import tempfile
 
 import streamlit as st

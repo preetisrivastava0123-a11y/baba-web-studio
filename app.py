@@ -258,7 +258,9 @@ def render_visual_track():
             preview_col, order_col, time_col, remove_col = st.columns([2, 1, 2, 0.7])
 
             with preview_col:
-                st.markdown(f'<span class="order-badge">🎬 {clip["file"].name[:20]}</span>', unsafe_allow_html=True)
+                # ⚠️ यहाँ जान-बूझकर फाइल का नाम नहीं दिखाया गया (सिर्फ़ क्रम-संख्या) —
+                # ताकि लंबे/उलझाने वाले फ़ाइल-नामों से कन्फ्यूज़न न हो।
+                st.markdown(f'<span class="order-badge">🎬 विज़ुअल क्लिप {clip_index + 1}</span>', unsafe_allow_html=True)
                 if clip["is_image"]:
                     st.image(clip["file"], use_container_width=True)
                 else:
@@ -353,7 +355,9 @@ def render_music_track():
             name_col, order_col, mode_col, volume_col, remove_col = st.columns([2, 1, 1.6, 1.4, 0.6])
 
             with name_col:
-                st.markdown(f'<span class="music-badge">🎶 {track["file"].name[:20]}</span>', unsafe_allow_html=True)
+                # ⚠️ यहाँ भी जान-बूझकर फाइल का नाम नहीं दिखाया गया — सिर्फ़ क्रम-संख्या,
+                # ताकि म्यूज़िक ट्रैक की लिस्ट साफ़ और बिना-कन्फ्यूज़न वाली रहे।
+                st.markdown(f'<span class="music-badge">🎶 म्यूज़िक ट्रैक {track_index + 1}</span>', unsafe_allow_html=True)
                 if is_multi_track_mode:
                     trim_start_col, trim_end_col = st.columns(2)
                     with trim_start_col:

@@ -11,6 +11,16 @@
                अपलोडर + Start/End Second + क्रम-संख्या, नीचे एक ग्लोबल मास्टर-वॉल्यूम
   🔊 SFX ट्रैक — कस्टम ध्वनि अपलोड + ग्लोबल-सर्च हुक + टाइम-इवेंट्स (पहले जैसा बरकरार)
 
+🔄 NEW — एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE):
+  ऊपर वाले "सामान्य स्टूडियो मोड" के बिल्कुल साथ-साथ, एक अलग मोड-सेलेक्टर से चुना जाने वाला
+  दूसरा हल्का-फुल्का मोड — जिसमें सिर्फ़ ट्रैक 1 (विज़ुअल गोदाम, मिरर मेथड), ट्रैक 2
+  (वीडियो क्लिप्स टाइमलाइन, मिरर मेथड, अपना अलग session_state), एक न्यूज़-पट्टी/आउट्रो
+  लूपर, और सिर्फ़ लॉन्ग-वीडियो ड्यूरेशन विकल्प (5 मिनट/30 मिनट/1 घंटा/कस्टम) दिखते हैं।
+  यह मोड inputs["mode"] = "live_loop" पास करता है ताकि engine.py अपलोड की गई
+  तस्वीरों/वीडियो को एक 'while loop' में तब तक दोहराए जब तक पूरा चुना हुआ ड्यूरेशन
+  पूरा न हो जाए। सामान्य मोड का कोई भी पुराना कोड यहाँ हटाया या तोड़ा नहीं गया है —
+  दोनों मोड स्वतंत्र रूप से एक ही ऐप में साथ-साथ रहते हैं।
+
 ⚠️ ईमानदार तकनीकी सीमाएँ / महत्वपूर्ण नोट्स:
   - "लाइव ड्राफ्ट प्रीव्यू" असल में एक अलग "⚡ क्विक ड्राफ्ट रेंडर" बटन है,
     जो कम क्वालिटी में वाकई रेंडर करके दिखाता है — टाइप करते ही अपने-आप
@@ -28,6 +38,10 @@
   - ⚠️ engine.py में compile_cinematic_video() फ़ंक्शन को अब इन नए kwargs को भी हैंडल
     करना होगा: video_clips_timeline, music_files_pool, music_clips_timeline
     (पुराना "music_tracks" kwarg अब नहीं भेजा जाता — नीचे _build_common_kwargs() देखें)।
+  - ⚠️ engine.py को अब एक नया kwarg भी मिलेगा: mode ("standard" या "live_loop")।
+    mode="live_loop" मिलने पर इंजन को अपलोड की गई विज़ुअल्स/वीडियो-क्लिप्स को
+    duration_seconds पूरा होने तक 'while loop' में बार-बार दोहराना होगा — यह लॉजिक
+    अभी engine.py में लागू नहीं है (TODO), फ़िलहाल सिर्फ़ फ्लैग पास होता है।
 ==============================================================
 """
 
@@ -204,6 +218,9 @@ def render_user_guide():
 # --------------------------------------------------------------
 def _initialize_session_state():
     default_values = {
+        # --- मोड-सेलेक्टर: "सामान्य स्टूडियो मोड" बनाम "एआई लाइव लूप स्टूडियो" ---
+        "app_mode": "🎬 सामान्य स्टूडियो मोड (Normal Studio Mode)",
+
         "story_script_text": "",
         "ticker_text_value": "",
         "ticker_manually_edited": False,   # ताकि auto-sync यूज़र के मैनुअल बदलाव को न मिटाए
@@ -237,6 +254,24 @@ def _initialize_session_state():
         "sfx_files": [],      # यूज़र-अपलोड की गई कस्टम SFX फाइलें [UploadedFile,...]
         "sfx_events": [],     # [{"sfx_name", "start", "end", "volume"}]
         "sfx_uploader_key": 0,
+
+        # ============================================================
+        # 🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE) — स्वतंत्र state
+        # ============================================================
+        # --- लूप-ट्रैक 1: विज़ुअल गोदाम [मिरर मेथड — कोई टाइमर नहीं] ---
+        "loop_raw_visuals": [],           # [{"file", "is_image", "start", "end"}]
+        "loop_visual_uploader_key": 0,
+
+        # --- लूप-ट्रैक 2: वीडियो क्लिप्स टाइमलाइन [मिरर मेथड — स्वतंत्र स्लॉट्स] ---
+        "loop_video_clips": [],           # [{"slot_id", "file", "start", "end"}]
+        "loop_video_clip_slot_counter": 0,
+
+        # --- लूप न्यूज़-पट्टी / आउट्रो लूपर ---
+        "loop_ticker_text": "",
+
+        # --- लूप-मोड के लिए सिर्फ़ लॉन्ग-वीडियो ड्यूरेशन ---
+        "loop_duration_choice_value": "5 मिनट",
+        "loop_custom_duration_minutes": 10,
 
         "draft_video_path": None,   # क्विक-ड्राफ्ट का आउटपुट पाथ
     }
@@ -573,7 +608,251 @@ def render_sfx_track():
 
 
 # --------------------------------------------------------------
-# 9) कथा (PDF/DOCX) एक्सट्रैक्टर + आउट्रो-सिंक
+# 9) 🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE) — मिरर ट्रैक्स + विशेष सेक्शन्स
+# --------------------------------------------------------------
+# ⚠️ नीचे के सभी फंक्शन्स इसी नए मोड के लिए हैं। ये सामान्य स्टूडियो मोड के render_visual_track()
+# और render_video_clips_timeline_track() के "मिरर मेथड" हैं — बिल्कुल वही लॉजिक, लेकिन अपना
+# अलग स्वतंत्र st.session_state (loop_raw_visuals, loop_video_clips) इस्तेमाल करते हैं ताकि
+# दोनों मोड के डेटा एक-दूसरे से कभी न टकराएँ और दोनों तरफ़ का लॉक बरकरार रहे।
+
+def render_loop_visual_track():
+    """१. 🎬 ट्रैक 1: विज़ुअल ट्रैक (कच्चा माल गोदाम) [मिरर मेथड] — लाइव लूप मोड"""
+    st.markdown('<div class="track-heading">🎬 ट्रैक 1: विज़ुअल ट्रैक (कच्चा माल गोदाम)</div>', unsafe_allow_html=True)
+
+    pending_files = st.file_uploader(
+        label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें — एक साथ कितनी भी फाइलें चुन सकते हैं",
+        type=["jpg", "jpeg", "png", "mp4", "mov"],
+        accept_multiple_files=True,
+        key=f"loop_visual_uploader_{st.session_state['loop_visual_uploader_key']}",
+    )
+
+    existing_names = {item["file"].name for item in st.session_state["loop_raw_visuals"]}
+    newly_added_count = 0
+    for pending_file in (pending_files or []):
+        if pending_file.name not in existing_names:
+            is_image_file = pending_file.type and pending_file.type.startswith("image")
+            st.session_state["loop_raw_visuals"].append({
+                "file": pending_file,
+                "is_image": is_image_file,
+                "start": 0.0,
+                "end": 5.0 if is_image_file else 0.0,   # फोटो=5s फिक्स, वीडियो=0.0 यानी "पूरी क्लिप"
+            })
+            newly_added_count += 1
+    if newly_added_count > 0:
+        st.session_state["loop_visual_uploader_key"] += 1
+        st.rerun()
+
+    if not st.session_state["loop_raw_visuals"]:
+        st.info("अभी तक गोदाम में कोई फोटो/वीडियो जमा नहीं हुआ।")
+        return []
+
+    st.caption(
+        f"🗄️ गोदाम में कुल {len(st.session_state['loop_raw_visuals'])} फाइलें जमा हैं "
+        "(इंजन इन्हें 'लाइव लूप' में बार-बार दोहराएगा जब तक पूरा ड्यूरेशन खत्म न हो)।"
+    )
+
+    preview_columns = st.columns(4)
+    for item_index, visual_item in enumerate(st.session_state["loop_raw_visuals"]):
+        with preview_columns[item_index % 4]:
+            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
+            if visual_item["is_image"]:
+                st.image(visual_item["file"], use_container_width=True)
+            else:
+                st.markdown("🎞️ *(वीडियो)*")
+            st.caption(f"#{item_index + 1}")
+            if st.button("❌", key=f"remove_loop_visual_{item_index}"):
+                st.session_state["loop_raw_visuals"].pop(item_index)
+                st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    return list(st.session_state["loop_raw_visuals"])
+
+
+def render_loop_video_clips_timeline_track():
+    """२. 🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन ट्रैक [मिरर मेथड] — लाइव लूप मोड"""
+    st.markdown('<div class="track-heading">🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन ट्रैक</div>', unsafe_allow_html=True)
+
+    if st.button("➕ नया वीडियो क्लिप टाइमलाइन पर जोड़ें", key="add_loop_video_clip_slot_button"):
+        new_slot_id = st.session_state["loop_video_clip_slot_counter"]
+        st.session_state["loop_video_clip_slot_counter"] += 1
+        st.session_state["loop_video_clips"].append({
+            "slot_id": new_slot_id, "file": None, "start": 0.0, "end": 0.0,
+        })
+        st.rerun()
+
+    if not st.session_state["loop_video_clips"]:
+        st.caption("ℹ️ अभी कोई वीडियो-क्लिप टाइमलाइन स्लॉट नहीं जोड़ा गया।")
+        return []
+
+    for display_index, slot in enumerate(st.session_state["loop_video_clips"]):
+        slot_id = slot["slot_id"]
+        with st.container():
+            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
+            st.markdown(f'<span class="order-badge">🎞️ वीडियो क्लिप स्लॉट #{display_index + 1}</span>', unsafe_allow_html=True)
+            uploader_col, start_col, end_col, remove_col = st.columns([2.2, 1, 1, 0.6])
+            with uploader_col:
+                slot["file"] = st.file_uploader(
+                    "वीडियो क्लिप चुनें", type=["mp4", "mov"],
+                    key=f"loop_vidclip_file_{slot_id}",
+                )
+            with start_col:
+                slot["start"] = st.number_input(
+                    "प्रकट होने का समय (Start Sec)", min_value=0.0, step=1.0,
+                    value=slot["start"], key=f"loop_vidclip_start_{slot_id}",
+                )
+            with end_col:
+                slot["end"] = st.number_input(
+                    "हटने का समय (End Sec)", min_value=0.0, step=1.0,
+                    value=slot["end"], key=f"loop_vidclip_end_{slot_id}",
+                )
+            with remove_col:
+                st.write("")
+                if st.button("❌", key=f"remove_loop_vidclip_{slot_id}"):
+                    st.session_state["loop_video_clips"] = [
+                        s for s in st.session_state["loop_video_clips"] if s["slot_id"] != slot_id
+                    ]
+                    st.rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+    return list(st.session_state["loop_video_clips"])
+
+
+def render_loop_ticker_section():
+    """३. 📰 न्यूज़ पट्टी / आउट्रो कमेंट लूपर — फाइनल वीडियो में बार-बार आती-जाती (Scrolling Loop) रहेगी"""
+    st.markdown('<div class="section-heading">📰 न्यूज़ पट्टी / आउट्रो कमेंट लूपर</div>', unsafe_allow_html=True)
+    st.text_input(
+        "यह टेक्स्ट फाइनल वीडियो में बार-बार स्क्रीन पर आता-जाता (Scrolling Timeline Loop) रहेगा",
+        key="loop_ticker_text",
+    )
+    return st.session_state["loop_ticker_text"]
+
+
+def render_loop_duration_section():
+    """४. ⏱️ केवल लॉन्ग वीडियो ड्यूरेशन विकल्प — 5 मिनट / 30 मिनट / 1 घंटा / कस्टम अवधि"""
+    st.markdown('<div class="section-heading">⏱️ लाइव लूप ड्यूरेशन (केवल लॉन्ग वीडियो विकल्प)</div>', unsafe_allow_html=True)
+    st.radio(
+        "ड्यूरेशन चुनें", options=["5 मिनट", "30 मिनट", "1 घंटा", "कस्टम अवधि (Custom)"],
+        horizontal=True, key="loop_duration_choice_value", label_visibility="collapsed",
+    )
+    duration_map_minutes = {"5 मिनट": 5, "30 मिनट": 30, "1 घंटा": 60}
+
+    if st.session_state["loop_duration_choice_value"] == "कस्टम अवधि (Custom)":
+        st.number_input(
+            "कस्टम अवधि (मिनट में, 1-300)", min_value=1, max_value=300,
+            key="loop_custom_duration_minutes",
+        )
+        return st.session_state["loop_custom_duration_minutes"] * 60
+
+    return duration_map_minutes[st.session_state["loop_duration_choice_value"]] * 60
+
+
+def render_live_loop_studio_mode():
+    """
+    ५. 🔄 बैकएंड व्हाइल लूप हुक — यहीं पर ऊपर के चारों सेक्शन जोड़कर, सिर्फ़ इसी मोड के
+    लिए स्वतंत्र वैलिडेशन + GENERATE बटन दिखाया जाता है। inputs["mode"] = "live_loop"
+    पास होता है ताकि engine.py यह पहचान सके कि उसे 'while loop' चलाकर अपलोड की गई
+    तस्वीरों/वीडियो को अलग-अलग सिनेमैटिक स्टाइल में तब तक दोहराना है, जब तक चुना हुआ
+    पूरा ड्यूरेशन मुकम्मल न हो जाए। st.session_state यहाँ भी पूरी तरह लॉक और सुरक्षित है
+    (सामान्य मोड के किसी भी state key से कोई टकराव नहीं — सब कुछ "loop_" प्रीफ़िक्स से अलग है)।
+    """
+    st.markdown('<div class="track-heading">🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE)</div>', unsafe_allow_html=True)
+    st.info(
+        "💡 इस मोड में इंजन एक 'while loop' चलाकर अपलोड की गई तस्वीरों/वीडियो-क्लिप्स को अलग-अलग "
+        "सिनेमैटिक स्टाइल में तब तक बार-बार दोहराएगा, जब तक आपका चुना हुआ पूरा ड्यूरेशन पूरा न हो जाए।"
+    )
+
+    loop_visual_clips = render_loop_visual_track()
+    st.divider()
+    loop_video_clips_timeline = render_loop_video_clips_timeline_track()
+    st.divider()
+    loop_ticker_text = render_loop_ticker_section()
+    st.divider()
+    loop_duration_seconds = render_loop_duration_section()
+    st.divider()
+
+    loop_inputs = {
+        "mode": "live_loop",   # ⚠️ engine.py इसी फ्लैग से 'while loop' रिपीट-लॉजिक चलाएगा (TODO वहाँ लागू करना)
+        "visual_clips": loop_visual_clips,
+        "video_clips_timeline": loop_video_clips_timeline,
+        "music_files_storage": [],       # लाइव लूप मोड में म्यूज़िक/SFX ट्रैक्स दिखाए नहीं जाते
+        "music_clips_timeline": [],
+        "master_music_volume": st.session_state["master_music_volume"],
+        "sfx_files": [],
+        "sfx_events": [],
+        "story_script": "",              # इस मोड में कथा-स्क्रिप्ट बॉक्स नहीं दिखाया जाता
+        "ticker_text": loop_ticker_text,
+        "aspect_ratio": "16:9",          # सिर्फ़ लॉन्ग-वीडियो ड्यूरेशन विकल्पों के अनुसार फिक्स
+        "duration_seconds": loop_duration_seconds,
+        "quality": "720p",               # इस मोड में क्वालिटी-सेलेक्टर नहीं दिखाया जाता, डिफ़ॉल्ट फिक्स
+        "sub_color": "#FFD700",
+        "sub_size": 65,
+        "voiceover_mode": "ai_tts",      # इस मोड में वॉइसओवर-सेलेक्टर नहीं दिखाया जाता, डिफ़ॉल्ट AI आवाज़
+        "custom_audio_path": None,
+    }
+
+    # --- वैलिडेशन ---
+    validation_ok = True
+    if not loop_visual_clips and not loop_video_clips_timeline:
+        st.warning("⚠️ कृपया कम से कम एक विज़ुअल (ट्रैक 1) या वीडियो-क्लिप (ट्रैक 2) जोड़ें।")
+        validation_ok = False
+    if not loop_duration_seconds:
+        st.warning("⚠️ कृपया ड्यूरेशन चुनें।")
+        validation_ok = False
+
+    generate_loop_clicked = st.button(
+        "🚀 GENERATE LIVE LOOP VIDEO (FINAL)", use_container_width=True, key="generate_loop_video_button",
+    )
+
+    if generate_loop_clicked:
+        if not validation_ok:
+            return
+        try:
+            with st.spinner("🔄 लाइव लूप वीडियो बन रहा है — कृपया प्रतीक्षा करें..."):
+                (
+                    resolved_visual, resolved_video_timeline,
+                    resolved_music_pool, resolved_music_timeline, resolved_sfx,
+                ) = _resolve_all_track_paths(
+                    loop_visual_clips, loop_video_clips_timeline, [], [], [], [],
+                )
+                output_dir = "generated_video"
+                os.makedirs(output_dir, exist_ok=True)
+                output_video_path = os.path.join(output_dir, "live_loop_output.mp4")
+
+                loop_kwargs = _build_common_kwargs(
+                    loop_inputs, resolved_visual, resolved_video_timeline,
+                    resolved_music_pool, resolved_music_timeline, resolved_sfx, output_video_path,
+                )
+                final_video_path = compile_cinematic_video(**loop_kwargs)
+                final_thumbnail_path = _generate_thumbnail_from_video(final_video_path)
+        except Exception as error:
+            st.error(f"❌ लाइव लूप वीडियो बनाते समय एक त्रुटि आई: {error}")
+            import traceback
+            with st.expander("🔍 पूरी तकनीकी जानकारी देखें"):
+                st.code(traceback.format_exc())
+            return
+
+        st.success("✅ आपका लाइव लूप वीडियो सफलतापूर्वक तैयार हो गया है!")
+        st.video(final_video_path)
+
+        with open(final_video_path, "rb") as video_file:
+            video_bytes = video_file.read()
+        with open(final_thumbnail_path, "rb") as thumbnail_file:
+            thumbnail_bytes = thumbnail_file.read()
+
+        st.download_button(
+            "📥 DOWNLOAD LIVE LOOP VIDEO & THUMBNAIL", data=video_bytes,
+            file_name="baba_live_loop_video.mp4", mime="video/mp4",
+            use_container_width=True, key="download_loop_video_button",
+        )
+        st.download_button(
+            "🖼️ डाउनलोड थंबनेल (Thumbnail JPG)", data=thumbnail_bytes,
+            file_name="baba_live_loop_thumbnail.jpg", mime="image/jpeg",
+            use_container_width=True, key="download_loop_thumbnail_button",
+        )
+
+
+# --------------------------------------------------------------
+# 10) कथा (PDF/DOCX) एक्सट्रैक्टर + आउट्रो-सिंक
 # --------------------------------------------------------------
 def render_story_extractor_and_sync():
     st.markdown('<div class="section-heading">📂 धार्मिक कथा / ग्रन्थ अपलोड करें (PDF या Word)</div>', unsafe_allow_html=True)
@@ -634,7 +913,7 @@ def render_story_extractor_and_sync():
 
 
 # --------------------------------------------------------------
-# 10) वॉइसओवर सेक्शन
+# 11) वॉइसओवर सेक्शन
 # --------------------------------------------------------------
 def render_voiceover_section():
     st.markdown('<div class="section-heading">🎙️ वॉइसओवर चुनें</div>', unsafe_allow_html=True)
@@ -655,7 +934,7 @@ def render_voiceover_section():
 
 
 # --------------------------------------------------------------
-# 11) फॉर्मेट + कस्टम-ड्यूरेशन + क्वालिटी + सबटाइटल-स्टाइल
+# 12) फॉर्मेट + कस्टम-ड्यूरेशन + क्वालिटी + सबटाइटल-स्टाइल
 # --------------------------------------------------------------
 def render_format_and_quality_section():
     settings_col1, settings_col2 = st.columns(2)
@@ -691,7 +970,7 @@ def render_format_and_quality_section():
 
 
 # --------------------------------------------------------------
-# 12) फाइलों को डिस्क पर सेव करना (हेल्पर्स)
+# 13) फाइलों को डिस्क पर सेव करना (हेल्पर्स)
 # --------------------------------------------------------------
 def _save_uploaded_file_to_temp(uploaded_file):
     file_extension = os.path.splitext(uploaded_file.name)[1]
@@ -753,7 +1032,10 @@ def _build_common_kwargs(inputs, resolved_visual, resolved_video_timeline, resol
     # music_clips_timeline (ट्रैक 4 के टाइम-सिंक्ड क्लिप्स), साथ ही नया
     # video_clips_timeline (ट्रैक 2 के टाइम-सिंक्ड वीडियो-ओवरले क्लिप्स)।
     # engine.py के compile_cinematic_video() को इन नए kwargs के अनुसार अपडेट करना होगा।
+    # ⚠️ "mode" kwarg भी यहीं से पास होता है — "standard" (सामान्य मोड) या "live_loop"
+    # (नया लाइव-लूप मोड, जिसमें engine.py को 'while loop' रिपीट-लॉजिक चलाना होगा — TODO)।
     return dict(
+        mode=inputs.get("mode", "standard"),
         visual_clips=resolved_visual,
         video_clips_timeline=resolved_video_timeline,
         music_files_pool=resolved_music_pool,
@@ -775,7 +1057,7 @@ def _build_common_kwargs(inputs, resolved_visual, resolved_video_timeline, resol
 
 
 # --------------------------------------------------------------
-# 13) मुख्य फंक्शन
+# 14) मुख्य फंक्शन
 # --------------------------------------------------------------
 def main():
     _initialize_session_state()
@@ -787,6 +1069,26 @@ def main():
     if playwright_error and not playwright_ok:
         st.warning(f"⚠️ Playwright Chromium इंस्टॉल करते समय समस्या आई: {playwright_error}")
 
+    # ------------------------------------------------------
+    # 🧭 स्टूडियो मोड चुनें — "सामान्य स्टूडियो मोड" बनाम "🔄 एआई लाइव लूप स्टूडियो"
+    # ------------------------------------------------------
+    st.markdown('<div class="section-heading">🧭 स्टूडियो मोड चुनें</div>', unsafe_allow_html=True)
+    st.radio(
+        "मोड चुनें",
+        options=["🎬 सामान्य स्टूडियो मोड (Normal Studio Mode)", "🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE)"],
+        key="app_mode", horizontal=True, label_visibility="collapsed",
+    )
+    st.divider()
+
+    if st.session_state["app_mode"].startswith("🔄"):
+        # ⚠️ लाइव लूप मोड में सिर्फ़ इसी मोड के सीमित सेक्शन दिखते हैं — पुराना सामान्य
+        # स्टूडियो मोड का कोई भी कोड यहाँ चलता नहीं, लेकिन नीचे बिल्कुल बरकरार रहता है।
+        render_live_loop_studio_mode()
+        return
+
+    # ==========================================================
+    # 🎬 यहाँ से नीचे — सामान्य स्टूडियो मोड (हूबहू पुराना, कुछ भी कटा नहीं)
+    # ==========================================================
     st.info("💡 निर्देश: सभी ट्रैक्स (विज़ुअल/वीडियो-टाइमलाइन/म्यूज़िक/म्यूज़िक-टाइमलाइन/SFX) को नीचे अलग-अलग सजाएँ, फिर कहानी लिखकर वीडियो जनरेट करें।")
 
     visual_clips = render_visual_track()
@@ -809,6 +1111,7 @@ def main():
     subtitle_color_hex = "#FFD700" if st.session_state["subtitle_color_choice"].startswith("पीला") else "#FFFFFF"
 
     inputs = {
+        "mode": "standard",   # सामान्य स्टूडियो मोड — engine.py इसे "live_loop" से अलग पहचानेगा
         "visual_clips": visual_clips,
         "video_clips_timeline": video_clips_timeline,
         "music_files_storage": music_files_storage,

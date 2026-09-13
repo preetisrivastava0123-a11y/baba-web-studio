@@ -1,14 +1,15 @@
 """
 ==============================================================
-बाबा जनरेटिव वेब स्टूडियो — टैब-मेनू + मिक्सिंग लैब संस्करण
+बाबा जनरेटिव वेब स्टूडियो — टैब-मेनू संस्करण (Organized Studio)
 ==============================================================
-इस वर्ज़न में जोड़ा गया है:
-  - 🧪 मिक्सिंग लैब टैब: पूरी टाइमलाइन की बिना-रेंडर जाँच-रिपोर्ट,
-    हर क्लिप का थंबनेल/जानकारी, और वहीं से क्रम/Start/End में
-    इनलाइन सुधार — Generate से पहले एक जगह सब कुछ फाइनल-चेक होता है।
-
-⚠️ नोट: वीडियो-क्लिप्स का असली फ्रेम-थंबनेल अभी नहीं निकाला जाता
-   (सिर्फ़ नाम+टाइमिंग दिखती है) — अगर चाहिए तो अगला छोटा सुधार है।
+इस वर्ज़न में बड़ा बदलाव:
+  - फोटो और वीडियो अब दो बिल्कुल अलग अपलोडर + अलग लिस्ट में हैं
+    (st.session_state["photo_clips"] और st.session_state["video_clips"])
+  - पूरा डैशबोर्ड अब एक लंबे पेज की जगह st.tabs() मेनू में बँटा है,
+    ताकि किसी एक वक़्त पर सिर्फ़ ज़रूरी चीज़ ही दिखे।
+  - क्रम-संख्या (order) दोनों (फोटो+वीडियो) लिस्ट में मिलाकर एक ही
+    सीक्वेंस नंबरिंग देती है, ताकि अंतिम वीडियो में उन्हें आपस में
+    सही क्रम से जोड़ा जा सके।
 ==============================================================
 """
 
@@ -124,8 +125,6 @@ def render_user_guide():
             **🔊 SFX** — ध्वनि-प्रभाव अपलोड या सर्च करें, टाइम-इवेंट जोड़ें।
             **📝 कहानी व वॉइस** — PDF/Word से कथा निकालें, वॉइसओवर चुनें।
             **⚙️ फॉर्मेट व क्वालिटी** — फॉर्मेट, ड्यूरेशन, सबटाइटल-स्टाइल तय करें।
-            **🧪 मिक्सिंग लैब** — Generate से पहले यहाँ पूरी टाइमलाइन की जाँच-रिपोर्ट देखें
-            और सीधे यहीं से क्रम/Start/End में सुधार करें।
             सबसे नीचे किसी भी टैब से **Generate** बटन से फाइनल वीडियो बनेगा।
             """
         )
@@ -145,8 +144,9 @@ def _initialize_session_state():
         "voiceover_mode": "🕉️ बाबा एआई दिव्य आवाज़ (Edge-TTS)",
         "last_pdf_name": None,
 
-        "photo_clips": [],
-        "video_clips": [],
+        # ⚠️ फोटो और वीडियो अब पूरी तरह अलग-अलग लिस्ट में
+        "photo_clips": [],   # [{"file", "order"}]  — हमेशा 5 सेकंड, Ken Burns
+        "video_clips": [],   # [{"file", "order", "start", "end"}]
 
         "music_tracks": [],
         "sfx_files": [],
@@ -518,128 +518,6 @@ def render_settings_tab():
 
 
 # --------------------------------------------------------------
-# 🧪 मिक्सिंग लैब टैब — पूरी टाइमलाइन की जाँच + इनलाइन सुधार
-# --------------------------------------------------------------
-def render_mixing_lab_tab(inputs, music_tracks, sfx_files, sfx_events):
-    """
-    यह टैब बिना वीडियो रेंडर किए पूरी टाइमलाइन की जाँच-रिपोर्ट दिखाता है,
-    हर विज़ुअल-क्लिप का थंबनेल दिखाता है, और यहीं से Start/End/क्रम/वॉल्यूम
-    में सुधार करने देता है — यूज़र को दूसरे टैब्स में वापस नहीं जाना पड़ता।
-    """
-    st.markdown('<div class="section-heading">🧪 मिक्सिंग लैब — पूरी टाइमलाइन जाँच व सुधार</div>', unsafe_allow_html=True)
-
-    problem_messages = []
-
-    combined_visuals = (
-        [{"kind": "photo", "data": p} for p in st.session_state["photo_clips"]]
-        + [{"kind": "video", "data": v} for v in st.session_state["video_clips"]]
-    )
-    combined_visuals.sort(key=lambda item: item["data"]["order"])
-
-    if not combined_visuals:
-        problem_messages.append("❌ कोई फोटो/वीडियो नहीं जोड़ा गया।")
-
-    all_orders = [item["data"]["order"] for item in combined_visuals]
-    if len(set(all_orders)) != len(all_orders):
-        problem_messages.append("❌ दो या अधिक विज़ुअल्स को एक ही क्रम-संख्या मिली है।")
-
-    estimated_visual_duration = 0.0
-    for item in combined_visuals:
-        if item["kind"] == "photo":
-            estimated_visual_duration += 5.0
-        else:
-            clip_duration = item["data"]["end"] - item["data"]["start"]
-            if clip_duration <= 0:
-                problem_messages.append(f"❌ '{item['data']['file'].name}' में End Second, Start Second से बड़ा नहीं है।")
-            else:
-                estimated_visual_duration += clip_duration
-
-    for event in sfx_events:
-        if event["end"] <= event["start"]:
-            problem_messages.append(f"❌ SFX '{event['sfx_name']}' का End Time, Start Time से बड़ा नहीं है।")
-        if event["start"] > estimated_visual_duration:
-            problem_messages.append(f"⚠️ SFX '{event['sfx_name']}' का Start Time ({event['start']}s) अनुमानित वीडियो-लंबाई ({estimated_visual_duration:.1f}s) से आगे है।")
-
-    if not inputs["story_script"].strip():
-        problem_messages.append("❌ कहानी/स्क्रिप्ट खाली है।")
-    if inputs["voiceover_mode"] == "custom" and inputs["custom_audio_path"] is None:
-        problem_messages.append("❌ कस्टम-आवाज़ मोड चुना है पर ऑडियो अपलोड नहीं हुआ।")
-
-    st.divider()
-
-    if problem_messages:
-        st.error(f"❌ {len(problem_messages)} समस्याएँ मिलीं — पहले इन्हें ठीक करें:")
-        for message in problem_messages:
-            st.markdown(f"- {message}")
-    else:
-        st.success(f"✅ सब कुछ ठीक है! अनुमानित विज़ुअल-लंबाई: {estimated_visual_duration:.1f} सेकंड।")
-
-    st.divider()
-    st.markdown('<div class="section-heading">🎞️ पूरी टाइमलाइन (क्रम में) — यहीं से सुधारें</div>', unsafe_allow_html=True)
-
-    for position_index, item in enumerate(combined_visuals):
-        clip_data = item["data"]
-        with st.container():
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            thumb_col, info_col, edit_col = st.columns([1.2, 1.5, 2])
-
-            with thumb_col:
-                if item["kind"] == "photo":
-                    st.image(clip_data["file"], use_container_width=True)
-                else:
-                    st.markdown("🎞️ *(वीडियो — फ्रेम-थंबनेल अभी नहीं)*")
-
-            with info_col:
-                st.markdown(f"**#{clip_data['order']} — {clip_data['file'].name[:22]}**")
-                st.caption("🖼️ फोटो (5 सेकंड फिक्स)" if item["kind"] == "photo" else f"🎞️ वीडियो ({clip_data['start']}s → {clip_data['end']}s)")
-
-            with edit_col:
-                total_combined = len(combined_visuals)
-                unique_key_suffix = f"lab_{item['kind']}_{clip_data['file'].name}_{position_index}"
-
-                def _on_lab_order_change(target=clip_data, widget_key=f"order_{unique_key_suffix}"):
-                    target["order"] = st.session_state[widget_key]
-
-                st.selectbox("क्रम बदलें", options=list(range(1, total_combined + 1)),
-                             index=min(clip_data["order"], total_combined) - 1,
-                             key=f"order_{unique_key_suffix}", on_change=_on_lab_order_change)
-
-                if item["kind"] == "video":
-                    trim_col1, trim_col2 = st.columns(2)
-                    with trim_col1:
-                        def _on_lab_start_change(target=clip_data, widget_key=f"start_{unique_key_suffix}"):
-                            target["start"] = st.session_state[widget_key]
-                        st.number_input("Start", min_value=0.0, value=clip_data["start"], step=0.5,
-                                         key=f"start_{unique_key_suffix}", on_change=_on_lab_start_change)
-                    with trim_col2:
-                        def _on_lab_end_change(target=clip_data, widget_key=f"end_{unique_key_suffix}"):
-                            target["end"] = st.session_state[widget_key]
-                        st.number_input("End", min_value=0.5, value=clip_data["end"], step=0.5,
-                                         key=f"end_{unique_key_suffix}", on_change=_on_lab_end_change)
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    st.divider()
-    summary_col1, summary_col2 = st.columns(2)
-    with summary_col1:
-        st.markdown('<div class="section-heading">🎵 म्यूज़िक सारांश</div>', unsafe_allow_html=True)
-        if music_tracks:
-            for track in music_tracks:
-                st.caption(f"🎶 #{track['order']} {track['file'].name[:20]} — वॉल्यूम {track['volume']}")
-        else:
-            st.caption("कोई भजन नहीं जोड़ा गया।")
-    with summary_col2:
-        st.markdown('<div class="section-heading">🔊 SFX सारांश</div>', unsafe_allow_html=True)
-        if sfx_events:
-            for event in sfx_events:
-                st.caption(f"🎯 {event['sfx_name']} — {event['start']}s→{event['end']}s")
-        else:
-            st.caption("कोई SFX-इवेंट नहीं जोड़ा गया।")
-
-    return len(problem_messages) == 0
-
-
-# --------------------------------------------------------------
 # हेल्पर्स: फाइल-सेव, थंबनेल, कॉमन-kwargs
 # --------------------------------------------------------------
 def _save_uploaded_file_to_temp(uploaded_file):
@@ -703,8 +581,8 @@ def main():
     if playwright_error and not playwright_ok:
         st.warning(f"⚠️ Playwright समस्या: {playwright_error}")
 
-    tab_photo, tab_video, tab_music, tab_sfx, tab_story, tab_settings, tab_lab = st.tabs(
-        ["🖼️ फोटो", "🎞️ वीडियो क्लिप्स", "🎵 म्यूज़िक", "🔊 SFX", "📝 कहानी व वॉइस", "⚙️ फॉर्मेट व क्वालिटी", "🧪 मिक्सिंग लैब"]
+    tab_photo, tab_video, tab_music, tab_sfx, tab_story, tab_settings = st.tabs(
+        ["🖼️ फोटो", "🎞️ वीडियो क्लिप्स", "🎵 म्यूज़िक", "🔊 SFX", "📝 कहानी व वॉइस", "⚙️ फॉर्मेट व क्वालिटी"]
     )
 
     with tab_photo:
@@ -736,11 +614,14 @@ def main():
         "master_music_volume": master_music_volume,
     }
 
-    with tab_lab:
-        validation_ok = render_mixing_lab_tab(inputs, music_tracks, sfx_files, sfx_events)
-
-    if not validation_ok:
-        st.warning("⚠️ '🧪 मिक्सिंग लैब' टैब में जाकर बताई गई समस्याएँ पहले ठीक करें, फिर Generate करें।")
+    validation_ok = True
+    total_visual_count = len(st.session_state["photo_clips"]) + len(st.session_state["video_clips"])
+    if total_visual_count == 0 or not inputs["story_script"].strip():
+        st.warning("⚠️ कृपया कम से कम एक फोटो/वीडियो जोड़ें और कहानी लिखें।")
+        validation_ok = False
+    if inputs["voiceover_mode"] == "custom" and inputs["custom_audio_path"] is None:
+        st.warning("⚠️ कस्टम-आवाज़ मोड के लिए ऑडियो अपलोड करें।")
+        validation_ok = False
 
     st.markdown('<div class="section-heading">📺 ड्राफ्ट प्लेयर (Quick Preview)</div>', unsafe_allow_html=True)
     if st.button("⚡ क्विक ड्राफ्ट रेंडर", key="draft_render_button") and validation_ok:

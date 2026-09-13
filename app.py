@@ -160,10 +160,11 @@ def render_user_guide():
     with st.expander("🦚 बाबा स्टूडियो यूज़र गाइड (User Guide)", expanded=False):
         st.markdown(
             """
-            **🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम):** फोटो/वीडियो अपलोड करें, "+ क्लिप जोड़ें" दबाएँ, फिर
-            हर क्लिप का क्रम-नंबर चुनें। फोटो हमेशा ५ सेकंड चलेगी (Ken Burns ज़ूम के साथ);
-            वीडियो पर अब कोई Start/End ट्रिम बॉक्स नहीं है — यह सिर्फ़ स्टोरेज है, हर वीडियो
-            अपनी पूरी लंबाई में इस्तेमाल होगा।
+            **🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम):** फोटो/वीडियो अपलोड करें — बस अपलोड होते ही
+            वे अपने-आप गोदाम में जमा हो जाती हैं, कोई अलग बटन दबाने की ज़रूरत नहीं। जिस क्रम
+            में फाइलें अपलोड होंगी, वीडियो में वही क्रम इस्तेमाल होगा (कोई क्रम-नंबर ड्रॉपडाउन
+            नहीं)। फोटो हमेशा ५ सेकंड चलेगी (Ken Burns ज़ूम के साथ); वीडियो पर कोई Start/End
+            ट्रिम बॉक्स नहीं है — हर वीडियो अपनी पूरी लंबाई में इस्तेमाल होगा।
 
             **🎵 म्यूज़िक ट्रैक:** भजन/संगीत अपलोड करें, "+ म्यूज़िक ट्रैक जोड़ें" दबाएँ।
             हर ट्रैक पर हमेशा "Full Mode / Part Mode" का चुनाव मिलेगा (फ़ाइलों की गिनती से
@@ -204,7 +205,7 @@ def _initialize_session_state():
         "last_pdf_name": None,
 
         # --- ट्रैक-लिस्ट्स (हर एंट्री खुद अपनी पूरी सेटिंग रखती है) ---
-        "visual_clips": [],   # [{"file", "order", "is_image", "start", "end"}]
+        "raw_visuals": [],    # [{"file", "is_image", "start", "end"}] — कोई "order" key नहीं, list का क्रम ही असली क्रम है
         "music_tracks": [],   # [{"file", "order", "mode", "instrumental_only", "background_music_mode", "volume", "start", "end"}]
         "sfx_files": [],      # यूज़र-अपलोड की गई कस्टम SFX फाइलें [UploadedFile,...]
         "sfx_events": [],     # [{"sfx_name", "start", "end", "volume"}]
@@ -223,92 +224,66 @@ def _initialize_session_state():
 
 
 # --------------------------------------------------------------
-# 4) 🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम — सिर्फ़ स्टोरेज, कोई टाइमर नहीं)
+# 4) 🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम — सीधा Direct Storage, कोई "क्लिप" मेथड नहीं)
 # --------------------------------------------------------------
 def render_visual_track():
     st.markdown('<div class="track-heading">🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम)</div>', unsafe_allow_html=True)
 
+    # ⚠️ यह ट्रैक अब सिर्फ़ एक सीधा "गोदाम" (Direct Storage) है — यहाँ कोई अलग "+ क्लिप जोड़ें"
+    # बटन नहीं है, कोई क्रम-संख्या (Order) ड्रॉपडाउन नहीं है, और कोई Start/End टाइमर भी नहीं।
+    # यूज़र एक साथ जितनी चाहे उतनी तस्वीरें/वीडियो इस मल्टी-अपलोडर से चुनता है, और वे अपलोड
+    # होते ही इसी रन में सीधे st.session_state["raw_visuals"] लिस्ट में जमा हो जाती हैं।
     pending_files = st.file_uploader(
-        label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें",
+        label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें — एक साथ कितनी भी फाइलें चुन सकते हैं",
         type=["jpg", "jpeg", "png", "mp4", "mov"],
         accept_multiple_files=True,
         key=f"visual_uploader_{st.session_state['visual_uploader_key']}",
     )
 
-    if st.button("➕ क्लिप जोड़ें", key="add_visual_clip_button"):
-        existing_names = {clip["file"].name for clip in st.session_state["visual_clips"]}
-        newly_added_count = 0
-        for pending_file in (pending_files or []):
-            if pending_file.name not in existing_names:
-                is_image_file = pending_file.type and pending_file.type.startswith("image")
-                st.session_state["visual_clips"].append({
-                    "file": pending_file,
-                    "order": len(st.session_state["visual_clips"]) + 1,
-                    "is_image": is_image_file,
-                    "start": 0.0,
-                    # ⚠️ फोटो के लिए ५ सेकंड फिक्स (Ken Burns ज़ूम); वीडियो के लिए 0.0 = "पूरी
-                    # क्लिप चलेगी" — ट्रिम UI हटा दी गई है, यह अब सिर्फ़ स्टोरेज ट्रैक है।
-                    "end": 5.0 if is_image_file else 0.0,
-                })
-                newly_added_count += 1
-        if newly_added_count > 0:
-            st.session_state["visual_uploader_key"] += 1   # अपलोडर खाली करना ताकि अगला बैच जोड़ा जा सके
-            st.rerun()
-        else:
-            st.warning("⚠️ कोई नई फाइल नहीं मिली — पहले ऊपर से फाइलें चुनें।")
+    existing_names = {item["file"].name for item in st.session_state["raw_visuals"]}
+    newly_added_count = 0
+    for pending_file in (pending_files or []):
+        if pending_file.name not in existing_names:
+            is_image_file = pending_file.type and pending_file.type.startswith("image")
+            st.session_state["raw_visuals"].append({
+                "file": pending_file,
+                "is_image": is_image_file,
+                "start": 0.0,
+                # ⚠️ फोटो के लिए ५ सेकंड फिक्स (Ken Burns ज़ूम); वीडियो के लिए 0.0 = "पूरी
+                # क्लिप चलेगी" — यूज़र को यह कहीं दिखाया या पूछा नहीं जाता, सिर्फ़ इंजन के
+                # लिए पीछे रखी गई फिक्स वैल्यू है।
+                "end": 5.0 if is_image_file else 0.0,
+            })
+            newly_added_count += 1
+    if newly_added_count > 0:
+        st.session_state["visual_uploader_key"] += 1   # अपलोडर खाली करना ताकि अगला बैच जोड़ा जा सके
+        st.rerun()
 
-    if not st.session_state["visual_clips"]:
-        st.info("अभी तक कोई क्लिप नहीं जोड़ी गई।")
+    if not st.session_state["raw_visuals"]:
+        st.info("अभी तक गोदाम में कोई फोटो/वीडियो जमा नहीं हुआ।")
         return []
 
-    sorted_clips = sorted(st.session_state["visual_clips"], key=lambda c: c["order"])
-    total_clips = len(sorted_clips)
+    # --- साफ़ प्रीव्यू सूची: सिर्फ़ थंबनेल + हटाने का ❌ — कोई क्रम/टाइमर ड्रॉपडाउन नहीं ---
+    st.caption(
+        f"🗄️ गोदाम में कुल {len(st.session_state['raw_visuals'])} फाइलें जमा हैं "
+        "(जिस क्रम में अपलोड हुईं, वही क्रम वीडियो में इस्तेमाल होगा)।"
+    )
 
-    for clip_index, clip in enumerate(sorted_clips):
-        with st.container():
+    preview_columns = st.columns(4)
+    for item_index, visual_item in enumerate(st.session_state["raw_visuals"]):
+        with preview_columns[item_index % 4]:
             st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            preview_col, order_col, time_col, remove_col = st.columns([2, 1, 2, 0.7])
-
-            with preview_col:
-                # ⚠️ यहाँ जान-बूझकर फाइल का नाम नहीं दिखाया गया (सिर्फ़ क्रम-संख्या) —
-                # ताकि लंबे/उलझाने वाले फ़ाइल-नामों से कन्फ्यूज़न न हो।
-                st.markdown(f'<span class="order-badge">🎬 विज़ुअल क्लिप {clip_index + 1}</span>', unsafe_allow_html=True)
-                if clip["is_image"]:
-                    st.image(clip["file"], use_container_width=True)
-                else:
-                    st.markdown("🎞️ *(वीडियो क्लिप)*")
-
-            with order_col:
-                def _on_order_change(target_clip=clip, widget_key=f"vorder_{clip['file'].name}_{clip_index}"):
-                    target_clip["order"] = st.session_state[widget_key]
-
-                st.selectbox(
-                    "क्रम", options=list(range(1, total_clips + 1)),
-                    index=clip["order"] - 1,
-                    key=f"vorder_{clip['file'].name}_{clip_index}", on_change=_on_order_change,
-                )
-
-            with time_col:
-                # ⚠️ यह ट्रैक अब सिर्फ़ "कच्चा माल गोदाम" (स्टोरेज) है — कोई Start/End
-                # टाइमर बॉक्स नहीं दिखेगा (यूज़र के फैसले अनुसार हटाया गया)।
-                if clip["is_image"]:
-                    st.caption("🖼️ फोटो — डिफ़ॉल्ट ५ सेकंड (Ken Burns ज़ूम)")
-                else:
-                    st.caption("🎞️ वीडियो — पूरी क्लिप इस्तेमाल होगी")
-
-            with remove_col:
-                st.write("")
-                if st.button("❌", key=f"remove_visual_{clip_index}"):
-                    st.session_state["visual_clips"].remove(clip)
-                    st.rerun()
-
+            if visual_item["is_image"]:
+                st.image(visual_item["file"], use_container_width=True)
+            else:
+                st.markdown("🎞️ *(वीडियो)*")
+            st.caption(f"#{item_index + 1}")
+            if st.button("❌", key=f"remove_visual_{item_index}"):
+                st.session_state["raw_visuals"].pop(item_index)
+                st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
 
-    all_orders = [c["order"] for c in sorted_clips]
-    if len(set(all_orders)) != len(all_orders):
-        st.warning("⚠️ दो या अधिक क्लिप्स को एक ही क्रम-संख्या मिली है।")
-
-    return sorted(sorted_clips, key=lambda c: c["order"])
+    return list(st.session_state["raw_visuals"])
 
 
 # --------------------------------------------------------------

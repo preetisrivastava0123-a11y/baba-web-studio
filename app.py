@@ -2,28 +2,27 @@
 ==============================================================
 बाबा जनरेटिव वेब स्टूडियो — ३-स्वतंत्र-ट्रैक संस्करण (No Tabs)
 ==============================================================
-यह वर्ज़न पुराने "visual_clips" (फोटो+वीडियो मिला हुआ डिब्बा) को
-पूरी तरह हटाकर ३ बिल्कुल अलग-अलग, स्वतंत्र डिब्बों में तोड़ता है:
+यह वर्ज़न ३ बिल्कुल अलग-अलग, स्वतंत्र डिब्बों में बना है:
 
-    १) st.session_state["video_clips"]  → केवल वीडियो क्लिप्स (MP4/MOV)
-    २) st.session_state["music_tracks"] → केवल म्यूज़िक/भजन (MP3 आदि)
+    १) st.session_state["visual_clips"] → फोटो + वीडियो, दोनों — क्रम (order) के अनुसार जुड़ते हैं
+    २) st.session_state["music_tracks"] → केवल म्यूज़िक/भजन (MP3 आदि) — वीडियो में बजने के लिए
     ३) st.session_state["sfx_events"]   → केवल SFX ध्वनियाँ (शंखनाद, डमरू)
 
 तीनों ट्रैक्स एक जैसे पैटर्न पर बने हैं ताकि १००% स्टेट-सेफ रहें:
 "+ जोड़ें" बटन दबाते ही लिस्ट में एक *खाली स्लॉट* (एक यूनीक
 slot_id के साथ) जुड़ जाता है। उसके बाद नीचे एक 'for loop' हर
 स्लॉट के लिए उसका बिल्कुल अपना, स्वतंत्र st.file_uploader +
-समय/वॉल्यूम इनपुट दिखाता है। हर विजेट की key हमेशा उस स्लॉट के
+समय/वॉल्यूम/क्रम इनपुट दिखाता है। हर विजेट की key हमेशा उस स्लॉट के
 अपरिवर्तनीय slot_id पर टिकी होती है (पोज़िशन/नाम पर नहीं), इसलिए
 कोई भी स्लॉट जोड़ें, हटाएँ या दोबारा-रन (rerun) करें — बाकी सभी
 स्लॉट्स की अपलोड की गई फाइलें और वैल्यूज़ कभी गायब नहीं होतीं।
+ट्रैक 1 का हर स्लॉट फोटो या वीडियो — दोनों में से कुछ भी ले सकता है;
+"क्रम संख्या" (order) यह तय करती है कि फाइनल वीडियो में कौन-सा
+विज़ुअल पहले और कौन-सा बाद में आएगा।
 
-⚠️ ज़रूरी मान्यता (Assumption): यूज़र के निर्देश में साफ़ लिखा है
-"तस्वीरों को भूल जाओ" — इसलिए इस अपग्रेड में ट्रैक 1 से फोटो/इमेज
-सपोर्ट पूरी तरह हटा दिया गया है, वह सिर्फ़ वीडियो क्लिप्स के लिए
-है। साथ ही यह फाइल मानती है कि engine.py का
+⚠️ ज़रूरी मान्यता (Assumption): यह फाइल मानती है कि engine.py का
 compile_cinematic_video() फंक्शन नीचे दिए kwargs
-(video_clips, music_tracks, sfx_events, outro_voice_active आदि)
+(visual_clips, music_tracks, sfx_events, outro_voice_active आदि)
 स्वीकार करता है। अगर पैरामीटर-नाम अलग हैं, तो सिर्फ़
 _build_engine_kwargs() फंक्शन बदलना होगा, बाकी कोड वैसा ही रहेगा।
 ==============================================================
@@ -187,9 +186,9 @@ def _initialize_session_state():
         "subtitle_font_size": 65,
         "voiceover_mode": "🕉️ बाबा एआई दिव्य आवाज़ (Edge-TTS)",
 
-        # --- 🎬 ट्रैक 1: स्वतंत्र वीडियो क्लिप्स (केवल MP4/MOV, कोई फोटो नहीं) ---
-        "video_clips": [],
-        "video_slot_counter": 0,
+        # --- 🎬 ट्रैक 1: स्वतंत्र विज़ुअल क्लिप्स (फोटो + वीडियो, क्रम अनुसार) ---
+        "visual_clips": [],
+        "visual_slot_counter": 0,
 
         # --- 🎵 ट्रैक 2: स्वतंत्र म्यूज़िक/भजन ट्रैक ---
         "music_tracks": [],
@@ -241,73 +240,100 @@ def _probe_video_duration_and_thumbnail(video_path, unique_tag):
 
 
 # ================================================================
-# 🎬 ट्रैक 1 — स्वतंत्र वीडियो क्लिप्स टाइमलाइन (केवल वीडियो, कोई फोटो नहीं)
+# 🎬 ट्रैक 1 — स्वतंत्र विज़ुअल टाइमलाइन (फोटो + वीडियो, दोनों — क्रम अनुसार)
 # ================================================================
-def render_video_track():
-    st.markdown('<div class="track-heading">🎬 ट्रैक 1: वीडियो क्लिप्स टाइमलाइन (Separate Video Track)</div>', unsafe_allow_html=True)
-    st.caption("यह पटरी केवल वीडियो क्लिप्स (MP4/MOV) के लिए है — म्यूज़िक या SFX से पूरी तरह स्वतंत्र और अलग।")
+def render_visual_track():
+    st.markdown('<div class="track-heading">🎬 ट्रैक 1: विज़ुअल टाइमलाइन (फोटो + वीडियो, क्रम अनुसार)</div>', unsafe_allow_html=True)
+    st.caption("यहाँ फोटो या वीडियो — दोनों में से कुछ भी अपलोड करें। जिस क्रम (नंबर) में स्लॉट सेट होंगे, वीडियो उसी क्रम में बनेगा। यह म्यूज़िक/SFX ट्रैक से पूरी तरह स्वतंत्र है।")
 
-    if st.button("➕ नया वीडियो क्लिप टाइमलाइन पर जोड़ें", key="add_video_slot_button"):
-        st.session_state["video_slot_counter"] += 1
-        new_slot_id = st.session_state["video_slot_counter"]
-        st.session_state["video_clips"].append({
+    if st.button("➕ नया विज़ुअल (फोटो/वीडियो) टाइमलाइन पर जोड़ें", key="add_visual_slot_button"):
+        st.session_state["visual_slot_counter"] += 1
+        new_slot_id = st.session_state["visual_slot_counter"]
+        st.session_state["visual_clips"].append({
             "slot_id": new_slot_id,
             "path": None,
             "name": None,
+            "is_image": None,
             "start": 0.0,
             "end": 5.0,
             "thumbnail": None,
+            "order": len(st.session_state["visual_clips"]) + 1,
         })
         st.rerun()
 
-    if not st.session_state["video_clips"]:
-        st.info("अभी तक कोई वीडियो-क्लिप स्लॉट नहीं जोड़ा गया। ऊपर वाला बटन दबाकर पहला स्लॉट जोड़ें।")
+    if not st.session_state["visual_clips"]:
+        st.info("अभी तक कोई विज़ुअल स्लॉट नहीं जोड़ा गया। ऊपर वाला बटन दबाकर पहला स्लॉट जोड़ें।")
         return
 
-    for slot in st.session_state["video_clips"]:
+    total_slots = len(st.session_state["visual_clips"])
+    slots_in_order = sorted(st.session_state["visual_clips"], key=lambda c: c["order"])
+
+    for slot in slots_in_order:
         slot_id = slot["slot_id"]
         with st.container():
             st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="video-badge">🎞️ वीडियो स्लॉट #{slot_id}</span>', unsafe_allow_html=True)
+            type_icon = "🖼️" if slot["is_image"] else ("🎞️" if slot["is_image"] is False else "➕")
+            st.markdown(f'<span class="order-badge">{type_icon} स्लॉट #{slot_id} — क्रम {slot["order"]}</span>', unsafe_allow_html=True)
 
-            uploader_col, trim_col, remove_col = st.columns([2, 2, 0.6])
+            uploader_col, order_col, trim_col, remove_col = st.columns([1.8, 1, 1.8, 0.6])
 
             with uploader_col:
                 uploaded_file = st.file_uploader(
-                    "इस स्लॉट के लिए वीडियो अपलोड करें (MP4, MOV)",
-                    type=["mp4", "mov"],
-                    key=f"video_file_{slot_id}",
+                    "फोटो या वीडियो अपलोड करें (PNG, JPG, MP4, MOV)",
+                    type=["png", "jpg", "jpeg", "mp4", "mov"],
+                    key=f"visual_file_{slot_id}",
                 )
                 if uploaded_file is not None and uploaded_file.name != slot["name"]:
+                    file_extension = os.path.splitext(uploaded_file.name)[1].lower()
+                    is_image = file_extension in (".png", ".jpg", ".jpeg")
                     saved_path = _save_uploaded_file_to_temp(uploaded_file)
-                    default_end, thumb = _probe_video_duration_and_thumbnail(saved_path, f"video_{slot_id}")
                     slot["path"] = saved_path
                     slot["name"] = uploaded_file.name
-                    slot["end"] = default_end
-                    slot["thumbnail"] = thumb
+                    slot["is_image"] = is_image
+                    if is_image:
+                        slot["start"], slot["end"], slot["thumbnail"] = 0.0, 5.0, saved_path
+                    else:
+                        default_end, thumb = _probe_video_duration_and_thumbnail(saved_path, f"visual_{slot_id}")
+                        slot["end"] = default_end
+                        slot["thumbnail"] = thumb
                 if slot["thumbnail"]:
                     st.image(slot["thumbnail"], use_container_width=True)
 
+            with order_col:
+                order_key = f"vorder_{slot_id}"
+
+                def _on_order_change(target_slot=slot, widget_key=order_key):
+                    target_slot["order"] = st.session_state[widget_key]
+
+                st.selectbox("क्रम संख्या", options=list(range(1, total_slots + 1)),
+                             index=min(slot["order"], total_slots) - 1,
+                             key=order_key, on_change=_on_order_change)
+
             with trim_col:
-                start_key = f"vstart_{slot_id}"
-                end_key = f"vend_{slot_id}"
+                if slot["is_image"]:
+                    st.caption("🖼️ फोटो — डिफ़ॉल्ट ड्यूरेशन: 5 सेकंड (फिक्स)")
+                elif slot["is_image"] is False:
+                    start_key = f"vstart_{slot_id}"
+                    end_key = f"vend_{slot_id}"
 
-                def _on_start_change(target_slot=slot, widget_key=start_key):
-                    target_slot["start"] = st.session_state[widget_key]
+                    def _on_start_change(target_slot=slot, widget_key=start_key):
+                        target_slot["start"] = st.session_state[widget_key]
 
-                def _on_end_change(target_slot=slot, widget_key=end_key):
-                    target_slot["end"] = st.session_state[widget_key]
+                    def _on_end_change(target_slot=slot, widget_key=end_key):
+                        target_slot["end"] = st.session_state[widget_key]
 
-                st.number_input("प्रकट होने का समय — Start Second", min_value=0.0, value=slot["start"],
-                                 step=0.5, key=start_key, on_change=_on_start_change)
-                st.number_input("हटने का समय — End Second", min_value=0.5, value=slot["end"],
-                                 step=0.5, key=end_key, on_change=_on_end_change)
+                    st.number_input("Start Second", min_value=0.0, value=slot["start"],
+                                     step=0.5, key=start_key, on_change=_on_start_change)
+                    st.number_input("End Second", min_value=0.5, value=slot["end"],
+                                     step=0.5, key=end_key, on_change=_on_end_change)
+                else:
+                    st.caption("ऊपर फोटो/वीडियो चुनें")
 
             with remove_col:
                 st.write("")
-                if st.button("❌", key=f"remove_video_slot_{slot_id}"):
-                    st.session_state["video_clips"] = [
-                        c for c in st.session_state["video_clips"] if c["slot_id"] != slot_id
+                if st.button("❌", key=f"remove_visual_slot_{slot_id}"):
+                    st.session_state["visual_clips"] = [
+                        c for c in st.session_state["visual_clips"] if c["slot_id"] != slot_id
                     ]
                     st.rerun()
 
@@ -663,14 +689,16 @@ def _generate_final_thumbnail(video_path):
 
 def _build_engine_kwargs(inputs, output_path):
     """
-    session_state में रखे तीनों स्वतंत्र ट्रैक्स (video_clips/
+    session_state में रखे तीनों स्वतंत्र ट्रैक्स (visual_clips/
     music_tracks/sfx_events) को सीधे engine.py के अपेक्षित फॉर्मेट
     में बदलकर kwargs dictionary बनाता है। तीनों लिस्ट पूरी तरह
-    अलग-अलग रहती हैं — कहीं भी आपस में नहीं मिलतीं।
+    अलग-अलग रहती हैं — कहीं भी आपस में नहीं मिलतीं। visual_clips
+    को "order" फ़ील्ड के हिसाब से क्रम में लगाकर भेजा जाता है।
     """
-    resolved_video_clips = [
-        {"path": c["path"], "start": c["start"], "end": c["end"]}
-        for c in st.session_state["video_clips"] if c["path"]
+    resolved_visual_clips = [
+        {"path": c["path"], "is_image": c["is_image"], "start": c["start"], "end": c["end"]}
+        for c in sorted(st.session_state["visual_clips"], key=lambda c: c["order"])
+        if c["path"]
     ]
     resolved_music_tracks = [
         {"path": m["path"], "instrumental_only": m["instrumental_only"],
@@ -684,7 +712,7 @@ def _build_engine_kwargs(inputs, output_path):
     ]
 
     return dict(
-        video_clips=resolved_video_clips,
+        visual_clips=resolved_visual_clips,
         music_tracks=resolved_music_tracks,
         master_music_volume=st.session_state["master_music_volume"],
         sfx_events=resolved_sfx_events,
@@ -706,11 +734,11 @@ def _validate_timeline():
     """Generate दबाने से पहले बुनियादी जाँच — कोई भी गंभीर समस्या हो तो रोकना।"""
     problems = []
 
-    video_slots_with_file = [c for c in st.session_state["video_clips"] if c["path"]]
-    if not video_slots_with_file:
-        problems.append("❌ ट्रैक 1 में कम-से-कम एक वीडियो क्लिप अपलोड करें।")
-    for clip in video_slots_with_file:
-        if clip["end"] <= clip["start"]:
+    visual_slots_with_file = [c for c in st.session_state["visual_clips"] if c["path"]]
+    if not visual_slots_with_file:
+        problems.append("❌ ट्रैक 1 में कम-से-कम एक फोटो/वीडियो विज़ुअल अपलोड करें।")
+    for clip in visual_slots_with_file:
+        if clip["is_image"] is False and clip["end"] <= clip["start"]:
             problems.append(f"❌ '{clip['name']}' में End Second, Start Second से बड़ा नहीं है।")
 
     for event in st.session_state["sfx_events"]:
@@ -737,7 +765,7 @@ def main():
         st.warning(f"⚠️ Playwright Chromium समस्या: {playwright_error}")
 
     # --- ३ बिल्कुल स्वतंत्र ट्रैक्स — एक के नीचे एक, कोई tabs नहीं ---
-    render_video_track()
+    render_visual_track()
     st.divider()
     render_music_track()
     st.divider()

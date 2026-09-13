@@ -10,3 +10,4 @@ setuptools
 audioop-lts
 pypdf
 python-docx
+requests

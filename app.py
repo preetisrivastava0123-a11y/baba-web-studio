@@ -3,17 +3,24 @@
 बाबा जनरेटिव वेब स्टूडियो — ३-ट्रैक नॉन-लीनियर एडिटर (Pro Edition)
 ==============================================================
 इस वर्ज़न में तीन स्वतंत्र ट्रैक्स (लेयर्स) हैं:
-  🎬 विज़ुअल ट्रैक   — फोटो/वीडियो, क्रम + Start/End (वीडियो पर ही)
-  🎵 म्यूज़िक ट्रैक   — भजन, क्रम, इंस्ट्रूमेंटल-टॉगल, वॉल्यूम, मास्टर-वॉल्यूम
+  🎬 विज़ुअल ट्रैक   — फोटो/वीडियो, क्रम (सिर्फ़ स्टोरेज — कोई Start/End टाइमर नहीं)
+  🎵 म्यूज़िक ट्रैक   — भजन, क्रम, Full/Part मोड, इंस्ट्रूमेंटल-टॉगल, बैकग्राउंड-मोड, वॉल्यूम, मास्टर-वॉल्यूम
   🔊 SFX ट्रैक      — कस्टम ध्वनि अपलोड + ग्लोबल-सर्च हुक + टाइम-इवेंट्स
 
-⚠️ दो ईमानदार तकनीकी सीमाएँ (कृपया चैट में ऊपर का नोट भी पढ़ें):
+⚠️ ईमानदार तकनीकी सीमाएँ (कृपया चैट में ऊपर का नोट भी पढ़ें):
   - "लाइव ड्राफ्ट प्रीव्यू" असल में एक अलग "⚡ क्विक ड्राफ्ट रेंडर" बटन है,
     जो कम क्वालिटी में वाकई रेंडर करके दिखाता है — टाइप करते ही अपने-आप
     बदलने वाला जादुई प्रीव्यू तकनीकी रूप से संभव नहीं है (MoviePy को
     रेंडर तो करना ही पड़ेगा)।
   - ग्लोबल साउंड-सर्च के लिए Freesound API-key चाहिए (st.secrets में डालें),
     बिना key के सिर्फ़ एक चेतावनी दिखेगी, क्रैश नहीं होगा।
+  - "बैकग्राउंड म्यूज़िक मोड" टॉगल अभी सिर्फ़ एक UI-फ्लैग है जो inputs/kwargs में
+    पास होता है — असली ऑटो-डकिंग (नैरेशन के दौरान वॉल्यूम अपने-आप धीमा होना)
+    engine.py में अगले चरण में जोड़ी जाएगी। फिलहाल यह no-op है (TODO)।
+  - विज़ुअल ट्रैक अब सिर्फ़ "कच्चा माल गोदाम" (स्टोरेज) है — फोटो/वीडियो पर कोई
+    Start/End ट्रिम बॉक्स नहीं दिखता। फोटो हमेशा ५ सेकंड (Ken Burns ज़ूम) चलेगी;
+    वीडियो अपनी पूरी लंबाई में इस्तेमाल होगा (start=0.0, end=0.0 = "पूरी क्लिप",
+    ठीक वैसा ही कन्वेंशन जैसा म्यूज़िक ट्रैक के Full-Mode में पहले से इस्तेमाल होता है)।
 ==============================================================
 """
 
@@ -153,14 +160,17 @@ def render_user_guide():
     with st.expander("🦚 बाबा स्टूडियो यूज़र गाइड (User Guide)", expanded=False):
         st.markdown(
             """
-            **🎬 विज़ुअल ट्रैक:** फोटो/वीडियो अपलोड करें, "+ क्लिप जोड़ें" दबाएँ, फिर
+            **🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम):** फोटो/वीडियो अपलोड करें, "+ क्लिप जोड़ें" दबाएँ, फिर
             हर क्लिप का क्रम-नंबर चुनें। फोटो हमेशा ५ सेकंड चलेगी (Ken Burns ज़ूम के साथ);
-            वीडियो पर आप Start/End Second से ट्रिम कर सकते हैं।
+            वीडियो पर अब कोई Start/End ट्रिम बॉक्स नहीं है — यह सिर्फ़ स्टोरेज है, हर वीडियो
+            अपनी पूरी लंबाई में इस्तेमाल होगा।
 
             **🎵 म्यूज़िक ट्रैक:** भजन/संगीत अपलोड करें, "+ म्यूज़िक ट्रैक जोड़ें" दबाएँ।
-            सिर्फ़ १ भजन हो तो वह पूरा (Full Mode) बजेगा; एक से ज़्यादा हों तो हर एक का
-            Start/End तय करें। हर भजन पर अलग वॉल्यूम + "केवल इंस्ट्रूमेंटल" टॉगल है, और
-            नीचे एक मास्टर-वॉल्यूम स्लाइडर पूरे संगीत को नियंत्रित करता है।
+            हर ट्रैक पर हमेशा "Full Mode / Part Mode" का चुनाव मिलेगा (फ़ाइलों की गिनती से
+            कोई मतलब नहीं) — Part Mode चुनने पर ही Start/End Second के बॉक्स खुलेंगे। हर भजन पर
+            अलग वॉल्यूम + "केवल इंस्ट्रूमेंटल" टॉगल + "बैकग्राउंड म्यूज़िक मोड" टॉगल है
+            (⚠️ ऑटो-डकिंग बैकएंड अभी engine.py में पेंडिंग/TODO है), और नीचे एक मास्टर-वॉल्यूम
+            स्लाइडर पूरे संगीत को नियंत्रित करता है।
 
             **🔊 SFX ट्रैक:** अपनी ध्वनियाँ (शंख, डमरू, चिड़ियाँ) अपलोड करें, या ग्लोबल-सर्च
             बॉक्स से मुफ़्त ध्वनि खोजें। फिर "+ SFX ध्वनि जोड़ें" से तय करें कि वह ध्वनि किस
@@ -195,7 +205,7 @@ def _initialize_session_state():
 
         # --- ट्रैक-लिस्ट्स (हर एंट्री खुद अपनी पूरी सेटिंग रखती है) ---
         "visual_clips": [],   # [{"file", "order", "is_image", "start", "end"}]
-        "music_tracks": [],   # [{"file", "order", "instrumental_only", "volume"}]
+        "music_tracks": [],   # [{"file", "order", "mode", "instrumental_only", "background_music_mode", "volume", "start", "end"}]
         "sfx_files": [],      # यूज़र-अपलोड की गई कस्टम SFX फाइलें [UploadedFile,...]
         "sfx_events": [],     # [{"sfx_name", "start", "end", "volume"}]
         "master_music_volume": 0.8,
@@ -213,10 +223,10 @@ def _initialize_session_state():
 
 
 # --------------------------------------------------------------
-# 4) 🎬 विज़ुअल ट्रैक
+# 4) 🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम — सिर्फ़ स्टोरेज, कोई टाइमर नहीं)
 # --------------------------------------------------------------
 def render_visual_track():
-    st.markdown('<div class="track-heading">🎬 विज़ुअल ट्रैक (फोटो/वीडियो लेयर)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="track-heading">🎬 विज़ुअल ट्रैक (कच्चा माल गोदाम)</div>', unsafe_allow_html=True)
 
     pending_files = st.file_uploader(
         label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें",
@@ -236,7 +246,9 @@ def render_visual_track():
                     "order": len(st.session_state["visual_clips"]) + 1,
                     "is_image": is_image_file,
                     "start": 0.0,
-                    "end": 5.0,   # फोटो के लिए यही डिफ़ॉल्ट/फिक्स रहेगा
+                    # ⚠️ फोटो के लिए ५ सेकंड फिक्स (Ken Burns ज़ूम); वीडियो के लिए 0.0 = "पूरी
+                    # क्लिप चलेगी" — ट्रिम UI हटा दी गई है, यह अब सिर्फ़ स्टोरेज ट्रैक है।
+                    "end": 5.0 if is_image_file else 0.0,
                 })
                 newly_added_count += 1
         if newly_added_count > 0:
@@ -277,21 +289,12 @@ def render_visual_track():
                 )
 
             with time_col:
-                # ⚠️ फोटो पर Start/End बॉक्स छुपे रहते हैं — फिक्स ५ सेकंड डिफ़ॉल्ट
+                # ⚠️ यह ट्रैक अब सिर्फ़ "कच्चा माल गोदाम" (स्टोरेज) है — कोई Start/End
+                # टाइमर बॉक्स नहीं दिखेगा (यूज़र के फैसले अनुसार हटाया गया)।
                 if clip["is_image"]:
                     st.caption("🖼️ फोटो — डिफ़ॉल्ट ५ सेकंड (Ken Burns ज़ूम)")
                 else:
-                    start_col, end_col = st.columns(2)
-                    with start_col:
-                        def _on_start_change(target_clip=clip, widget_key=f"vstart_{clip['file'].name}_{clip_index}"):
-                            target_clip["start"] = st.session_state[widget_key]
-                        st.number_input("Start Sec", min_value=0.0, value=clip["start"], step=0.5,
-                                         key=f"vstart_{clip['file'].name}_{clip_index}", on_change=_on_start_change)
-                    with end_col:
-                        def _on_end_change(target_clip=clip, widget_key=f"vend_{clip['file'].name}_{clip_index}"):
-                            target_clip["end"] = st.session_state[widget_key]
-                        st.number_input("End Sec", min_value=0.5, value=clip["end"], step=0.5,
-                                         key=f"vend_{clip['file'].name}_{clip_index}", on_change=_on_end_change)
+                    st.caption("🎞️ वीडियो — पूरी क्लिप इस्तेमाल होगी")
 
             with remove_col:
                 st.write("")
@@ -309,7 +312,7 @@ def render_visual_track():
 
 
 # --------------------------------------------------------------
-# 5) 🎵 म्यूज़िक ट्रैक
+# 5) 🎵 म्यूज़िक ट्रैक (Full/Part मोड हमेशा, बैकग्राउंड-मोड + इंस्ट्रूमेंटल टॉगल)
 # --------------------------------------------------------------
 def render_music_track():
     st.markdown('<div class="track-heading">🎵 म्यूज़िक ट्रैक (बैकग्राउंड भजन लेयर)</div>', unsafe_allow_html=True)
@@ -321,7 +324,7 @@ def render_music_track():
         key=f"music_uploader_{st.session_state['music_uploader_key']}",
     )
 
-    if st.button("➕ म्यूज़िक ट्रैक जोड़ें", key="add_music_track_button"):
+    if st.button("➕ नया म्यूज़िक/भजन ट्रैक जोड़ें", key="add_music_track_button"):
         existing_names = {track["file"].name for track in st.session_state["music_tracks"]}
         newly_added_count = 0
         for pending_file in (pending_music_files or []):
@@ -329,10 +332,12 @@ def render_music_track():
                 st.session_state["music_tracks"].append({
                     "file": pending_file,
                     "order": len(st.session_state["music_tracks"]) + 1,
+                    "mode": "full",                  # "full" | "part" — अब हमेशा यूज़र खुद चुनेगा
                     "instrumental_only": False,
+                    "background_music_mode": False,  # ⚠️ TODO(engine.py): ऑटो-डकिंग अभी लागू नहीं, सिर्फ़ फ्लैग है
                     "volume": 0.8,
                     "start": 0.0,
-                    "end": 0.0,   # 0.0 = "Full Mode" (पूरा गाना)
+                    "end": 0.0,   # 0.0 = "Full Mode" जब mode=="part" हो तभी असर में आएगा
                 })
                 newly_added_count += 1
         if newly_added_count > 0:
@@ -347,18 +352,41 @@ def render_music_track():
 
     sorted_tracks = sorted(st.session_state["music_tracks"], key=lambda t: t["order"])
     total_tracks = len(sorted_tracks)
-    is_multi_track_mode = total_tracks > 1   # ⚠️ एक से ज़्यादा हों तभी Trimmer एक्टिवेट होगा
 
     for track_index, track in enumerate(sorted_tracks):
         with st.container():
             st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            name_col, order_col, mode_col, volume_col, remove_col = st.columns([2, 1, 1.6, 1.4, 0.6])
+            name_col, order_col, mode_col, bgmusic_col, instr_col, volume_col, remove_col = st.columns(
+                [1.6, 0.8, 1.8, 1.3, 1.3, 1.3, 0.6]
+            )
 
             with name_col:
                 # ⚠️ यहाँ भी जान-बूझकर फाइल का नाम नहीं दिखाया गया — सिर्फ़ क्रम-संख्या,
                 # ताकि म्यूज़िक ट्रैक की लिस्ट साफ़ और बिना-कन्फ्यूज़न वाली रहे।
                 st.markdown(f'<span class="music-badge">🎶 म्यूज़िक ट्रैक {track_index + 1}</span>', unsafe_allow_html=True)
-                if is_multi_track_mode:
+
+            with order_col:
+                def _on_morder_change(target_track=track, widget_key=f"morder_{track['file'].name}_{track_index}"):
+                    target_track["order"] = st.session_state[widget_key]
+                st.selectbox("क्रम", options=list(range(1, total_tracks + 1)), index=track["order"] - 1,
+                             key=f"morder_{track['file'].name}_{track_index}", on_change=_on_morder_change)
+
+            with mode_col:
+                # ⚠️ अब हर ट्रैक पर हमेशा Full/Part Mode का चुनाव दिखेगा — फ़ाइलों की गिनती
+                # (1 या 2+) से अब कोई मतलब नहीं, यूज़र खुद अपनी मर्ज़ी से चुनेगा।
+                mode_labels = {"full": "🔁 Full Mode", "part": "✂️ Part Mode (Trim)"}
+
+                def _on_mode_change(target_track=track, widget_key=f"mmode_{track['file'].name}_{track_index}"):
+                    target_track["mode"] = st.session_state[widget_key]
+
+                st.radio(
+                    "मोड चुनें", options=["full", "part"], format_func=lambda m: mode_labels[m],
+                    index=0 if track["mode"] == "full" else 1,
+                    key=f"mmode_{track['file'].name}_{track_index}", on_change=_on_mode_change,
+                    label_visibility="collapsed",
+                )
+
+                if track["mode"] == "part":
                     trim_start_col, trim_end_col = st.columns(2)
                     with trim_start_col:
                         def _on_mstart_change(target_track=track, widget_key=f"mstart_{track['file'].name}_{track_index}"):
@@ -371,15 +399,21 @@ def render_music_track():
                         st.number_input("End Sec (0=पूरा)", min_value=0.0, value=track["end"], step=1.0,
                                          key=f"mend_{track['file'].name}_{track_index}", on_change=_on_mend_change)
                 else:
-                    st.caption("🔁 Full Mode (पूरा भजन बजेगा — सिर्फ़ १ ही ट्रैक है)")
+                    st.caption("🔁 पूरा भजन बिना कटे बजेगा")
 
-            with order_col:
-                def _on_morder_change(target_track=track, widget_key=f"morder_{track['file'].name}_{track_index}"):
-                    target_track["order"] = st.session_state[widget_key]
-                st.selectbox("क्रम", options=list(range(1, total_tracks + 1)), index=track["order"] - 1,
-                             key=f"morder_{track['file'].name}_{track_index}", on_change=_on_morder_change)
+            with bgmusic_col:
+                # ⚠️ TODO(engine.py): असली ऑटो-डकिंग (बाबा की कहानी बोलते समय वॉल्यूम अपने-आप
+                # धीमा और रुकने पर वापस तेज़) अभी engine.py में लागू नहीं है। यह टॉगल अभी सिर्फ़
+                # फ्लैग को inputs/kwargs के ज़रिए आगे पास करता है — बैकएंड लॉजिक अगला चरण है।
+                def _on_bgmusic_change(target_track=track, widget_key=f"bgmusic_{track['file'].name}_{track_index}"):
+                    target_track["background_music_mode"] = st.session_state[widget_key]
+                st.toggle(
+                    "बैकग्राउंड म्यूज़िक मोड", value=track["background_music_mode"],
+                    key=f"bgmusic_{track['file'].name}_{track_index}", on_change=_on_bgmusic_change,
+                    help="⚠️ TODO: ऑटो-डकिंग इंजन अभी engine.py में लागू नहीं — फ़िलहाल सिर्फ़ फ्लैग पास होता है",
+                )
 
-            with mode_col:
+            with instr_col:
                 def _on_instrumental_change(target_track=track, widget_key=f"instr_{track['file'].name}_{track_index}"):
                     target_track["instrumental_only"] = st.session_state[widget_key]
                 st.toggle("केवल इंस्ट्रूमेंटल", value=track["instrumental_only"],
@@ -656,6 +690,9 @@ def _resolve_all_track_paths(visual_clips, music_tracks, sfx_files, sfx_events):
 
     resolved_music_tracks = [{
         "path": _save_uploaded_file_to_temp(m["file"]), "instrumental_only": m["instrumental_only"],
+        # ⚠️ TODO(engine.py): यह फ्लैग अभी सिर्फ़ आगे पास हो रहा है — असली ऑटो-डकिंग लॉजिक
+        # engine.py में अगले चरण में लिखी जाएगी।
+        "background_music_mode": m["background_music_mode"],
         "volume": m["volume"], "start": m["start"], "end": m["end"],
     } for m in music_tracks]
 

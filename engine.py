@@ -464,12 +464,19 @@ def _compile_standard_mode(
         canvas_width=target_width, text_color=sub_color, font_size_px=sub_size,
     )
 
-    # चरण ७: क्लाइमेक्स लेयर्स (मयूर पंख + आउट्रो) — हमेशा आख़िरी 5.5 सेकंड में
-    climax_layers = (
-        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
-        if outro_voice_active else []
-    )
+   # चरण ७: क्लाइमेक्स विज़ुअल लेयर्स + AI आउट्रो वॉइस
+climax_layers = []
+outro_audio_layer = None
 
+if outro_voice_active:
+    climax_layers, outro_audio_layer = create_climax_layer(
+        video_duration=total_video_duration,
+        outro_text=outro_text,
+        aspect_ratio=aspect_ratio,
+        voiceover_mode=voiceover_mode,
+        canvas_width=target_width,
+        canvas_height=target_height
+    )
     # --------------------------------------------------------------
     # चरण ८: सभी लेयर्स को फ़्लैट और सेफ़ करना (List + Tuple दोनों का फ़िक्स)
     # --------------------------------------------------------------

@@ -396,8 +396,8 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
 
     subtitle_clip = (
         ImageClip(rendered_subtitle_png_path)
-        .with_duration(video_duration)
-        .with_position(("center", "bottom"))
+    .with_duration(video_duration)
+    .with_position(lambda t: ('center', 'bottom'))
     )
     return subtitle_clip
 

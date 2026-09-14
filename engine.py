@@ -495,8 +495,10 @@ def _compile_standard_mode(
         _extract_only_clips(item)
 
     final_composed_video = CompositeVideoClip(
-        flat_layers, size=(target_width, target_height),
+        flat_layers, size=(target_width, target_height)
     ).with_duration(total_video_duration)
+
+    return final_composed_video, total_video_duration
 
 # ================================================================
 # 🔄 एआई लाइव लूप स्टूडियो मोड (mode == "live_loop") के हेल्पर्स

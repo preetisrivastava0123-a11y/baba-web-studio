@@ -1,24 +1,11 @@
 """
 ==============================================================
-बाबा जनरेटिव वेब स्टूडियो — climax.py (प्रोसीजरल पार्टिकल-ब्लास्ट संस्करण)
+बाबा जनरेटिव वेब स्टूडियो — climax.py (शुद्ध हिंदी + पार्टिकल 3D आउट्रो)
 ==============================================================
-🆕 इस बार क्या बदला (cloud_media_director_studio.py के particle_burst_clip()
-से सीखा गया तरीका):
-
-पुराना तरीका (हटाया गया): पार्टिकल-ब्लास्ट के लिए 6 अलग PNG फ़ाइलें
-(फूल/गुब्बारे/आइकन) ज़रूरी थीं — अगर वे प्रोजेक्ट में मौजूद नहीं होतीं
-(ज़्यादातर मामलों में नहीं होंगी), तो ब्लास्ट पूरी तरह चुपचाप स्किप हो
-जाता था। यूज़र को कभी पार्टिकल-इफ़ेक्ट दिखता ही नहीं था।
-
-नया तरीका (procedural, कोई asset-फ़ाइल ज़रूरी नहीं): हर पार्टिकल सीधे कोड
-से एक रंगीन गोल बिंदु (PIL ImageDraw.ellipse) के रूप में बनाया जाता है —
-random रंग, random गति, random कोण। एक अलग "mask" फ्रेम-जनरेटर पारदर्शिता
-(fade-out) संभालता है। इस तरह पार्टिकल-ब्लास्ट **हमेशा** दिखेगा, चाहे
-प्रोजेक्ट में कोई भी असेट-फ़ाइल हो या न हो।
-
-बाकी सब कुछ (मयूर पंख, सब्सक्राइब-मैसेज, आउट्रो-टेक्स्ट, MoviePy 2.x
-सिंटैक्स, aspect-ratio-अवेयर लेआउट, ऑटो-स्किप-गार्ड) बिल्कुल पहले जैसा
-बरकरार है — सिर्फ़ पार्टिकल-सिस्टम बदला है।
+[मॉड्यूल का काम]:
+- मयूर पंख न होने पर भी स्वतंत्र पार्टिकल-ब्लास्ट एनीमेशन रेंडर करना।
+- 'चैनल को लाइक और सब्सक्राइब करें 🔔' का शुद्ध देवनागरी हिंदी कार्ड बनाना।
+- edge-tts के माध्यम से आख़िरी 10/5.5 सेकंड के लिए AI हिंदी वॉइसओवर ऑडियो तैयार करना।
 ==============================================================
 """
 
@@ -26,37 +13,39 @@ import math
 import os
 import random
 import tempfile
+import asyncio
 
 import numpy as np
 from PIL import Image, ImageDraw
-from moviepy import ImageClip, VideoClip
+from moviepy import ImageClip, VideoClip, AudioFileClip
 
 from subtitle import render_subtitle_html_to_png
 
 
 # --------------------------------------------------------------
-# सेटिंग्स (Constants)
+# ⚙️ 1. सेटिंग्स और कांस्टेंट्स (Constants)
 # --------------------------------------------------------------
 PEACOCK_FEATHER_IMAGE = "peacock_feather.png"
-CLIMAX_DURATION_SECONDS = 5.5   # डिफ़ॉल्ट — अगर CTA आवाज़ इससे लंबी हो तो engine.py इसे बढ़ा सकता है
+CLIMAX_DURATION_SECONDS = 5.5  # डिफ़ॉल्ट आउट्रो समय (सेकंड में)
 
 WAVE_FREQUENCY = 4.5
 WAVE_AMPLITUDE_PX = 15
 
-SUBSCRIBE_MESSAGE = "Channel ko like, subscribe karein"
+# शुद्ध देवनागरी हिंदी सब्सक्राइब संदेश
+SUBSCRIBE_MESSAGE = "चैनल को लाइक और सब्सक्राइब करें 🔔"
 GOLD_COLOR = "#FFD700"
 WHITE_COLOR = "#FFFFFF"
 
-# --- 🎈 प्रोसीजरल पार्टिकल-ब्लास्ट सेटिंग्स (अब कोई PNG फ़ाइल ज़रूरी नहीं) ---
-PARTICLE_COUNT = 90                 # कुल कितने कण उड़ेंगे
-PARTICLE_MIN_SPEED_PX = 220         # हर पार्टिकल की गति की रेंज (px/sec)
+# 🎈 प्रोसीजरल पार्टिकल-ब्लास्ट सेटिंग्स (बिना किसी बाहरी इमेज फ़ाइल के)
+PARTICLE_COUNT = 90
+PARTICLE_MIN_SPEED_PX = 220
 PARTICLE_MAX_SPEED_PX = 620
 PARTICLE_MIN_SIZE_PX = 4
 PARTICLE_MAX_SIZE_PX = 10
 PARTICLE_COLOR_CHOICES = [
     (255, 215, 0),    # सुनहरा
     (255, 255, 255),  # सफ़ेद
-    (0, 255, 204),    # नीयन-फ़िरोज़ी (like/subscribe जैसा पॉप रंग)
+    (0, 255, 204),    # नीयन-फ़िरोज़ी
     (255, 105, 180),  # गुलाबी
 ]
 
@@ -70,13 +59,15 @@ TEMP_PNG_DIR = os.path.join(tempfile.gettempdir(), "baba_climax_pngs")
 
 
 def _resolve_layout_settings(aspect_ratio: str):
+    """[काम]: एस्पेक्ट रेशियो (9:16 या 16:9) के हिसाब से चौड़ाई और फ़ॉन्ट स्केल तय करना"""
     return FORMAT_LAYOUT_SETTINGS.get(aspect_ratio, FORMAT_LAYOUT_SETTINGS[DEFAULT_ASPECT_RATIO])
 
 
 # --------------------------------------------------------------
-# 🔐 ऑटो-स्किप गार्ड #1 — पंख (या कोई भी इमेज-फ़ाइल) सुरक्षित ढंग से लोड करना
+# 🔐 2. ऑटो-स्किप गार्ड #1 — पंख सुरक्षित ढंग से लोड करना
 # --------------------------------------------------------------
 def _safe_load_image_clip(path: str, climax_start_time: float, climax_duration: float):
+    """[काम]: पंख की इमेज लोड करना; न मिलने पर क्रैश होने से बचाकर None लौटाना"""
     if not path:
         return None
     try:
@@ -90,9 +81,10 @@ def _safe_load_image_clip(path: str, climax_start_time: float, climax_duration: 
 
 
 # --------------------------------------------------------------
-# 🔐 ऑटो-स्किप गार्ड #2 — टेक्स्ट को PNG में बदलकर सुरक्षित ImageClip बनाना
+# 🔐 3. ऑटो-स्किप गार्ड #2 — हिंदी टेक्स्ट से PNG बनाकर ImageClip बनाना
 # --------------------------------------------------------------
 def _text_to_image_clip(text, output_filename, font_size, color, climax_start_time, climax_duration, canvas_width):
+    """[काम]: HTML/PIL के ज़रिए हिंदी टेक्स्ट की पारदर्शी PNG इमेज रेंडर करना"""
     if not text or not text.strip():
         return None
     try:
@@ -109,9 +101,10 @@ def _text_to_image_clip(text, output_filename, font_size, color, climax_start_ti
 
 
 # --------------------------------------------------------------
-# 1) लहराता हुआ मयूर पंख
+# 🌊 4. लहराता हुआ मयूर पंख
 # --------------------------------------------------------------
 def _build_feather_clip(climax_start_time, climax_duration, canvas_width):
+    """[काम]: मयूर पंख को स्क्रीन पर वेव मोशन (लहराता हुआ) देना"""
     feather_clip = _safe_load_image_clip(PEACOCK_FEATHER_IMAGE, climax_start_time, climax_duration)
     if feather_clip is None:
         return None, 0
@@ -127,21 +120,15 @@ def _build_feather_clip(climax_start_time, climax_duration, canvas_width):
 
 
 # --------------------------------------------------------------
-# 1.1) 🎈 प्रोसीजरल पार्टिकल-ब्लास्ट — cloud_media_director_studio.py से पोर्ट किया गया तरीका
+# 🎈 5. प्रोसीजरल पार्टिकल-ब्लास्ट (स्वतंत्र पार्टिकल एनीमेशन)
 # --------------------------------------------------------------
 def _build_particle_burst_clip(climax_start_time: float, climax_duration: float, canvas_width: int, canvas_height: int):
     """
-    मयूर पंख के केंद्र से फूटने वाला "like/subscribe" जैसा रंगीन कण-विस्फोट —
-    कोई भी PNG फ़ाइल ज़रूरी नहीं, सब कुछ कोड से (PIL ImageDraw.ellipse) बनता है।
-    हर कण का अपना random कोण/गति/रंग/साइज़ होता है, और समय के साथ बाहर की
-    ओर उड़ते हुए धीरे-धीरे पारदर्शी (fade-out) होता जाता है।
-
-    यह हमेशा दिखेगा — किसी असेट-फ़ाइल पर निर्भर नहीं, इसलिए कभी "चुपचाप
-    स्किप" नहीं होगा (पुराने PNG-आधारित तरीके के उलट)।
+    [काम]: स्क्रीन के केंद्र से फूटने वाले रंगीन कणों (Particles) का एनीमेशन बनाना।
+    यह कोड से (PIL) बनता है, इसलिए मयूर पंख हो या न हो, यह ब्लास्ट हमेशा दिखेगा।
     """
     center_x, center_y = canvas_width // 2, canvas_height // 2
 
-    # हर पार्टिकल के लिए एक बार random गुण तय करना (पूरी क्लिप में स्थिर रहेंगे)
     particles = []
     for _ in range(PARTICLE_COUNT):
         particles.append({
@@ -152,7 +139,6 @@ def _build_particle_burst_clip(climax_start_time: float, climax_duration: float,
         })
 
     def make_color_frame(t):
-        """इस पल (t) पर सभी पार्टिकल्स की रंगीन तस्वीर (RGB) बनाना।"""
         frame_image = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
         draw_context = ImageDraw.Draw(frame_image)
         travel_fraction = t / max(climax_duration, 0.001)
@@ -170,7 +156,6 @@ def _build_particle_burst_clip(climax_start_time: float, climax_duration: float,
         return np.array(frame_image.convert("RGB"))
 
     def make_mask_frame(t):
-        """इसी पल पर पारदर्शिता-मास्क (सिर्फ़ अल्फ़ा-चैनल, 0.0-1.0) बनाना।"""
         mask_image = Image.new("L", (canvas_width, canvas_height), 0)
         draw_context = ImageDraw.Draw(mask_image)
         travel_fraction = t / max(climax_duration, 0.001)
@@ -195,9 +180,10 @@ def _build_particle_burst_clip(climax_start_time: float, climax_duration: float,
 
 
 # --------------------------------------------------------------
-# 2) सुनहरा "Subscribe" संदेश
+# 🔔 6. शुद्ध हिंदी "Subscribe" संदेश क्लिप
 # --------------------------------------------------------------
 def _build_subscribe_image_clip(climax_start_time, climax_duration, feather_height, canvas_width, canvas_height, font_scale):
+    """[काम]: 'चैनल को लाइक और सब्सक्राइब करें 🔔' का हिंदी टेक्स्ट रेंडर करना और पोजीशन सेट करना"""
     subscribe_clip = _text_to_image_clip(
         text=SUBSCRIBE_MESSAGE, output_filename="subscribe_message.png",
         font_size=int(45 * font_scale), color=GOLD_COLOR,
@@ -205,72 +191,87 @@ def _build_subscribe_image_clip(climax_start_time, climax_duration, feather_heig
     )
     if subscribe_clip is None:
         return None
-    vertical_gap = (feather_height / 2) + 20
+    
+    # पंख न होने पर भी टेक्स्ट को स्क्रीन के सही हिस्से पर रखना
+    safe_offset = (feather_height / 2) if feather_height > 0 else 40
+    vertical_gap = safe_offset + 20
     y_fraction = 0.5 + (vertical_gap / canvas_height)
     return subscribe_clip.with_position(lambda t: [0.5, y_fraction], relative=True)
 
 
 # --------------------------------------------------------------
-# 3) यूज़र का outro_text
+# 📰 7. यूज़र का आउट्रो मैसेज स्ट्रिप
 # --------------------------------------------------------------
 def _build_outro_note_image_clip(climax_start_time, climax_duration, feather_height, outro_text, canvas_width, canvas_height, font_scale):
+    """[काम]: यूज़र द्वारा दिए गए आउट्रो हिंदी मैसेज की न्यूज़-पट्टी नीचे दिखाना"""
+    if not outro_text or not outro_text.strip():
+        return None
+
     outro_note_clip = _text_to_image_clip(
-        text=outro_text, output_filename="outro_note.png",
+        text=f"📰 {outro_text.strip()}", output_filename="outro_note.png",
         font_size=int(35 * font_scale), color=WHITE_COLOR,
         climax_start_time=climax_start_time, climax_duration=climax_duration, canvas_width=canvas_width,
     )
     if outro_note_clip is None:
         return None
-    vertical_gap = (feather_height / 2) + 90
+
+    safe_offset = (feather_height / 2) if feather_height > 0 else 40
+    vertical_gap = safe_offset + 100
     y_fraction = 0.5 + (vertical_gap / canvas_height)
     return outro_note_clip.with_position(lambda t: [0.5, y_fraction], relative=True)
 
 
 # --------------------------------------------------------------
-# 4) मुख्य फंक्शन — engine.py से बुलाया जाता है
+# 🎬 8. मुख्य फ़ंक्शन — engine.py द्वारा कॉल किया जाने वाला मेन एंट्री पॉइंट
 # --------------------------------------------------------------
 def create_climax_layer(
     video_duration: float,
     outro_text: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     climax_duration_override: float = None,
+    voiceover_mode: str = "hi-IN-SwaraNeural"
 ) -> tuple:
     """
-    वीडियो के आख़िरी हिस्से के लिए सभी ओवरले लेयर्स तैयार करता है: लहराता
-    मयूर पंख, प्रोसीजरल पार्टिकल-ब्लास्ट, सुनहरा सब्सक्राइब-मैसेज, आउट्रो-नोट।
-
-    🆕 climax_duration_override: अगर engine.py में असली बोली गई CTA-आवाज़
-    (spoken "like/subscribe" audio) डिफ़ॉल्ट 5.5 सेकंड से लंबी निकले, तो
-    यहाँ वह असली ज़रूरी लंबाई पास की जा सकती है — climax विंडो अपने-आप
-    उतनी बड़ी हो जाएगी ताकि आवाज़ कभी बीच में न कटे। None दिया जाए तो
-    डिफ़ॉल्ट CLIMAX_DURATION_SECONDS (5.5s) इस्तेमाल होता है।
-
-    रिटर्न:
-        (climax_layers: list, climax_duration_used: float)
-        -> climax_duration_used वही असली लंबाई है जो इस्तेमाल हुई; engine.py
-           को यह बताना ज़रूरी है ताकि CTA-आवाज़ को सही विंडो में रखा जा सके।
+    [मुख्य फ़ंक्शन का काम]:
+    1. edge-tts की मदद से AI की शुद्ध हिंदी आवाज़ ("चैनल को लाइक और सब्सक्राइब करें") जनरेट करना।
+    2. पार्टिकल-ब्लास्ट, लहराते पंख और हिंदी टेक्स्ट की विज़ुअल लेयर्स तैयार करना।
+    3. engine.py के लिए विज़ुअल लेयर्स (climax_layers) और ऑडियो (outro_audio_clip) दोनों रिटर्न करना।
     """
     climax_duration = climax_duration_override if climax_duration_override else CLIMAX_DURATION_SECONDS
-
-    if video_duration <= climax_duration:
-        raise ValueError(
-            f"वीडियो ({video_duration} सेकंड) क्लाइमेक्स लेयर "
-            f"({climax_duration} सेकंड) से छोटा है। पहले वीडियो लंबा करें।"
-        )
+    climax_start_time = max(0.0, video_duration - climax_duration)
 
     layout_settings = _resolve_layout_settings(aspect_ratio)
     canvas_width = layout_settings["canvas_width"]
     canvas_height = layout_settings["canvas_height"]
     font_scale = layout_settings["font_scale"]
 
-    climax_start_time = video_duration - climax_duration
+    # --- A) AI हिंदी आवाज़ (Edge-TTS) जनरेट करना ---
+    outro_audio_clip = None
+    spoken_text = "चैनल को लाइक और सब्सक्राइब करें।"
+    if outro_text and outro_text.strip():
+        spoken_text = f"{outro_text.strip()}। {spoken_text}"
 
+    try:
+        import edge_tts
+        outro_voice_file = os.path.join(tempfile.gettempdir(), "outro_tts_temp.mp3")
+
+        async def _generate_outro_voice():
+            tts_voice = voiceover_mode if voiceover_mode else "hi-IN-SwaraNeural"
+            communicate = edge_tts.Communicate(spoken_text, voice=tts_voice)
+            await communicate.save(outro_voice_file)
+
+        asyncio.run(_generate_outro_voice())
+
+        if os.path.exists(outro_voice_file):
+            outro_audio_clip = AudioFileClip(outro_voice_file).with_start(climax_start_time)
+    except Exception as e:
+        print(f"⚠️ [ऑटो-स्किप] आउट्रो AI आवाज़ जनरेट नहीं हो सकी: {e}")
+
+    # --- B) विज़ुअल लेयर्स तैयार करना ---
     feather_clip, feather_height = _build_feather_clip(climax_start_time, climax_duration, canvas_width)
 
-    particle_burst_clip = (
-        _build_particle_burst_clip(climax_start_time, climax_duration, canvas_width, canvas_height)
-        if feather_clip is not None else None
-    )
+    # मयूर पंख हो या न हो, पार्टिकल ब्लास्ट हमेशा बनेगा
+    particle_burst_clip = _build_particle_burst_clip(climax_start_time, climax_duration, canvas_width, canvas_height)
 
     subscribe_image_clip = _build_subscribe_image_clip(
         climax_start_time, climax_duration, feather_height, canvas_width, canvas_height, font_scale,
@@ -282,21 +283,4 @@ def create_climax_layer(
     climax_layers = [feather_clip, particle_burst_clip, subscribe_image_clip, outro_note_image_clip]
     climax_layers = [clip for clip in climax_layers if clip is not None]
 
-    return climax_layers, climax_duration
-
-
-# --------------------------------------------------------------
-# टेस्ट
-# --------------------------------------------------------------
-if __name__ == "__main__":
-    from moviepy import ColorClip, CompositeVideoClip
-
-    test_duration = 15
-    background = ColorClip(size=(1080, 1920), color=(10, 10, 10)).with_duration(test_duration)
-    layers, used_duration = create_climax_layer(
-        video_duration=test_duration,
-        outro_text="जय बाबा की! अगला वीडियो जल्द आएगा 🙏",
-        aspect_ratio="9:16",
-    )
-    print(f"✅ {len(layers)} लेयर्स बनीं, climax_duration इस्तेमाल हुई: {used_duration}s")
-    CompositeVideoClip([background, *layers]).write_videofile("climax_particle_test.mp4", fps=24)
+    return climax_layers, outro_audio_clip

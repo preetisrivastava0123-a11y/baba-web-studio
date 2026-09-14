@@ -391,13 +391,16 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
         output_image_path=SUBTITLE_TEMP_PNG,
         canvas_width=canvas_width,
         text_color=text_color,
-        font_size=font_size_px,
+        font_size_px=font_size_px,
     )
 
     subtitle_clip = (
         ImageClip(rendered_subtitle_png_path)
-    .with_duration(video_duration)
-    .with_position(lambda t: ('center', 'bottom'))
+        .with_duration(video_duration)
+        # ⚠️ फिक्स: MoviePy 2.x+ में .with_position() को टुपल (x, y) नहीं,
+        # बल्कि लिस्ट [x, y] चाहिए — वरना "int() argument must be... not
+        # 'tuple'" वाला एरर आता है। इसलिए यहाँ गोल-कोष्ठक की जगह स्क्वायर-ब्रैकेट।
+        .with_position(["center", "bottom"])
     )
     return subtitle_clip
 
@@ -585,6 +588,9 @@ def _build_scrolling_ticker_overlay_clip(outro_text: str, video_duration: float,
         traveled_distance = (t * TICKER_SCROLL_SPEED_PX_PER_SEC) % cycle_distance
         return canvas_width - traveled_distance
 
+    # ⚠️ फिक्स: MoviePy 2.x+ में .with_position() को टुपल (x, y) की जगह
+    # लिस्ट [x, y] चाहिए — वरना "int() argument must be... not 'tuple'"
+    # एरर आता है। इसलिए यहाँ lambda भी गोल-कोष्ठक (...) नहीं, स्क्वायर-ब्रैकेट [...] लौटाता है।
     return ticker_image_clip.with_position(lambda t: [_ticker_x_position(t), ticker_y_position])
 
 

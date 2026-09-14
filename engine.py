@@ -194,39 +194,11 @@ def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
     return cropped_clip
 
 
-# --------------------------------------------------------------
-# 5अ) ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक — हर आइटम की अपनी स्लॉट-लंबाई
-# --------------------------------------------------------------
-def _load_single_visual_clip_track1(item: dict, target_width: int, target_height: int, remaining_duration: float):
-    """
-    गोदाम का एक आइटम लेकर उसे उसकी फिक्स ५ सेकंड की स्लॉट-लंबाई के लिए तैयार करता है।
-    तस्वीरों पर Ken Burns ज़ूम इफ़ेक्ट लागू करता है और वीडियो को सही से ट्रिम करता है।
-    """
-    # गोदाम में हमने टाइमर हटा दिया था, इसलिए हर फोटो फिक्स 5 सेकंड चलेगी
-    slot_duration = min(5.0, remaining_duration)
-    
-    if item["is_image"]:
-        raw_clip = ImageClip(item["path"]).with_duration(slot_duration)
-    else:
-        raw_clip = VideoFileClip(item["path"])
-        # वीडियो क्लिप की अपनी लंबाई या बची हुई ड्यूरेशन में से जो छोटा हो
-        clip_dur = raw_clip.duration if raw_clip.duration > 0 else 5.0
-        slot_duration = min(clip_dur, remaining_duration)
-        raw_clip = raw_clip.subclipped(0, slot_duration)
-        
-    prepared_clip = _fit_clip_to_canvas(raw_clip, target_width, target_height)
-    
-    if item["is_image"]:
-        prepared_clip = prepared_clip.resized(
-            lambda t: 1 + KEN_BURNS_ZOOM_RATE * (t / max(slot_duration, 0.001))
-        )
-    return prepared_clip, slot_duration
-
 def _build_track1_looped_visual_track(visual_clips: list, total_duration: float, target_width: int, target_height: int):
     """
     गोदाम के सभी विज़ुअल्स को क्रम से (बारी-बारी से) एक-एक करके उठाता है।
-    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र (loop) शुरू करता है,
-    जिससे गोदाम की हर एक इमेज वीडियो में साफ़ दिखाई दे।
+    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र (loop) शुरू करता है।
+    तस्वीरें टाइमलाइन पर एक के बाद एक साफ़ कट्स के साथ आएँगी।
     """
     if not visual_clips:
         raise ValueError("कम-से-कम एक विज़ुअल (ट्रैक 1) ज़रूरी है।")
@@ -236,9 +208,8 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
     cycle_index = 0
     total_items = len(visual_clips)
     
-    # जब तक पूरे वीडियो का टाइम (जैसे 35 सेकंड) पूरा नहीं होता, चक्र चलाते रहो
+    # जब तक पूरे वीडियो का टाइम पूरा नहीं होता, चक्र चलाते रहो
     while elapsed_duration < total_duration - 0.01:
-        # यह लाइन बारी-बारी से 0, 1, 2, 3 इंडेक्स की फाइलें उठाएगी
         item = visual_clips[cycle_index % total_items]
         remaining_duration = total_duration - elapsed_duration
         
@@ -249,7 +220,7 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
         if slot_duration <= 0:
             break
             
-        # हर क्लिप को उसकी सही टाइमलाइन पोजीशन पर सेट करना ताकि वे ओवरलैप न हों
+        # क्लिप को उसकी सही टाइमलाइन पोजीशन (किस सेकंड पर दिखेगी) पर लॉक करना
         prepared_clip = prepared_clip.with_start(elapsed_duration)
         
         if visual_clips_sequence:
@@ -257,17 +228,12 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
             
         visual_clips_sequence.append(prepared_clip)
         elapsed_duration += slot_duration
-        cycle_index += 1 # इंडेक्स को आगे बढ़ाओ ताकि अगली इमेज लोड हो सके
+        cycle_index += 1 # इंडेक्स आगे बढ़ाओ ताकि अगली इमेज लोड हो
         
-    combined_visual_track = concatenate_videoclips(
-        visual_clips_sequence, method="compose", padding=-CROSSFADE_DURATION_SECONDS
-    )
-    
-    combined_visual_track = combined_visual_track.cropped(
-        x_center=combined_visual_track.w / 2,
-        y_center=combined_visual_track.h / 2,
-        width=target_width,
-        height=target_height,
+    # 🔐 कबाड़ फिक्स: concatenate हटाकर सीधे CompositeVideoClip का उपयोग करें
+    # ताकि हर क्लिप अपने दिए गए start_time पर ही स्क्रीन पर प्रकट हो!
+    combined_visual_track = CompositeVideoClip(
+        visual_clips_sequence, size=(target_width, target_height)
     ).with_duration(total_duration)
     
     return combined_visual_track

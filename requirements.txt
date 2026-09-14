@@ -1,6 +1,6 @@
 streamlit>=1.40.0
 numpy>=1.24.0
-moviepy==1.0.3
+moviepy>=2.0.0,<3.0.0
 playwright>=1.49.0
 greenlet>=3.2.5
 edge-tts>=6.1.12

@@ -194,84 +194,86 @@ def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
     return cropped_clip
 
 
-# ================================================================
-# 🎭 सामान्य स्टूडियो मोड (mode == "standard") के हेल्पर्स
-# ================================================================
-
 # --------------------------------------------------------------
 # 5अ) ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक — हर आइटम की अपनी स्लॉट-लंबाई
 # --------------------------------------------------------------
 def _load_single_visual_clip_track1(item: dict, target_width: int, target_height: int, remaining_duration: float):
     """
-    ट्रैक 1 का एक आइटम {"path","is_image","start","end"} लेकर उसे उसकी अपनी
-    "स्वाभाविक" स्लॉट-लंबाई के लिए तैयार करता है:
-      - फोटो: item["end"] (डिफ़ॉल्ट ५ सेकंड) तक, Ken Burns ज़ूम-इन के साथ
-      - वीडियो: अपनी पूरी लंबाई (item["end"]==0.0 = "पूरी क्लिप") — कभी
-        लूप/स्ट्रेच नहीं किया जाता, सिर्फ़ बाकी बची ड्यूरेशन से छोटा कर दिया जाता है
+    गोदाम का एक आइटम लेकर उसे उसकी फिक्स ५ सेकंड की स्लॉट-लंबाई के लिए तैयार करता है।
+    तस्वीरों पर Ken Burns ज़ूम इफ़ेक्ट लागू करता है और वीडियो को सही से ट्रिम करता है।
     """
+    # गोदाम में हमने टाइमर हटा दिया था, इसलिए हर फोटो फिक्स 5 सेकंड चलेगी
+    slot_duration = min(5.0, remaining_duration)
+    
     if item["is_image"]:
-        slot_duration = min(item["end"] if item["end"] > 0 else 5.0, remaining_duration)
         raw_clip = ImageClip(item["path"]).with_duration(slot_duration)
     else:
         raw_clip = VideoFileClip(item["path"])
-        slot_duration = min(raw_clip.duration, remaining_duration)
+        # वीडियो क्लिप की अपनी लंबाई या बची हुई ड्यूरेशन में से जो छोटा हो
+        clip_dur = raw_clip.duration if raw_clip.duration > 0 else 5.0
+        slot_duration = min(clip_dur, remaining_duration)
         raw_clip = raw_clip.subclipped(0, slot_duration)
-
+        
     prepared_clip = _fit_clip_to_canvas(raw_clip, target_width, target_height)
-
+    
     if item["is_image"]:
         prepared_clip = prepared_clip.resized(
             lambda t: 1 + KEN_BURNS_ZOOM_RATE * (t / max(slot_duration, 0.001))
         )
-
     return prepared_clip, slot_duration
-
 
 def _build_track1_looped_visual_track(visual_clips: list, total_duration: float, target_width: int, target_height: int):
     """
-    ट्रैक 1 (गोदाम) के आइटम्स को क्रम से एक-एक करके जोड़ता है। लिस्ट खत्म होने
-    पर वापस पहली फाइल से चक्र (loop) शुरू हो जाता है — जब तक total_duration
-    पूरी न हो जाए। हर कट क्रॉसफेड से स्मूदली जुड़ता है।
+    गोदाम के सभी विज़ुअल्स को क्रम से (बारी-बारी से) एक-एक करके उठाता है।
+    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र (loop) शुरू करता है,
+    जिससे गोदाम की हर एक इमेज वीडियो में साफ़ दिखाई दे।
     """
     if not visual_clips:
         raise ValueError("कम-से-कम एक विज़ुअल (ट्रैक 1) ज़रूरी है।")
-
+        
     visual_clips_sequence = []
     elapsed_duration = 0.0
     cycle_index = 0
     total_items = len(visual_clips)
-
+    
+    # जब तक पूरे वीडियो का टाइम (जैसे 35 सेकंड) पूरा नहीं होता, चक्र चलाते रहो
     while elapsed_duration < total_duration - 0.01:
+        # यह लाइन बारी-बारी से 0, 1, 2, 3 इंडेक्स की फाइलें उठाएगी
         item = visual_clips[cycle_index % total_items]
         remaining_duration = total_duration - elapsed_duration
+        
         prepared_clip, slot_duration = _load_single_visual_clip_track1(
-            item, target_width, target_height, remaining_duration,
+            item, target_width, target_height, remaining_duration
         )
+        
         if slot_duration <= 0:
             break
-
+            
+        # हर क्लिप को उसकी सही टाइमलाइन पोजीशन पर सेट करना ताकि वे ओवरलैप न हों
+        prepared_clip = prepared_clip.with_start(elapsed_duration)
+        
         if visual_clips_sequence:
             prepared_clip = prepared_clip.with_effects([vfx.CrossFadeIn(CROSSFADE_DURATION_SECONDS)])
-
+            
         visual_clips_sequence.append(prepared_clip)
         elapsed_duration += slot_duration
-        cycle_index += 1
-
+        cycle_index += 1 # इंडेक्स को आगे बढ़ाओ ताकि अगली इमेज लोड हो सके
+        
     combined_visual_track = concatenate_videoclips(
-        visual_clips_sequence, method="compose", padding=-CROSSFADE_DURATION_SECONDS,
+        visual_clips_sequence, method="compose", padding=-CROSSFADE_DURATION_SECONDS
     )
-
-    # ---- सुरक्षा-नेट: केन-बर्न्स ज़ूम की वजह से फ्रेम कैनवस से थोड़ा बाहर
-    # निकल सकता है, इसलिए आख़िर में फिर से ठीक टारगेट-साइज़ पर सेंटर-क्रॉप
-    # कर देना, ताकि आगे सबटाइटल/क्लाइमेक्स लेयर से साइज़ हमेशा मैच करे।
+    
     combined_visual_track = combined_visual_track.cropped(
         x_center=combined_visual_track.w / 2,
         y_center=combined_visual_track.h / 2,
         width=target_width,
         height=target_height,
     ).with_duration(total_duration)
-
+    
     return combined_visual_track
+
+
+
 
 
 # --------------------------------------------------------------

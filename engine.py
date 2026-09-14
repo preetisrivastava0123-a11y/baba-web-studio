@@ -1,68 +1,57 @@
 """
 ==============================================================
-बाबा जनरेटिव वेब स्टूडियो — engine.py (MoviePy 2.x+ वेल्डेड वर्ज़न)
+Baba Generative Web Studio -- engine.py (MoviePy 2.x safe version)
 ==============================================================
-यह ब्लॉक "कोर वीडियो कंपाइलर इंजन" (Core Video Compiler Engine) है।
-इसका काम है बाकी स्वतंत्र ब्लॉक्स — voice.py, subtitle.py, climax.py —
-और app.py के ४-ट्रैक + लाइव-लूप UI से आए डेटा को एक ही धागे में
-पिरोकर अंतिम वीडियो बनाना।
+Core video compiler engine. Wires together voice.py, subtitle.py,
+climax.py and the 4-track / live-loop UI data from app.py into a
+single final video.
 
-इस वर्ज़न में नया क्या है (app.py के साथ "वेल्डिंग"):
-  १. compile_cinematic_video() अब सीधे app.py के _build_common_kwargs() से
-     आने वाले असली kwargs स्वीकार करता है — mode, visual_clips (ट्रैक 1),
-     video_clips_timeline (ट्रैक 2), music_files_pool (ट्रैक 3),
-     music_clips_timeline (ट्रैक 4), master_music_volume, sfx_events,
-     sub_color, sub_size, voiceover_mode, custom_audio_path आदि।
-  २. दो पूरी तरह अलग मोड्स हैंडल होते हैं:
-       - mode="standard"  → सामान्य स्टूडियो मोड (पुराने ३/४-ट्रैक नियम:
-         ट्रैक 1 सीक्वेंशियल-लूप्ड बैकग्राउंड, ट्रैक 2 टाइम-सिंक्ड वीडियो-ओवरले,
-         ट्रैक 3/4 का म्यूज़िक, SFX-इवेंट्स, हमेशा आख़िरी 5.5 सेकंड में
-         मयूर-पंख क्लाइमेक्स ब्लास्ट)
-       - mode="live_loop" → 🔄 एआई लाइव लूप स्टूडियो: ट्रैक 1 + ट्रैक 2 के
-         मीडिया को एक साझा पूल बनाकर 'while loop' में चक्र-दर-चक्र, हर बार
-         अलग सिनेमैटिक स्टाइल (ज़ूम-इन/ज़ूम-आउट Ken Burns, क्रॉसफेड/हार्ड-कट)
-         के साथ तब तक दोहराया जाता है जब तक चुना हुआ पूरा duration_seconds
-         भर न जाए। आउट्रो/न्यूज़-पट्टी टेक्स्ट पूरी वीडियो में लगातार
-         दाएँ-से-बाएँ स्क्रॉलिंग-लूप में दिखती रहती है।
-  ३. पूरी फ़ाइल अब MoviePy 2.x+ के नए सिंटैक्स पर चलती है — कहीं भी पुराना
-     .set_duration() / .set_position() / .set_audio() / .resize() / .crop() /
-     .subclip() / .crossfadein() / .volumex() इस्तेमाल नहीं हुआ। इसकी जगह:
-       .with_duration()   .with_position()   .with_audio()   .with_start()
-       .resized()         .cropped()         .subclipped()
-       .with_effects([vfx.CrossFadeIn(d)])   .with_volume_scaled(factor)
-     इस्तेमाल होते हैं, ताकि पुराना "ImageClip object has no attribute
-     set_duration" वाला एरर हमेशा के लिए ख़त्म हो जाए।
+Fixed in this pass:
+  1. All indentation is now strict 4 spaces, no tabs.
+  2. Removed the duplicate `compile_cinematic_video` definition and the
+     dead/unreachable code that used to sit after a `return`.
+  3. `_compile_standard_mode` no longer has code accidentally sitting at
+     module level (that was the root cause of the "return outside
+     function" / "unexpected indent" errors) and now always returns,
+     whether or not `outro_voice_active` is True.
+  4. `_loop_audio_clip` was defined but called as
+     `_loop_audio_clip_to_duration` elsewhere -- renamed consistently
+     to `_loop_audio_clip_to_duration` everywhere, and `numpy` is now
+     actually imported (it's used for `np.ceil`).
+  5. All Hindi explanatory text that used to live inside function
+     bodies as stray multi-line docstrings has been converted to
+     single-line `#` comments so nothing can break the parser.
+  6. `create_climax_layer(...)` is called with ONE consistent
+     signature everywhere: it returns `(clip_layers, climax_duration_used)`
+     and accepts `climax_duration_override`. This matches the CTA-voice
+     addition further down the file (see ASSUMPTIONS below).
+  7. `compile_cinematic_video` now actually calls `write_videofile()`
+     and cleans up temp PNGs (that code used to sit unreachable after
+     a `return`, referencing variables that didn't exist in scope).
 
-⚠️ मान्यताएँ (Assumptions) — असली फाइलें उपलब्ध न होने के कारण:
-   - voice.py:      create_baba_audio(script_text, output_path) -> str
-   - subtitle.py:   render_subtitle_html_to_png(text_string, output_image_path,
-                     canvas_width, text_color=None, font_size=None) -> str
-                     (⚠️ असली पैरामीटर नाम "font_size" है, "font_size_px" नहीं —
-                     यह पहले ग़लती से font_size_px लिख दिया गया था, जिससे
-                     "got an unexpected keyword argument 'font_size_px'" एरर
-                     आ रहा था। engine.py के अंदर अपना इंटरनल वेरिएबल-नाम अब
-                     भी font_size_px है — बस render_subtitle_html_to_png()
-                     को कॉल करते वक़्त सही नाम font_size से भेजा जाता है)
-   - climax.py:     create_climax_layer(video_duration, outro_text, aspect_ratio)
-                     -> list (यह फंक्शन ख़ुद तय करता है कि आख़िरी 5.5 सेकंड में
-                     मयूर-पंख/आउट्रो कब दिखाना है, इसलिए यहाँ सिर्फ़ सही
-                     total_video_duration पास करना काफ़ी है)
-   - प्रोजेक्ट की रूट डायरेक्टरी में "sitar_vadand_sfx.mp3" नाम की एक
-     बैकग्राउंड-संगीत फाइल मौजूद है (डिफ़ॉल्ट/फॉलबैक बैकग्राउंड संगीत के लिए)।
-   - MoviePy 2.x में vfx इफ़ेक्ट-क्लासेज़ `from moviepy import vfx` से मिलती
-     हैं और `clip.with_effects([vfx.CrossFadeIn(duration)])` से लगाई जाती हैं;
-     वॉल्यूम स्केल करने के लिए `clip.with_volume_scaled(factor)` मिलता है।
-     अगर आपके इंस्टॉल्ड MoviePy वर्ज़न में एक्ज़ैक्ट नाम थोड़े अलग हों, तो
-     सिर्फ़ यहाँ इम्पोर्ट/कॉल बदल दीजिए — बाकी पूरा ढाँचा वैसा ही रहेगा।
+ASSUMPTIONS (real files not available while patching this):
+  - voice.py:    create_baba_audio(script_text, output_path=None) -> str
+  - subtitle.py: render_subtitle_html_to_png(text_string, output_image_path,
+                 canvas_width, text_color=None, font_size=None) -> str
+  - climax.py:   create_climax_layer(video_duration, outro_text, aspect_ratio,
+                 climax_duration_override=None) -> (list_of_clips, climax_duration_used)
+                 Also exports: SUBSCRIBE_MESSAGE (str), CLIMAX_DURATION_SECONDS (float)
+  - A default background music file "sitar_vadand_sfx.mp3" exists in the
+    project root.
+  - MoviePy 2.x: `from moviepy import vfx`, `clip.with_effects([vfx.CrossFadeIn(d)])`,
+    `clip.with_volume_scaled(factor)`.
 
-अगर आपके असली फंक्शन-नाम/फाइल-नाम अलग हैं, तो सिर्फ़ नीचे दिए
-IMPORT/CONSTANT बदल दीजिए — बाकी पूरा ढाँचा वैसा ही रहेगा।
-=============================================================
+If your real function/file names differ, only the IMPORT/CONSTANT block
+below needs to change -- the rest of the structure stays the same.
+==============================================================
+"""
 
 # --------------------------------------------------------------
-# 📦 आवश्यक लाइब्रेरीज़ (Imports)
+# Imports
 # --------------------------------------------------------------
 import os
+
+import numpy as np
 import moviepy.vfx as vfx
 from moviepy import (
     AudioFileClip,
@@ -74,100 +63,80 @@ from moviepy import (
     concatenate_videoclips,
 )
 
-# --------------------------------------------------------------
-# बाकी स्वतंत्र ब्लॉक्स से ज़रूरी फंक्शन इम्पोर्ट करना
-# --------------------------------------------------------------
-from voice import create_baba_audio                # ऑडियो (कहानी + डक सितार)
-from subtitle import render_subtitle_html_to_png   # हिंदी सबटाइटल PNG
-from climax import create_climax_layer              # मयूर पंख + आउट्रो लेयर्स
+from voice import create_baba_audio
+from subtitle import render_subtitle_html_to_png
+from climax import create_climax_layer, SUBSCRIBE_MESSAGE, CLIMAX_DURATION_SECONDS
 
 
 # --------------------------------------------------------------
-# सेटिंग्स (Constants)
+# Constants
 # --------------------------------------------------------------
-SUBTITLE_TEMP_PNG = "temp_subtitle_overlay.png"       # सबटाइटल PNG का अस्थायी नाम
-TICKER_TEMP_PNG = "temp_ticker_overlay.png"            # लाइव-लूप न्यूज़-पट्टी PNG का अस्थायी नाम
-SITAR_BACKGROUND_MUSIC_PATH = "sitar_vadand_sfx.mp3"  # डिफ़ॉल्ट/फॉलबैक बैकग्राउंड संगीत
+SUBTITLE_TEMP_PNG = "temp_subtitle_overlay.png"
+TICKER_TEMP_PNG = "temp_ticker_overlay.png"
+CTA_TEMP_VOICE_MP3 = "temp_cta_voice.mp3"
+SITAR_BACKGROUND_MUSIC_PATH = "sitar_vadand_sfx.mp3"
 
 RENDER_FPS = 24
-RENDER_THREADS = 8            # स्पीड लॉक: 8 थ्रेड्स
-RENDER_PRESET = "ultrafast"   # स्पीड लॉक: सबसे तेज़ प्रीसेट
+RENDER_THREADS = 8
+RENDER_PRESET = "ultrafast"
 
-# --- "देखने लायक" (viral) बनाने वाली सेटिंग्स ---
-KEN_BURNS_ZOOM_RATE = 0.06          # फोटो पर कुल कितना % ज़ूम-इन/आउट होगा (स्लॉट के अंत तक)
-CROSSFADE_DURATION_SECONDS = 0.6    # हर कट के बीच स्मूद घुलने का समय
-SHORTS_SLOT_SECONDS = 4             # Shorts में हर विज़ुअल कितनी देर दिखेगा (सिर्फ़ फॉलबैक के लिए)
-LONG_VIDEO_SLOT_SECONDS = 10        # (लेगेसी संदर्भ — अब ट्रैक 1 के हर आइटम की अपनी स्लॉट-लंबाई होती है)
-LIVE_LOOP_IMAGE_SLOT_SECONDS = 5.0  # लाइव लूप मोड में हर फोटो कितनी देर दिखेगी
+# --- "virality" tuning ---
+KEN_BURNS_ZOOM_RATE = 0.06
+CROSSFADE_DURATION_SECONDS = 0.6
+SHORTS_SLOT_SECONDS = 4
+LONG_VIDEO_SLOT_SECONDS = 10
+LIVE_LOOP_IMAGE_SLOT_SECONDS = 5.0
 
-# --- न्यूज़-पट्टी / आउट्रो-लूपर (सिर्फ़ लाइव लूप मोड) ---
-TICKER_SCROLL_SPEED_PX_PER_SEC = 220   # पट्टी कितनी तेज़ी से दाएँ-से-बाएँ खिसकेगी
-TICKER_BANNER_WIDTH_MULTIPLIER = 2.2   # बैनर की चौड़ाई (कैनवस-चौड़ाई के मुकाबले कितनी बड़ी)
-TICKER_BOTTOM_MARGIN_PX = 40           # पट्टी स्क्रीन के नीचे से कितने पिक्सेल ऊपर रहेगी
+# --- news-ticker / outro scroller (live_loop mode only) ---
+TICKER_SCROLL_SPEED_PX_PER_SEC = 220
+TICKER_BANNER_WIDTH_MULTIPLIER = 2.2
+TICKER_BOTTOM_MARGIN_PX = 40
 
 
 # ================================================================
-# ⚙️ 1. एक्सपोर्ट सेटिंग्स (Resolution & Bitrate Resolver)
+# 1. Export settings resolver
 # ================================================================
-# [इस फ़ंक्शन का काम]: 
-# यूज़र के चुने फ़ॉर्मेट (9:16 / 16:9) और क्वालिटी (720p / 1080p) 
-# के आधार पर चौड़ाई (Width), लंबाई (Height) और Bitrate का मान लौटाना।
-# ================================================================
-
 def _resolve_export_settings(aspect_ratio: str = "9:16", quality: str = "1080p") -> tuple:
-    # 1. 16:9 लैंडस्केप (YouTube Long Videos) फ़ॉर्मेट
+    # 16:9 landscape (YouTube long-form)
     if aspect_ratio == "16:9":
         target_width, target_height = (1920, 1080) if quality == "1080p" else (1280, 720)
-    
-    # 2. 9:16 पोर्ट्रेट (Shorts / Reels) डिफ़ॉल्ट फ़ॉर्मेट
+    # 9:16 portrait (Shorts / Reels) default
     else:
         target_width, target_height = (1080, 1920) if quality == "1080p" else (720, 1280)
 
-    # 3. क्वालिटी के हिसाब से बिटरेट तय करना
     export_bitrate = "8000k" if quality == "1080p" else "4000k"
 
-    # 4. तीनों सेटिंग्स लौटाना
     return target_width, target_height, export_bitrate
 
-    
-# ================================================================
-# 🎵 2. ऑडियो लूपिंग (Audio Loop Helper)
-# ================================================================
-# [इस फ़ंक्शन का काम]: 
-# छोटी ऑडियो क्लिप (जैसे बैकग्राउंड संगीत) को बार-बार दोहराकर 
-# पूरे वीडियो की लंबाई के बराबर बनाना।
-# ================================================================
 
-def _loop_audio_clip(audio_clip, target_duration: float):
+# ================================================================
+# 2. Audio loop helper
+# ================================================================
+def _loop_audio_clip_to_duration(audio_clip, target_duration: float):
     if audio_clip is None or target_duration <= 0:
         return None
-    
-    # अगर ऑडियो क्लिप की लंबाई वीडियो से बड़ी या बराबर है
+
     if audio_clip.duration >= target_duration:
         return audio_clip.with_duration(target_duration)
-    
-    # बार-बार दोहराने के लिए लूप की संख्या तय करना
+
     loop_count = int(np.ceil(target_duration / audio_clip.duration))
     repeated_clips = [audio_clip] * loop_count
     looped_clip = concatenate_audioclips(repeated_clips)
-    
+
     return looped_clip.with_duration(target_duration)
 
 
 # --------------------------------------------------------------
-# 3) आवाज़ (वॉइसओवर) तैयार करना — AI TTS या कस्टम अपलोडेड ऑडियो
+# 3) Voiceover -- AI TTS or a custom uploaded audio file
 # --------------------------------------------------------------
 def _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path):
-    """
-    वॉइस ओवर जनरेट करता है। अगर टेक्स्ट या ऑडियो न हो तो सेफ़ली (None, 0.0) लौटाता है।
-    """
+    # Generates a voiceover clip. Returns (None, 0.0) safely if there's no text/audio.
     try:
         if custom_audio_path and os.path.exists(custom_audio_path):
             audio_clip = AudioFileClip(custom_audio_path)
             return audio_clip, audio_clip.duration
-        
+
         if script_text and script_text.strip():
-            # generate_tts_voice की जगह ऊपर इम्पोर्ट किया गया create_baba_audio इस्तेमाल होगा
             voice_file = create_baba_audio(script_text)
             if voice_file and os.path.exists(voice_file):
                 audio_clip = AudioFileClip(voice_file)
@@ -178,14 +147,13 @@ def _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path
         print(f"Voice generation note: {e}")
         return None, 0.0
 
+
 # --------------------------------------------------------------
-# 4) एक क्लिप को टारगेट साइज़ में क्रॉप-टू-फिल करना (शेयर्ड हेल्पर)
+# 4) Fit a clip to the target canvas (crop-to-fill), shared helper
 # --------------------------------------------------------------
 def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
-    """
-    पहले बड़ा-किनारा स्केल करता है, फिर बीच से टारगेट-साइज़ काटता है —
-    ताकि क्लिप का ओरिजिनल अनुपात (aspect ratio) बिगड़े बिना पूरा फ्रेम भरे।
-    """
+    # Scales the larger edge first, then center-crops to the exact target
+    # size, so the original aspect ratio is preserved while filling the frame.
     original_width, original_height = raw_clip.size
     target_aspect_ratio = target_width / target_height
     original_aspect_ratio = original_width / original_height
@@ -205,20 +173,18 @@ def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
 
 
 # ================================================================
-# 🎭 सामान्य स्टूडियो मोड (mode == "standard") के हेल्पर्स
+# Standard studio mode (mode == "standard") helpers
 # ================================================================
 
 # --------------------------------------------------------------
-# 5अ) ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक — हर आइटम की अपनी स्लॉट-लंबाई
+# 5a) Track 1 (warehouse) main background visual track
 # --------------------------------------------------------------
 def _load_single_visual_clip_track1(item: dict, target_width: int, target_height: int, remaining_duration: float):
-    """
-    ट्रैक 1 का एक आइटम {"path","is_image","start","end"} लेकर उसे उसकी अपनी
-    "स्वाभाविक" स्लॉट-लंबाई के लिए तैयार करता है:
-      - फोटो: item["end"] (डिफ़ॉल्ट ५ सेकंड) तक, Ken Burns ज़ूम-इन के साथ
-      - वीडियो: अपनी पूरी लंबाई (item["end"]==0.0 = "पूरी क्लिप") — कभी
-        लूप/स्ट्रेच नहीं किया जाता, सिर्फ़ बाकी बची ड्यूरेशन से छोटा कर दिया जाता है
-    """
+    # Prepares one Track 1 item {"path","is_image","start","end"} for its own
+    # "natural" slot length:
+    #   image: item["end"] (default 5s), with a Ken Burns zoom-in
+    #   video: its own full length (item["end"]==0.0 means "whole clip") --
+    #          never looped/stretched, only trimmed to the remaining duration
     if item["is_image"]:
         slot_duration = min(item["end"] if item["end"] > 0 else 5.0, remaining_duration)
         raw_clip = ImageClip(item["path"]).with_duration(slot_duration)
@@ -238,13 +204,11 @@ def _load_single_visual_clip_track1(item: dict, target_width: int, target_height
 
 
 def _build_track1_looped_visual_track(visual_clips: list, total_duration: float, target_width: int, target_height: int):
-    """
-    ट्रैक 1 (गोदाम) के आइटम्स को क्रम से एक-एक करके जोड़ता है। लिस्ट खत्म होने
-    पर वापस पहली फाइल से चक्र (loop) शुरू हो जाता है — जब तक total_duration
-    पूरी न हो जाए। हर कट क्रॉसफेड से स्मूदली जुड़ता है।
-    """
+    # Joins Track 1 (warehouse) items in order; once the list runs out it
+    # cycles back to the first file, until total_duration is filled. Every
+    # cut is joined with a crossfade.
     if not visual_clips:
-        raise ValueError("कम-से-कम एक विज़ुअल (ट्रैक 1) ज़रूरी है।")
+        raise ValueError("At least one Track 1 visual is required.")
 
     visual_clips_sequence = []
     elapsed_duration = 0.0
@@ -271,9 +235,9 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
         visual_clips_sequence, method="compose", padding=-CROSSFADE_DURATION_SECONDS,
     )
 
-    # ---- सुरक्षा-नेट: केन-बर्न्स ज़ूम की वजह से फ्रेम कैनवस से थोड़ा बाहर
-    # निकल सकता है, इसलिए आख़िर में फिर से ठीक टारगेट-साइज़ पर सेंटर-क्रॉप
-    # कर देना, ताकि आगे सबटाइटल/क्लाइमेक्स लेयर से साइज़ हमेशा मैच करे।
+    # Safety net: Ken Burns zoom can push the frame slightly outside the
+    # canvas, so re-crop to the exact target size at the end so later
+    # subtitle/climax layers always match.
     combined_visual_track = combined_visual_track.cropped(
         x_center=combined_visual_track.w / 2,
         y_center=combined_visual_track.h / 2,
@@ -285,14 +249,12 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
 
 
 # --------------------------------------------------------------
-# 5ब) ट्रैक 2 — वीडियो क्लिप्स टाइमलाइन: हर क्लिप अपने तय Start/End सेकंड पर ओवरले होती है
+# 5b) Track 2 -- video clip timeline: each clip overlays at its own start/end
 # --------------------------------------------------------------
 def _build_track2_overlay_clips(video_clips_timeline: list, target_width: int, target_height: int):
-    """
-    ट्रैक 2 के हर आइटम {"path","start","end"} को उसके अपने Start Second पर
-    "प्रकट" होने वाली और End Second पर "हटने" वाली एक स्वतंत्र ओवरले-क्लिप
-    बनाकर लौटाता है — ये मुख्य पृष्ठभूमि (ट्रैक 1) के ऊपर कंपोज़िट होती हैं।
-    """
+    # Turns each Track 2 item {"path","start","end"} into an independent
+    # overlay clip that appears at its own Start Second and disappears at
+    # its End Second -- these composite on top of the Track 1 background.
     overlay_clips = []
     for item in video_clips_timeline:
         raw_clip = VideoFileClip(item["path"])
@@ -311,15 +273,15 @@ def _build_track2_overlay_clips(video_clips_timeline: list, target_width: int, t
 
 
 # --------------------------------------------------------------
-# 5स) म्यूज़िक लेयर — ट्रैक 4 (टाइम-सिंक्ड क्लिप्स) प्राथमिकता, वरना ट्रैक 3 (गोदाम),
-#     वरना डिफ़ॉल्ट सितार बैकग्राउंड-संगीत
+# 5c) Music layer -- Track 4 (time-synced clips) takes priority, then
+#     Track 3 (warehouse), then the default sitar background music
 # --------------------------------------------------------------
 def _build_music_layer_for_standard_mode(music_clips_timeline: list, music_files_pool: list, master_music_volume: float, total_video_duration: float):
     layered_music_clips = []
 
     if music_clips_timeline:
-        # ट्रैक 4: हर क्लिप अपने तय Start Second पर बजना शुरू होती है। "order" सिर्फ़
-        # यूज़र की समझ/क्रम के लिए है — ऑडियो-मिक्सिंग में सभी लेयर्स वैसे भी एक-साथ बजती हैं।
+        # Track 4: each clip starts at its own Start Second. "order" is only
+        # for the user's own understanding/ordering -- all layers mix together anyway.
         for music_item in sorted(music_clips_timeline, key=lambda m: m["order"]):
             raw_clip = AudioFileClip(music_item["path"])
             segment_start = max(music_item["start"], 0.0)
@@ -331,15 +293,15 @@ def _build_music_layer_for_standard_mode(music_clips_timeline: list, music_files
             layered_music_clips.append(trimmed_clip)
 
     elif music_files_pool:
-        # कोई टाइम-सिंक्ड म्यूज़िक-क्लिप नहीं दी गई — ट्रैक 3 (गोदाम) के भजनों को
-        # क्रम से जोड़कर पूरी वीडियो-लंबाई तक लूप कर देना (निरंतर बैकग्राउंड भजन)
+        # No time-synced music clips given -- join Track 3 (warehouse) tracks
+        # in order and loop them across the full video length.
         pool_clips = [AudioFileClip(path) for path in music_files_pool]
         concatenated_pool_clip = concatenate_audioclips(pool_clips)
         looped_pool_clip = _loop_audio_clip_to_duration(concatenated_pool_clip, total_video_duration)
         layered_music_clips.append(looped_pool_clip)
 
     else:
-        # कुछ भी अपलोड नहीं हुआ — डिफ़ॉल्ट सितार बैकग्राउंड-संगीत
+        # Nothing uploaded -- fall back to the default sitar background music.
         sitar_bg_clip = AudioFileClip(SITAR_BACKGROUND_MUSIC_PATH)
         looped_sitar_clip = _loop_audio_clip_to_duration(sitar_bg_clip, total_video_duration)
         layered_music_clips.append(looped_sitar_clip)
@@ -352,14 +314,14 @@ def _build_music_layer_for_standard_mode(music_clips_timeline: list, music_files
 
 
 # --------------------------------------------------------------
-# 5द) SFX लेयर — शंखनाद/डमरू आदि इवेंट्स, हर एक अपने तय Start/End सेकंड पर
+# 5d) SFX layer -- conch/damru etc events, each at its own start/end
 # --------------------------------------------------------------
 def _build_sfx_layer(sfx_events: list, total_video_duration: float):
     sfx_audio_clips = []
     for sfx_item in sfx_events:
         if not sfx_item.get("path"):
-            # बिल्ट-इन प्रीसेट ध्वनि (जैसे "शंखनाद 🐚") अभी असली फाइल के तौर पर उपलब्ध
-            # नहीं है — TODO: प्रीसेट-साउंड लाइब्रेरी जोड़कर sfx_name से मैप करना
+            # Built-in preset sound (e.g. "Shankhnaad") isn't a real file yet --
+            # TODO: add a preset-sound library and map it by sfx_name.
             continue
         raw_sfx_clip = AudioFileClip(sfx_item["path"])
         sfx_start = max(sfx_item["start"], 0.0)
@@ -387,14 +349,12 @@ def _combine_all_audio_layers(voice_clip, music_layer, sfx_layer, total_video_du
 
 
 # --------------------------------------------------------------
-# 5य) हिंदी सबटाइटल ओवरले लेयर बनाना (subtitle.py के ज़रिए)
+# 5e) Hindi subtitle overlay layer (via subtitle.py)
 # --------------------------------------------------------------
 def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas_width: int, text_color: str, font_size_px: int):
-    """
-    subtitle.py से Playwright के ज़रिए एक पारदर्शी PNG बनवाकर उसे स्क्रीन के
-    नीचे वाले हिस्से में ओवरले करता है। script_text खाली हो (जैसे लाइव लूप
-    मोड में) तो कोई सबटाइटल नहीं दिखाया जाता — None लौटता है।
-    """
+    # Renders a transparent PNG via subtitle.py (Playwright) and overlays it
+    # at the bottom of the screen. If script_text is empty (e.g. live_loop
+    # mode), no subtitle is shown -- returns None.
     if not script_text or not script_text.strip():
         return None
 
@@ -403,25 +363,127 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
         output_image_path=SUBTITLE_TEMP_PNG,
         canvas_width=canvas_width,
         text_color=text_color,
-        # ⚠️ फिक्स: असली subtitle.py का पैरामीटर नाम "font_size" है, "font_size_px"
-        # नहीं — इसलिए यहाँ फंक्शन के अपने इंटरनल पैरामीटर (font_size_px) की वैल्यू
-        # को render_subtitle_html_to_png() को सही नाम "font_size" से भेजा जा रहा है।
+        # subtitle.py's real parameter name is "font_size", not "font_size_px" --
+        # forward our internal font_size_px value under the correct name.
         font_size=font_size_px,
     )
 
     subtitle_clip = (
         ImageClip(rendered_subtitle_png_path)
         .with_duration(video_duration)
-        # ⚠️ फिक्स: MoviePy 2.x+ में .with_position() को टुपल (x, y) नहीं,
-        # बल्कि लिस्ट [x, y] चाहिए — वरना "int() argument must be... not
-        # 'tuple'" वाला एरर आता है। इसलिए यहाँ गोल-कोष्ठक की जगह स्क्वायर-ब्रैकेट।
+        # MoviePy 2.x wants with_position() to get a LIST [x, y], not a tuple.
         .with_position(["center", "bottom"])
     )
     return subtitle_clip
 
 
 # --------------------------------------------------------------
-# 5र) सामान्य मोड का पूरा कंपाइलर — (फिक्स्ड वर्ज़न)
+# 5f) CTA voice + hard-cut ducking (used by the climax step below)
+# --------------------------------------------------------------
+def _build_cta_voice_audio(outro_text: str) -> tuple:
+    # Builds the real spoken CTA audio via voice.py's create_baba_audio():
+    # "Channel ko like, subscribe karein" + the user's outro_text together.
+    # Never crashes -- returns (None, 0.0) on any failure so the rest of the
+    # video can still render (visual-only climax, no CTA voice).
+    cta_spoken_text = SUBSCRIBE_MESSAGE
+    if outro_text and outro_text.strip():
+        cta_spoken_text = f"{SUBSCRIBE_MESSAGE}. {outro_text.strip()}"
+
+    try:
+        cta_audio_path = create_baba_audio(cta_spoken_text, CTA_TEMP_VOICE_MP3)
+        cta_audio_clip = AudioFileClip(cta_audio_path)
+        return cta_audio_clip, cta_audio_clip.duration
+    except Exception as cta_voice_error:
+        print(f"[auto-skip] Could not build CTA voice -- climax will be visual-only: {cta_voice_error}")
+        return None, 0.0
+
+
+def _duck_audio_hard_cut(background_audio_clip, duck_start_time: float, total_duration: float, duck_volume: float = 0.5):
+    # Hard-cut ducking: split the background audio in two and change volume
+    # directly -- no fade-in/out effect chain. Stacking a fade AND a volume
+    # change at the same time makes the transition sound "warped"; a clean
+    # hard-cut is the standard broadcast/YouTube approach.
+    if background_audio_clip is None:
+        return None
+    if duck_start_time <= 0 or duck_start_time >= background_audio_clip.duration:
+        return background_audio_clip
+
+    try:
+        main_part = background_audio_clip.subclipped(0, duck_start_time).with_volume_scaled(1.0)
+        end_part = background_audio_clip.subclipped(
+            duck_start_time, min(background_audio_clip.duration, total_duration)
+        ).with_volume_scaled(duck_volume)
+        return concatenate_audioclips([main_part, end_part])
+    except Exception as duck_error:
+        print(f"[auto-skip] CTA ducking failed, background music stays at normal volume: {duck_error}")
+        return background_audio_clip
+
+
+def _build_climax_with_cta_voice(
+    total_video_duration: float,
+    outro_text: str,
+    aspect_ratio: str,
+    outro_voice_active: bool,
+    combined_audio,
+):
+    # Builds the visual climax layers AND the CTA voice, plus hard-cut
+    # ducking of the background audio during the CTA window. Returns
+    # (climax_visual_layers, final_combined_audio, total_video_duration_updated)
+    # -- the updated duration may grow if the CTA voice runs long, so a long
+    # CTA line never gets cut off at the end of the video.
+    if not outro_voice_active:
+        return [], combined_audio, total_video_duration
+
+    # Step A: build the real spoken CTA audio and measure its real duration.
+    cta_audio_clip, cta_audio_duration = _build_cta_voice_audio(outro_text)
+
+    # Step B: decide climax_duration -- default 5.5s, or as long as the CTA voice needs.
+    required_climax_duration = max(CLIMAX_DURATION_SECONDS, cta_audio_duration + 0.4)
+
+    # Step C: if the CTA voice made climax_duration grow, grow the whole
+    # video length too so nothing gets cut off mid-line.
+    total_video_duration_updated = max(total_video_duration, required_climax_duration + 1.0)
+
+    # Step D: visual climax layers (feathers + particle blast + text).
+    climax_visual_layers, climax_duration_used = create_climax_layer(
+        video_duration=total_video_duration_updated,
+        outro_text=outro_text,
+        aspect_ratio=aspect_ratio,
+        climax_duration_override=required_climax_duration,
+    )
+    climax_start_time = total_video_duration_updated - climax_duration_used
+
+    # Step E: hard-cut duck the background audio during the CTA window.
+    final_combined_audio = _duck_audio_hard_cut(
+        combined_audio, climax_start_time, total_video_duration_updated, duck_volume=0.5,
+    )
+
+    # Step F: mix the real CTA voice in at the right time.
+    if cta_audio_clip is not None:
+        cta_audio_clip = cta_audio_clip.with_start(climax_start_time)
+        if final_combined_audio is not None:
+            final_combined_audio = CompositeAudioClip(
+                [final_combined_audio, cta_audio_clip]
+            ).with_duration(total_video_duration_updated)
+        else:
+            final_combined_audio = cta_audio_clip
+
+    return climax_visual_layers, final_combined_audio, total_video_duration_updated
+
+
+# --------------------------------------------------------------
+# 5g) Only keep real MoviePy clip objects out of a nested list/tuple
+# --------------------------------------------------------------
+def _extract_only_clips(element, flat_layers):
+    if isinstance(element, (list, tuple)):
+        for sub_element in element:
+            _extract_only_clips(sub_element, flat_layers)
+    elif element is not None and hasattr(element, "duration"):
+        flat_layers.append(element)
+
+
+# --------------------------------------------------------------
+# 5h) Full standard-mode compiler
 # --------------------------------------------------------------
 def _compile_standard_mode(
     visual_clips, video_clips_timeline, music_files_pool, music_clips_timeline,
@@ -429,87 +491,66 @@ def _compile_standard_mode(
     duration_seconds, target_width, target_height, sub_color, sub_size,
     voiceover_mode, custom_audio_path, outro_voice_active,
 ):
-    is_long_format = aspect_ratio == "16:9"
-
-    # चरण १: आवाज़ (वॉइसओवर) तैयार करना
+    # Step 1: voiceover
     voice_clip, voice_duration = _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path)
 
-    # --------------------------------------------------------------
-    # चरण २: कुल वीडियो-लंबाई तय करना (8s + 1-इमेज समस्या का फ़िक्स)
-    # --------------------------------------------------------------
+    # Step 2: decide total video length
     total_images = len(visual_clips) if visual_clips else 1
-    min_visuals_time = total_images * 5.0  # गोदाम की हर फोटो 5 सेकंड तक चलेगी
+    min_visuals_time = total_images * 5.0
 
     if duration_seconds and float(duration_seconds) > 0:
-        # 1. UI (app.py) से चुना गया समय सबसे पहले लागू होगा
         total_video_duration = float(duration_seconds)
     elif voice_duration > 0:
-        # 2. अगर UI समय खाली है, तो आवाज़ और तस्वीरों के कुल समय में से जो बड़ा हो
         total_video_duration = max(voice_duration, min_visuals_time)
     else:
-        # 3. फॉलबैक: सभी तस्वीरें दिखाने लायक पर्याप्त समय (न्यूनतम 30 सेकंड)
         total_video_duration = max(min_visuals_time, 30.0)
 
-    # चरण ३: ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक बनाना
+    # Step 3: Track 1 (warehouse) main background visual track
     background_visual_track = _build_track1_looped_visual_track(
         visual_clips=visual_clips, total_duration=total_video_duration,
         target_width=target_width, target_height=target_height,
     )
 
-    # चरण ४: ट्रैक 2 के वीडियो-क्लिप्स को उनके तय Start/End सेकंड पर ओवरले करना
+    # Step 4: Track 2 overlay clips at their own start/end seconds
     track2_overlay_clips = _build_track2_overlay_clips(video_clips_timeline, target_width, target_height)
 
-    # चरण ५: ऑडियो — म्यूज़िक (ट्रैक 3/4) + SFX (शंखनाद इवेंट्स) + आवाज़, सबको मिलाना
+    # Step 5: audio -- music (Track 3/4) + SFX + voice, all mixed
     music_layer = _build_music_layer_for_standard_mode(
         music_clips_timeline, music_files_pool, master_music_volume, total_video_duration,
     )
     sfx_layer = _build_sfx_layer(sfx_events, total_video_duration)
     combined_audio = _combine_all_audio_layers(voice_clip, music_layer, sfx_layer, total_video_duration)
-    if combined_audio is not None:
-        background_visual_track = background_visual_track.with_audio(combined_audio)
 
-    # चरण ६: हिंदी सबटाइटल ओवरले
+    # Step 6: Hindi subtitle overlay
     subtitle_overlay_clip = _build_subtitle_overlay_clip(
         script_text=script_text, video_duration=total_video_duration,
         canvas_width=target_width, text_color=sub_color, font_size_px=sub_size,
     )
 
-   # चरण ७: क्लाइमेक्स विज़ुअल लेयर्स + AI आउट्रो वॉइस
-climax_layers = []
-outro_audio_layer = None
-
-if outro_voice_active:
-    climax_layers, outro_audio_layer = create_climax_layer(
-        video_duration=total_video_duration,
+    # Step 7: climax visual layers + AI outro/CTA voice + hard-cut ducking.
+    # This also may grow total_video_duration if the CTA voice runs long.
+    climax_layers, combined_audio, total_video_duration = _build_climax_with_cta_voice(
+        total_video_duration=total_video_duration,
         outro_text=outro_text,
         aspect_ratio=aspect_ratio,
-        voiceover_mode=voiceover_mode,
-        canvas_width=target_width,
-        canvas_height=target_height
+        outro_voice_active=outro_voice_active,
+        combined_audio=combined_audio,
     )
-    # --------------------------------------------------------------
-    # चरण ८: सभी लेयर्स को फ़्लैट और सेफ़ करना (List + Tuple दोनों का फ़िक्स)
-    # --------------------------------------------------------------
-    raw_layers = [background_visual_track]
 
-    # सभी ओवरले और क्लाइमेक्स लेयर्स को लिस्ट में जोड़ें
-    for layer_item in [track2_overlay_clips, subtitle_overlay_clip, climax_layers]:
+    if combined_audio is not None:
+        background_visual_track = background_visual_track.with_duration(total_video_duration).with_audio(combined_audio)
+    else:
+        background_visual_track = background_visual_track.with_duration(total_video_duration)
+
+    # Step 8: flatten every layer into real MoviePy clip objects only
+    raw_layers = [background_visual_track]
+    for layer_item in (track2_overlay_clips, subtitle_overlay_clip, climax_layers):
         if layer_item is not None:
             raw_layers.append(layer_item)
 
     flat_layers = []
-
-    # List, Tuple या Nested डाटा में से केवल असली MoviePy Clips निकालने का फ़ंक्शन
-    def _extract_only_clips(element):
-        if isinstance(element, (list, tuple)):
-            for sub_element in element:
-                _extract_only_clips(sub_element)
-        elif element is not None and hasattr(element, "layer_index") or hasattr(element, "duration"):
-            # केवल वही ऑब्जेक्ट आगे जाएगा जो वाकई एक VideoClip है
-            flat_layers.append(element)
-
     for item in raw_layers:
-        _extract_only_clips(item)
+        _extract_only_clips(item, flat_layers)
 
     final_composed_video = CompositeVideoClip(
         flat_layers, size=(target_width, target_height)
@@ -517,19 +558,17 @@ if outro_voice_active:
 
     return final_composed_video, total_video_duration
 
-# ================================================================
-# 🔄 एआई लाइव लूप स्टूडियो मोड (mode == "live_loop") के हेल्पर्स
-# ================================================================
 
+# ================================================================
+# Live loop studio mode (mode == "live_loop") helpers
+# ================================================================
 def _load_single_visual_clip_live_loop(media_item: dict, target_width: int, target_height: int, remaining_duration: float, style_variant_index: int):
-    """
-    लाइव लूप मोड में हर स्लॉट को बारी-बारी अलग सिनेमैटिक स्टाइल देता है ताकि
-    लंबा रिपीट-वीडियो भी बोरिंग न लगे:
-      0 → ज़ूम-इन (Ken Burns) + अगली क्लिप से क्रॉसफेड
-      1 → हल्का ज़ूम-आउट, हार्ड-कट (बिना क्रॉसफेड)
-      2 → ज़ूम-इन (भारी क्रॉसफेड)
-      3 → स्थिर फ्रेम (कोई ज़ूम नहीं), हार्ड-कट
-    """
+    # Live loop mode gives each slot a different cinematic style in turn so a
+    # long repeating video doesn't feel boring:
+    #   0 -> zoom-in (Ken Burns) + crossfade into next clip
+    #   1 -> slight zoom-out, hard-cut (no crossfade)
+    #   2 -> zoom-in (heavier crossfade)
+    #   3 -> static frame (no zoom), hard-cut
     if media_item["is_image"]:
         slot_duration = min(LIVE_LOOP_IMAGE_SLOT_SECONDS, remaining_duration)
         raw_clip = ImageClip(media_item["path"]).with_duration(slot_duration)
@@ -541,27 +580,23 @@ def _load_single_visual_clip_live_loop(media_item: dict, target_width: int, targ
     prepared_clip = _fit_clip_to_canvas(raw_clip, target_width, target_height)
 
     if media_item["is_image"] and style_variant_index == 1:
-        # हल्का ज़ूम-आउट: थोड़ा बड़ा होकर वापस सामान्य साइज़ पर आना
         prepared_clip = prepared_clip.resized(
             lambda t: (1 + KEN_BURNS_ZOOM_RATE) - KEN_BURNS_ZOOM_RATE * (t / max(slot_duration, 0.001))
         )
     elif media_item["is_image"] and style_variant_index in (0, 2):
-        # ज़ूम-इन — स्टाइल 2 पर नीचे क्रॉसफेड भी अतिरिक्त जुड़ता है
         prepared_clip = prepared_clip.resized(
             lambda t: 1 + KEN_BURNS_ZOOM_RATE * (t / max(slot_duration, 0.001))
         )
-    # style_variant_index == 3 (या वीडियो-आइटम): कोई ज़ूम नहीं, स्थिर/नैचुरल फ्रेम
+    # style_variant_index == 3 (or a video item): no zoom, static/natural frame.
 
     return prepared_clip, slot_duration
 
 
 def _build_live_loop_visual_track(visual_clips: list, video_clips_timeline: list, total_duration: float, target_width: int, target_height: int):
-    """
-    ट्रैक 1 (गोदाम) + ट्रैक 2 (टाइमलाइन स्लॉट्स — यहाँ सिर्फ़ मीडिया-सोर्स के तौर
-    पर लिए जाते हैं, उनके अपने Start/End इस मोड में इस्तेमाल नहीं होते) — दोनों
-    को मिलाकर एक साझा पूल बनाया जाता है, फिर एक 'while loop' उसे तब तक चक्र में
-    घुमाता रहता है — हर बार अलग स्टाइल के साथ — जब तक total_duration भर न जाए।
-    """
+    # Track 1 (warehouse) + Track 2 (timeline slots -- here only used as a
+    # media source, their own start/end aren't used in this mode) are merged
+    # into a shared pool, then a while-loop cycles through it -- each time
+    # with a different style -- until total_duration is filled.
     combined_media_pool = [
         {"path": item["path"], "is_image": item["is_image"]} for item in visual_clips
     ] + [
@@ -569,18 +604,17 @@ def _build_live_loop_visual_track(visual_clips: list, video_clips_timeline: list
     ]
 
     if not combined_media_pool:
-        raise ValueError("लाइव लूप मोड के लिए कम-से-कम एक विज़ुअल (ट्रैक 1) या वीडियो-क्लिप (ट्रैक 2) ज़रूरी है।")
+        raise ValueError("Live loop mode needs at least one Track 1 visual or Track 2 video clip.")
 
     visual_clips_sequence = []
     elapsed_duration = 0.0
     cycle_index = 0
     total_items = len(combined_media_pool)
 
-    # ---- 🔄 महा-लूपिंग व्हाइल-लूप: जब तक पूरा चुना हुआ ड्यूरेशन भर न जाए ----
     while elapsed_duration < total_duration - 0.01:
         media_item = combined_media_pool[cycle_index % total_items]
         remaining_duration = total_duration - elapsed_duration
-        style_variant_index = cycle_index % 4   # हर चक्र में स्टाइल बदलती रहे — विविधता के लिए
+        style_variant_index = cycle_index % 4
 
         prepared_clip, slot_duration = _load_single_visual_clip_live_loop(
             media_item, target_width, target_height, remaining_duration, style_variant_index,
@@ -588,7 +622,7 @@ def _build_live_loop_visual_track(visual_clips: list, video_clips_timeline: list
         if slot_duration <= 0:
             break
 
-        use_crossfade = style_variant_index in (0, 2)   # आधे कट क्रॉसफेड, आधे हार्ड-कट — विविधता
+        use_crossfade = style_variant_index in (0, 2)
         if visual_clips_sequence and use_crossfade:
             prepared_clip = prepared_clip.with_effects([vfx.CrossFadeIn(CROSSFADE_DURATION_SECONDS)])
 
@@ -610,12 +644,9 @@ def _build_live_loop_visual_track(visual_clips: list, video_clips_timeline: list
 
 
 def _build_scrolling_ticker_overlay_clip(outro_text: str, video_duration: float, canvas_width: int, canvas_height: int):
-    """
-    न्यूज़-पट्टी/आउट्रो टेक्स्ट को एक चौड़े पारदर्शी बैनर-PNG में रेंडर करके,
-    उसे पूरी वीडियो-लंबाई तक लगातार दाएँ किनारे से अंदर आकर बाएँ किनारे से
-    बाहर निकलते हुए (और फिर से लूप होकर वापस दाएँ से आते हुए) दिखाता है —
-    यानी एक सतत "Scrolling Timeline Loop"।
-    """
+    # Renders the news-ticker/outro text into a wide transparent banner PNG,
+    # then scrolls it right-to-left across the whole video, looping
+    # continuously (a "scrolling timeline loop").
     if not outro_text or not outro_text.strip():
         return None
 
@@ -629,15 +660,13 @@ def _build_scrolling_ticker_overlay_clip(outro_text: str, video_duration: float,
     ticker_image_clip = ImageClip(ticker_png_path).with_duration(video_duration)
     banner_height = ticker_image_clip.h
     ticker_y_position = canvas_height - banner_height - TICKER_BOTTOM_MARGIN_PX
-    cycle_distance = banner_width + canvas_width   # दाएँ किनारे से पूरी तरह बाहर निकलने तक की दूरी
+    cycle_distance = banner_width + canvas_width
 
     def _ticker_x_position(t):
         traveled_distance = (t * TICKER_SCROLL_SPEED_PX_PER_SEC) % cycle_distance
         return canvas_width - traveled_distance
 
-    # ⚠️ फिक्स: MoviePy 2.x+ में .with_position() को टुपल (x, y) की जगह
-    # लिस्ट [x, y] चाहिए — वरना "int() argument must be... not 'tuple'"
-    # एरर आता है। इसलिए यहाँ lambda भी गोल-कोष्ठक (...) नहीं, स्क्वायर-ब्रैकेट [...] लौटाता है।
+    # MoviePy 2.x wants with_position() to get a LIST [x, y] even from a lambda.
     return ticker_image_clip.with_position(lambda t: [_ticker_x_position(t), ticker_y_position])
 
 
@@ -646,328 +675,54 @@ def _compile_live_loop_mode(
     target_width, target_height, master_music_volume, outro_voice_active, aspect_ratio,
 ):
     if not duration_seconds:
-        raise ValueError("लाइव लूप मोड के लिए duration_seconds ज़रूर दिया जाना चाहिए।")
-    total_video_duration = duration_seconds
+        raise ValueError("Live loop mode requires duration_seconds to be given.")
+    total_video_duration = float(duration_seconds)
 
-    # चरण १: ट्रैक 1 + ट्रैक 2 को मिलाकर 'while loop' में चक्र-दर-चक्र भरना (अलग-अलग स्टाइल्स)
+    # Step 1: merge Track 1 + Track 2 into the while-loop, cycle by cycle.
     background_visual_track = _build_live_loop_visual_track(
         visual_clips=visual_clips, video_clips_timeline=video_clips_timeline,
         total_duration=total_video_duration, target_width=target_width, target_height=target_height,
     )
 
-    # चरण २: बैकग्राउंड ऑडियो — इस मोड में कोई अलग म्यूज़िक/SFX ट्रैक नहीं आता,
-    # इसलिए डिफ़ॉल्ट सितार-संगीत को पूरी ड्यूरेशन तक लूप करके बजाया जाता है
+    # Step 2: background audio -- this mode has no separate music/SFX
+    # tracks, so the default sitar music loops across the full duration.
     sitar_bg_clip = AudioFileClip(SITAR_BACKGROUND_MUSIC_PATH)
     looped_bg_audio = _loop_audio_clip_to_duration(sitar_bg_clip, total_video_duration)
     looped_bg_audio = looped_bg_audio.with_volume_scaled(master_music_volume)
     background_visual_track = background_visual_track.with_audio(looped_bg_audio)
 
-    # चरण ३: न्यूज़-पट्टी/आउट्रो — पूरी वीडियो में लगातार स्क्रॉलिंग-लूप में दिखेगी
+    # Step 3: news-ticker/outro -- scrolls continuously across the whole video.
     scrolling_ticker_clip = _build_scrolling_ticker_overlay_clip(
         outro_text=outro_text, video_duration=total_video_duration,
         canvas_width=target_width, canvas_height=target_height,
     )
 
-    # चरण ४: क्लाइमेक्स लेयर्स — मयूर-पंख हमेशा आख़िरी 5.5 सेकंड में (लंबे लूप वीडियो में भी)
-    climax_layers = (
-        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
-        if outro_voice_active else []
-    )
+    # Step 4: climax layers -- feathers always in the last ~5.5s (even in long loop videos).
+    if outro_voice_active:
+        climax_layers, climax_duration_used = create_climax_layer(
+            video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio,
+        )
+    else:
+        climax_layers = []
 
     all_layers = [background_visual_track]
     if scrolling_ticker_clip is not None:
         all_layers.append(scrolling_ticker_clip)
-    all_layers.extend(climax_layers)
+
+    flat_climax_layers = []
+    _extract_only_clips(climax_layers, flat_climax_layers)
+    all_layers.extend(flat_climax_layers)
 
     final_composed_video = CompositeVideoClip(
         all_layers, size=(target_width, target_height),
     ).with_duration(total_video_duration)
 
-    return final_composed_video
+    return final_composed_video, total_video_duration
 
-
-# --------------------------------------------------------------
-# 6) मुख्य फंक्शन — यही बाहर से (app.py से) बुलाया जाएगा
-# --------------------------------------------------------------
-def compile_cinematic_video(
-    mode="standard", visual_clips=None, video_clips_timeline=None,
-    music_files_pool=None, music_clips_timeline=None, master_music_volume=0.3,
-    sfx_events=None, script_text="", outro_text="", aspect_ratio="9:16",
-    duration_seconds=None, quality="1080p", sub_color="yellow", sub_size=40,
-    voiceover_mode="hi-IN-SwaraNeural", custom_audio_path=None, outro_voice_active=True, **kwargs
-):
-    target_width, target_height, _ = _resolve_export_settings(aspect_ratio, quality)
-    
-    if mode == "live_loop":
-        return _compile_live_loop_mode(
-            visual_clips=visual_clips or [], video_clips_timeline=video_clips_timeline or [],
-            outro_text=outro_text, duration_seconds=duration_seconds,
-            target_width=target_width, target_height=target_height,
-            master_music_volume=master_music_volume, outro_voice_active=outro_voice_active,
-            aspect_ratio=aspect_ratio
-        )
-    else:
-        return _compile_standard_mode(
-            visual_clips=visual_clips or [], video_clips_timeline=video_clips_timeline or [],
-            music_files_pool=music_files_pool or [], music_clips_timeline=music_clips_timeline or [],
-            master_music_volume=master_music_volume, sfx_events=sfx_events or [],
-            script_text=script_text, outro_text=outro_text, aspect_ratio=aspect_ratio,
-            duration_seconds=duration_seconds, target_width=target_width, target_height=target_height,
-            sub_color=sub_color, sub_size=sub_size, voiceover_mode=voiceover_mode,
-            custom_audio_path=custom_audio_path, outro_voice_active=outro_voice_active
-        )
-
-    # ---------------------------------------------------------
-    # स्पीड-लॉक्ड फाइनल रेंडर, क्वालिटी के हिसाब से बिटरेट के साथ
-    # ---------------------------------------------------------
-    final_composed_video.write_videofile(
-        output_video_path,
-        fps=RENDER_FPS,
-        threads=RENDER_THREADS,
-        preset=RENDER_PRESET,
-        codec="libx264",
-        audio_codec="aac",
-        bitrate=export_bitrate,
-    )
-
-    # ---------------------------------------------------------
-    # सफाई (Cleanup): अस्थायी सबटाइटल/टिकर PNG हटाना
-    # ---------------------------------------------------------
-    for temp_png_path in (SUBTITLE_TEMP_PNG, TICKER_TEMP_PNG):
-        if os.path.exists(temp_png_path):
-            os.remove(temp_png_path)
-
-    return output_video_path
-
-
-# --------------------------------------------------------------
-# इस फाइल को सीधे चलाकर टेस्ट करने के लिए (Optional)
-# --------------------------------------------------------------
-if __name__ == "__main__":
-    # --- उदाहरण १: सामान्य स्टूडियो मोड ---
-    standard_result_path = compile_cinematic_video(
-        mode="standard",
-        visual_clips=[
-            {"path": "mandir_photo_1.jpg", "is_image": True, "start": 0.0, "end": 5.0},
-            {"path": "mandir_visual.mp4", "is_image": False, "start": 0.0, "end": 0.0},
-        ],
-        video_clips_timeline=[],
-        music_files_pool=[],
-        music_clips_timeline=[],
-        master_music_volume=0.8,
-        sfx_events=[],
-        script_text="यह मंदिर सैकड़ों वर्षों पुराना है और इसकी अपनी एक अनोखी कहानी है...",
-        outro_text="जय बाबा की! अगला वीडियो जल्द आएगा 🙏",
-        output_video_path="final_output_standard.mp4",
-        aspect_ratio="9:16",
-        duration_seconds=None,
-        quality="720p",
-        sub_color="#FFD700",
-        sub_size=65,
-        voiceover_mode="ai_tts",
-        custom_audio_path=None,
-    )
-    print(f"फाइनल (सामान्य मोड) वीडियो यहाँ सेव हुई: {standard_result_path}")
-
-    # --- उदाहरण २: 🔄 लाइव लूप मोड ---
-    live_loop_result_path = compile_cinematic_video(
-        mode="live_loop",
-        visual_clips=[
-            {"path": "mandir_photo_1.jpg", "is_image": True, "start": 0.0, "end": 5.0},
-            {"path": "mandir_photo_2.jpg", "is_image": True, "start": 0.0, "end": 5.0},
-        ],
-        video_clips_timeline=[
-            {"path": "mandir_visual.mp4", "start": 0.0, "end": 0.0},
-        ],
-        outro_text="जय बाबा की! 🙏 अगला दर्शन जल्द",
-        output_video_path="final_output_live_loop.mp4",
-        aspect_ratio="16:9",
-        duration_seconds=300,   # 5 मिनट
-        quality="720p",
-        master_music_volume=0.8,
-    )
-    print(f"फाइनल (लाइव लूप मोड) वीडियो यहाँ सेव हुई: {live_loop_result_path}")
-
-
-"""
-==============================================================
-engine.py में जोड़ने के लिए नया हिस्सा — CTA वॉइस + हार्ड-कट डकिंग
-==============================================================
-🆕 यह cloud_media_director_studio.py के इन दो फंक्शन्स से सीखा गया तरीका है:
-   - build_cta_tail()       -> असली बोली गई "Like/Subscribe" आवाज़ बनाना,
-                                उसकी असली लंबाई नापना, CTA-विंडो उसी हिसाब से तय करना
-   - duck_audio_for_cta()   -> बैकग्राउंड-म्यूज़िक को hard-cut (कोई fade नहीं)
-                                तरीके से CTA के दौरान धीमा करना
-
-इसे अपनी मौजूदा engine.py में इस तरह जोड़ें:
-  1) नीचे दिए दोनों फंक्शन (_build_cta_voice_audio, _duck_audio_hard_cut)
-     को engine.py में climax.py के इम्पोर्ट के नीचे कहीं भी पेस्ट करें।
-  2) _compile_standard_mode() (या जो भी आपका मुख्य कंपाइलर फंक्शन है) में
-     "climax_layers = create_climax_layer(...)" वाली लाइन को नीचे दिए
-     "चरण ७ (अपडेटेड)" वाले ब्लॉक से replace करें।
-==============================================================
-"""
-
-import os
-
-from moviepy import AudioFileClip, concatenate_audioclips
-
-from voice import create_baba_audio     # पहले से मौजूद — बाबा की AI आवाज़ बनाने वाला फंक्शन
-from climax import create_climax_layer, SUBSCRIBE_MESSAGE   # SUBSCRIBE_MESSAGE अब climax.py से एक्सपोर्ट होता है
-
-
-# --------------------------------------------------------------
-# 🆕 १) असली बोली गई CTA-आवाज़ बनाना ("Channel ko like, subscribe karein" + outro_text)
-# --------------------------------------------------------------
-def _build_cta_voice_audio(outro_text: str) -> tuple:
-    """
-    voice.py के create_baba_audio() से CTA की असली बोली हुई आवाज़ बनाता है:
-    "Channel ko like, subscribe karein" + यूज़र का outro_text एक साथ।
-
-    🔐 सुरक्षा: अगर आवाज़ बनाने में कोई भी दिक्कत आए (जैसे edge-tts का
-    नेटवर्क-टाइमआउट), तो यह क्रैश नहीं करता — सिर्फ़ (None, 0.0) लौटा देता
-    है, ताकि पूरा वीडियो बिना CTA-आवाज़ के भी (सिर्फ़ टेक्स्ट/पंख के साथ)
-    आगे रेंडर हो सके।
-
-    रिटर्न:
-        (cta_audio_clip या None, cta_audio_duration_seconds)
-    """
-    cta_spoken_text = SUBSCRIBE_MESSAGE
-    if outro_text and outro_text.strip():
-        cta_spoken_text = f"{SUBSCRIBE_MESSAGE}. {outro_text.strip()}"
-
-    try:
-        cta_audio_path = create_baba_audio(cta_spoken_text, "temp_cta_voice.mp3")
-        cta_audio_clip = AudioFileClip(cta_audio_path)
-        return cta_audio_clip, cta_audio_clip.duration
-    except Exception as cta_voice_error:
-        print(f"⚠️ [ऑटो-स्किप] CTA-आवाज़ नहीं बन सकी — क्लाइमेक्स सिर्फ़ विज़ुअल (बिना आवाज़) रहेगा: {cta_voice_error}")
-        return None, 0.0
-
-
-# --------------------------------------------------------------
-# 🆕 २) बैकग्राउंड-ऑडियो को CTA के दौरान "हार्ड-कट" तरीके से धीमा करना
-# --------------------------------------------------------------
-def _duck_audio_hard_cut(background_audio_clip, duck_start_time: float, total_duration: float, duck_volume: float = 0.5):
-    """
-    cloud_media_director_studio.py के duck_audio_for_cta() से लिया गया
-    तरीका: बैकग्राउंड-ऑडियो को दो हिस्सों में काटकर सीधे वॉल्यूम बदलना —
-    कोई fade-in/fade-out इफ़ेक्ट-चेन नहीं जोड़ना।
-
-    ⚠️ क्यों ज़रूरी है: दो अलग "smoothing" इफ़ेक्ट (fade + volume-change)
-    एक साथ लगाने से ट्रांज़िशन "धीमा/लड़खड़ाता हुआ" (warped) सुनाई देता है।
-    सीधा hard-cut सबसे साफ़ और प्रोफ़ेशनल तरीका है — ठीक जैसा असली न्यूज़
-    चैनल/YouTube वीडियो में होता है।
-
-    पैरामीटर:
-        background_audio_clip -> मुख्य बैकग्राउंड-संगीत/मिक्स्ड ऑडियो क्लिप
-        duck_start_time        -> किस सेकंड से आवाज़ धीमी होनी शुरू होगी (= climax_start_time)
-        total_duration          -> पूरे वीडियो की कुल लंबाई
-        duck_volume             -> CTA के दौरान कितना वॉल्यूम रहेगा (0.5 = 50%)
-
-    अगर background_audio_clip=None हो, या duck_start_time अमान्य हो, तो
-    यह फंक्शन क्रैश नहीं करता — जो भी मिला वही सुरक्षित रूप से लौटा देता है।
-    """
-    if background_audio_clip is None:
-        return None
-    if duck_start_time <= 0 or duck_start_time >= background_audio_clip.duration:
-        return background_audio_clip
-
-    try:
-        main_part = background_audio_clip.subclipped(0, duck_start_time).with_volume_scaled(1.0)
-        end_part = background_audio_clip.subclipped(
-            duck_start_time, min(background_audio_clip.duration, total_duration)
-        ).with_volume_scaled(duck_volume)
-        return concatenate_audioclips([main_part, end_part])
-    except Exception as duck_error:
-        print(f"⚠️ [ऑटो-स्किप] CTA-ducking नहीं हो सकी, बैकग्राउंड-संगीत सामान्य वॉल्यूम पर रहेगा: {duck_error}")
-        return background_audio_clip
-
-
-# --------------------------------------------------------------
-# 🆕 चरण ७ (अपडेटेड) — इसे अपने _compile_standard_mode() के अंदर
-# पुरानी "climax_layers = create_climax_layer(...)" लाइन की जगह डालें
-# --------------------------------------------------------------
-"""
-पुराना कोड (हटाएँ):
-
-    climax_layers = (
-        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
-        if outro_voice_active else []
-    )
-
-नया कोड (इसकी जगह डालें):
-"""
-
-
-def _build_climax_with_cta_voice(
-    total_video_duration: float,
-    outro_text: str,
-    aspect_ratio: str,
-    outro_voice_active: bool,
-    combined_audio,   # अब तक बना मुख्य ऑडियो-मिक्स (आवाज़ + संगीत + SFX) — इसी को duck करेंगे
-):
-    """
-    चरण ७ का पूरा नया तरीका — विज़ुअल क्लाइमेक्स-लेयर्स भी बनाता है और
-    CTA-आवाज़ भी जोड़ता है, साथ ही बैकग्राउंड-ऑडियो को hard-cut ducking भी
-    करता है। सब कुछ एक ही जगह से लौटता है ताकि आगे कंपोज़िट करना आसान हो।
-
-    रिटर्न:
-        (climax_visual_layers: list, final_combined_audio, total_video_duration_updated)
-        -> total_video_duration_updated वही असली लंबाई है जो CTA-आवाज़ के
-           हिसाब से बढ़ी/बरकरार रही — आगे CompositeVideoClip में इसी का
-           इस्तेमाल करें, ताकि लंबी CTA-आवाज़ कभी वीडियो के अंत में कटे नहीं।
-    """
-    if not outro_voice_active:
-        return [], combined_audio, total_video_duration
-
-    # --- चरण A: असली बोली गई CTA-आवाज़ बनाना और उसकी असली लंबाई नापना ---
-    cta_audio_clip, cta_audio_duration = _build_cta_voice_audio(outro_text)
-
-    # --- चरण B: climax_duration तय करना — डिफ़ॉल्ट 5.5s, या CTA-आवाज़ जितनी लंबी हो उतना ---
-    from climax import CLIMAX_DURATION_SECONDS
-    required_climax_duration = max(CLIMAX_DURATION_SECONDS, cta_audio_duration + 0.4)
-
-    # --- चरण C: अगर CTA-आवाज़ की वजह से climax_duration बढ़ी हो, तो पूरे वीडियो
-    # की लंबाई भी उतनी ही बढ़ा देना, ताकि आवाज़/विज़ुअल कभी बीच में न कटें ---
-    total_video_duration_updated = max(total_video_duration, required_climax_duration + 1.0)
-
-    # --- चरण D: विज़ुअल क्लाइमेक्स-लेयर्स (पंख + पार्टिकल-ब्लास्ट + टेक्स्ट) बनाना ---
-    climax_visual_layers, climax_duration_used = create_climax_layer(
-        video_duration=total_video_duration_updated,
-        outro_text=outro_text,
-        aspect_ratio=aspect_ratio,
-        climax_duration_override=required_climax_duration,
-    )
-    climax_start_time = total_video_duration_updated - climax_duration_used
-
-    # --- चरण E: बैकग्राउंड-ऑडियो को hard-cut तरीके से CTA के दौरान धीमा करना ---
-    final_combined_audio = _duck_audio_hard_cut(
-        combined_audio, climax_start_time, total_video_duration_updated, duck_volume=0.5,
-    )
-
-    # --- चरण F: असली CTA-आवाज़ को सही समय पर मिक्स में जोड़ना ---
-    if cta_audio_clip is not None:
-        cta_audio_clip = cta_audio_clip.with_start(climax_start_time)
-        if final_combined_audio is not None:
-            from moviepy import CompositeAudioClip
-            final_combined_audio = CompositeAudioClip(
-                [final_combined_audio, cta_audio_clip]
-            ).with_duration(total_video_duration_updated)
-        else:
-            final_combined_audio = cta_audio_clip
-
-    return climax_visual_layers, final_combined_audio, total_video_duration_updated
 
 # ================================================================
-# 🎬 मुख्य वीडियो कंपाइलर (Main Entry Function)
+# 6. Main entry function -- called from app.py
 # ================================================================
-# इस फ़ंक्शन का काम: 
-# app.py से आने वाले सभी पैरामीटर्स (मोड, ऑडियो, वीडियो क्लिप्स, क्वालिटी)
-# को स्वीकार करना और चुने गए मोड ("standard" या "live_loop") के हिसाब से 
-# सही कंपाइलर फ़ंक्शन को चलाकर अंतिम वीडियो तैयार करना।
-# ================================================================
-
 def compile_cinematic_video(
     mode="standard",
     visual_clips=None,
@@ -986,20 +741,15 @@ def compile_cinematic_video(
     voiceover_mode="hi-IN-SwaraNeural",
     custom_audio_path=None,
     outro_voice_active=True,
-    **kwargs
+    output_video_path="final_output.mp4",
+    **kwargs,
 ):
-    """
-    [मॉड्यूल का काम]: 
-    १. स्क्रीन साइज़ और बिटरेट तय करता है (9:16 / 16:9 और 720p / 1080p)।
-    २. अगर यूज़र ने 'live_loop' चुना है, तो '_compile_live_loop_mode' चलाता है।
-    ३. अगर 'standard' मोड चुना है, तो '_compile_standard_mode' चलाता है।
-    """
-    # 1. स्क्रीन चौड़ाई, लंबाई और क्वालिटी बिटरेट सेट करना
-    target_width, target_height, _ = _resolve_export_settings(aspect_ratio, quality)
+    # 1. Resolve canvas size + bitrate for the chosen aspect ratio/quality.
+    target_width, target_height, export_bitrate = _resolve_export_settings(aspect_ratio, quality)
 
-    # 2. मोड के अनुसार सही कंपाइलर को कॉल करना
+    # 2. Call the right compiler for the chosen mode.
     if mode == "live_loop":
-        return _compile_live_loop_mode(
+        final_composed_video, total_video_duration = _compile_live_loop_mode(
             visual_clips=visual_clips or [],
             video_clips_timeline=video_clips_timeline or [],
             outro_text=outro_text,
@@ -1008,10 +758,10 @@ def compile_cinematic_video(
             target_height=target_height,
             master_music_volume=master_music_volume,
             outro_voice_active=outro_voice_active,
-            aspect_ratio=aspect_ratio
+            aspect_ratio=aspect_ratio,
         )
     else:
-        return _compile_standard_mode(
+        final_composed_video, total_video_duration = _compile_standard_mode(
             visual_clips=visual_clips or [],
             video_clips_timeline=video_clips_timeline or [],
             music_files_pool=music_files_pool or [],
@@ -1028,5 +778,72 @@ def compile_cinematic_video(
             sub_size=sub_size,
             voiceover_mode=voiceover_mode,
             custom_audio_path=custom_audio_path,
-            outro_voice_active=outro_voice_active
+            outro_voice_active=outro_voice_active,
         )
+
+    # 3. Speed-locked final render, with quality-appropriate bitrate.
+    final_composed_video.write_videofile(
+        output_video_path,
+        fps=RENDER_FPS,
+        threads=RENDER_THREADS,
+        preset=RENDER_PRESET,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate=export_bitrate,
+    )
+
+    # 4. Cleanup: remove temp subtitle/ticker/CTA-voice files.
+    for temp_path in (SUBTITLE_TEMP_PNG, TICKER_TEMP_PNG, CTA_TEMP_VOICE_MP3):
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+    return output_video_path
+
+
+# --------------------------------------------------------------
+# Run this file directly to smoke-test it (optional)
+# --------------------------------------------------------------
+if __name__ == "__main__":
+    # --- Example 1: standard studio mode ---
+    standard_result_path = compile_cinematic_video(
+        mode="standard",
+        visual_clips=[
+            {"path": "mandir_photo_1.jpg", "is_image": True, "start": 0.0, "end": 5.0},
+            {"path": "mandir_visual.mp4", "is_image": False, "start": 0.0, "end": 0.0},
+        ],
+        video_clips_timeline=[],
+        music_files_pool=[],
+        music_clips_timeline=[],
+        master_music_volume=0.8,
+        sfx_events=[],
+        script_text="This temple is centuries old and has its own unique story...",
+        outro_text="Jai Baba ki! Next video coming soon.",
+        output_video_path="final_output_standard.mp4",
+        aspect_ratio="9:16",
+        duration_seconds=None,
+        quality="720p",
+        sub_color="#FFD700",
+        sub_size=65,
+        voiceover_mode="ai_tts",
+        custom_audio_path=None,
+    )
+    print(f"Final (standard mode) video saved to: {standard_result_path}")
+
+    # --- Example 2: live loop mode ---
+    live_loop_result_path = compile_cinematic_video(
+        mode="live_loop",
+        visual_clips=[
+            {"path": "mandir_photo_1.jpg", "is_image": True, "start": 0.0, "end": 5.0},
+            {"path": "mandir_photo_2.jpg", "is_image": True, "start": 0.0, "end": 5.0},
+        ],
+        video_clips_timeline=[
+            {"path": "mandir_visual.mp4", "start": 0.0, "end": 0.0},
+        ],
+        outro_text="Jai Baba ki! Next darshan coming soon.",
+        output_video_path="final_output_live_loop.mp4",
+        aspect_ratio="16:9",
+        duration_seconds=300,
+        quality="720p",
+        master_music_volume=0.8,
+    )
+    print(f"Final (live loop mode) video saved to: {live_loop_result_path}")

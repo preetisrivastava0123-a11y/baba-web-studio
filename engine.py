@@ -470,18 +470,36 @@ def _compile_standard_mode(
         if outro_voice_active else []
     )
 
-    # चरण ८: सभी लेयर्स को एक साथ कंपोज़िट करना
-    all_layers = [background_visual_track, *track2_overlay_clips]
+    # चरण ८: सभी लेयर्स को सुरक्षित (फ़्लैट) करके कंपोज़िट करना
+    raw_layers = [background_visual_track]
+
+    # Track 2 लेयर्स जोड़ना
+    if isinstance(track2_overlay_clips, list):
+        raw_layers.extend(track2_overlay_clips)
+    elif track2_overlay_clips is not None:
+        raw_layers.append(track2_overlay_clips)
+
+    # सबटाइटल ओवरले जोड़ना
     if subtitle_overlay_clip is not None:
-        all_layers.append(subtitle_overlay_clip)
-    all_layers.extend(climax_layers)
+        raw_layers.append(subtitle_overlay_clip)
+
+    # क्लाइमेक्स लेयर्स जोड़ना
+    if isinstance(climax_layers, list):
+        raw_layers.extend(climax_layers)
+    elif climax_layers is not None:
+        raw_layers.append(climax_layers)
+
+    # नेस्टेड लिस्ट (List inside List) से बचाव का फ़्लैटनिंग लॉजिक
+    flat_layers = []
+    for layer in raw_layers:
+        if isinstance(layer, list):
+            flat_layers.extend([item for item in layer if item is not None])
+        elif layer is not None:
+            flat_layers.append(layer)
 
     final_composed_video = CompositeVideoClip(
-        all_layers, size=(target_width, target_height),
+        flat_layers, size=(target_width, target_height),
     ).with_duration(total_video_duration)
-
-    return final_composed_video, total_video_duration
-
 
 # ================================================================
 # 🔄 एआई लाइव लूप स्टूडियो मोड (mode == "live_loop") के हेल्पर्स

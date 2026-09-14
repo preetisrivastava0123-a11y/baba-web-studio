@@ -342,6 +342,7 @@ def _build_subscribe_image_clip(
     climax_duration: float,
     feather_height: int,
     canvas_width: int,
+    canvas_height: int,
     font_scale: float,
 ):
     """
@@ -364,19 +365,9 @@ def _build_subscribe_image_clip(
     if subscribe_clip is None:
         return None
 
-    # पंख के केंद्र से थोड़ा नीचे (feather_height/2 + थोड़ा मार्जिन) रखना
-    # — यह मार्जिन दोनों फॉर्मेट में सेंटर-पोज़िशनिंग की वजह से अपने-आप
-    # सही जगह बैठता है, चाहे कैनवस पोर्ट्रेट हो या लैंडस्केप। (feather_height
-    # यहाँ 0 भी हो सकता है अगर पंख की फ़ाइल नियम-१ के तहत छूट गई हो — तब
-    # संदेश बस सीधे केंद्र के थोड़ा नीचे आ जाएगा, फिर भी बिना क्रैश हुए।)
     vertical_gap_below_feather = (feather_height / 2) + 20
-    # ⚠️ फिक्स: MoviePy 2.x+ के .with_position() को कहीं भी टुपल नहीं चाहिए —
-    # बाहरी (x, y) जोड़ी और अंदर वाली (center, offset) जोड़ी, दोनों को
-    # स्क्वायर-ब्रैकेट लिस्ट में बदला गया है, वरना "int() argument must be...
-    # not 'tuple'" एरर आता है।
-    subscribe_clip = subscribe_clip.with_position(
-        lambda t: ["center", ["center", vertical_gap_below_feather]]
-    )
+    y_fraction = 0.5 + (vertical_gap_below_feather / canvas_height)
+    subscribe_clip = subscribe_clip.with_position(lambda t: [0.5, y_fraction], relative=True)
 
     return subscribe_clip
 

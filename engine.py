@@ -391,7 +391,7 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
         output_image_path=SUBTITLE_TEMP_PNG,
         canvas_width=canvas_width,
         text_color=text_color,
-        font_size_px=font_size_px,
+        font_size=font_size_px,
     )
 
     subtitle_clip = (

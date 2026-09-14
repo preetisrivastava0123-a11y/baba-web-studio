@@ -156,13 +156,12 @@ def _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path
             return audio_clip, audio_clip.duration
         
         if script_text and script_text.strip():
-            # एआई वॉइस जनरेट करने का लॉजिक (voice.py या edge-tts)
-            voice_file = generate_tts_voice(script_text, voiceover_mode) # आपके प्रोजेक्ट के हिसाब से
+            # generate_tts_voice की जगह ऊपर इम्पोर्ट किया गया create_baba_audio इस्तेमाल होगा
+            voice_file = create_baba_audio(script_text)
             if voice_file and os.path.exists(voice_file):
                 audio_clip = AudioFileClip(voice_file)
                 return audio_clip, audio_clip.duration
 
-        # अगर कोई आवाज़ नहीं है, तो (None, 0.0) लौटाएँ (NoneType Unpack Error से बचाव)
         return None, 0.0
     except Exception as e:
         print(f"Voice generation note: {e}")
@@ -680,81 +679,31 @@ def _compile_live_loop_mode(
 # 6) मुख्य फंक्शन — यही बाहर से (app.py से) बुलाया जाएगा
 # --------------------------------------------------------------
 def compile_cinematic_video(
-    mode: str = "standard",
-    visual_clips: list = None,
-    video_clips_timeline: list = None,
-    music_files_pool: list = None,
-    music_clips_timeline: list = None,
-    master_music_volume: float = 0.8,
-    sfx_events: list = None,
-    script_text: str = "",
-    outro_text: str = "",
-    output_video_path: str = "final_output.mp4",
-    aspect_ratio: str = "9:16",
-    duration_seconds=None,
-    quality: str = "720p",
-    sub_color: str = "#FFD700",
-    sub_size: int = 65,
-    voiceover_mode: str = "ai_tts",
-    custom_audio_path=None,
-    outro_voice_active: bool = True,
-) -> str:
-    """
-    पूरी सिनेमैटिक वीडियो-निर्माण प्रक्रिया को एक जगह जोड़ता है, और
-    mode के अनुसार दो बिल्कुल अलग रास्तों में बँट जाता है:
-
-      mode="standard"  → ट्रैक 1 (सीक्वेंशियल-लूप्ड बैकग्राउंड) + ट्रैक 2
-                          (टाइम-सिंक्ड वीडियो-ओवरले) + ट्रैक 3/4 का म्यूज़िक +
-                          SFX-इवेंट्स + हिंदी सबटाइटल + आवाज़ + क्लाइमेक्स
-      mode="live_loop" → ट्रैक 1 + ट्रैक 2 का साझा मीडिया-पूल एक व्हाइल-लूप
-                          में चक्र-दर-चक्र दोहराया जाता है (अलग-अलग स्टाइल्स
-                          के साथ) + लगातार स्क्रॉलिंग न्यूज़-पट्टी + क्लाइमेक्स
-
-    दोनों मोड्स में आख़िरी 5.5 सेकंड में मयूर-पंख क्लाइमेक्स ब्लास्ट (climax.py
-    के ज़रिए) हमेशा लागू होता है (जब तक outro_voice_active=True हो)।
-
-    रिटर्न:
-        str -> फाइनल वीडियो की फाइल-पाथ (output_video_path)
-    """
-    visual_clips = visual_clips or []
-    video_clips_timeline = video_clips_timeline or []
-    music_files_pool = music_files_pool or []
-    music_clips_timeline = music_clips_timeline or []
-    sfx_events = sfx_events or []
-
-    target_width, target_height, export_bitrate = _resolve_export_settings(aspect_ratio, quality)
-
+    mode="standard", visual_clips=None, video_clips_timeline=None,
+    music_files_pool=None, music_clips_timeline=None, master_music_volume=0.3,
+    sfx_events=None, script_text="", outro_text="", aspect_ratio="9:16",
+    duration_seconds=None, quality="1080p", sub_color="yellow", sub_size=40,
+    voiceover_mode="hi-IN-SwaraNeural", custom_audio_path=None, outro_voice_active=True, **kwargs
+):
+    target_width, target_height, _ = _resolve_export_settings(aspect_ratio, quality)
+    
     if mode == "live_loop":
-        final_composed_video = _compile_live_loop_mode(
-            visual_clips=visual_clips,
-            video_clips_timeline=video_clips_timeline,
-            outro_text=outro_text,
-            duration_seconds=duration_seconds,
-            target_width=target_width,
-            target_height=target_height,
-            master_music_volume=master_music_volume,
-            outro_voice_active=outro_voice_active,
-            aspect_ratio=aspect_ratio,
+        return _compile_live_loop_mode(
+            visual_clips=visual_clips or [], video_clips_timeline=video_clips_timeline or [],
+            outro_text=outro_text, duration_seconds=duration_seconds,
+            target_width=target_width, target_height=target_height,
+            master_music_volume=master_music_volume, outro_voice_active=outro_voice_active,
+            aspect_ratio=aspect_ratio
         )
     else:
-        final_composed_video, _ = _compile_standard_mode(
-            visual_clips=visual_clips,
-            video_clips_timeline=video_clips_timeline,
-            music_files_pool=music_files_pool,
-            music_clips_timeline=music_clips_timeline,
-            master_music_volume=master_music_volume,
-            sfx_events=sfx_events,
-            script_text=script_text,
-            outro_text=outro_text,
-            aspect_ratio=aspect_ratio,
-            duration_seconds=duration_seconds,
-            target_width=target_width,
-            target_height=target_height,
-            sub_color=sub_color,
-            sub_size=sub_size,
-            voiceover_mode=voiceover_mode,
-            custom_audio_path=custom_audio_path,
-            outro_voice_active=outro_voice_active,
+        return _compile_standard_mode(
+            visual_clips=visual_clips or [], video_clips_timeline=video_clips_timeline or [],
+            music_files_pool=music_files_pool or [], music_clips_timeline=music_clips_timeline or [],
+            master_music_volume=master_music_volume, sfx_events=sfx_events or [],
+            script_text=script_text, outro_text=outro_text, aspect_ratio=aspect_ratio,
+            duration_seconds=duration_seconds, target_width=target_width, target_height=target_height,
+            sub_color=sub_color, sub_size=sub_size, voiceover_mode=voiceover_mode,
+            custom_audio_path=custom_audio_path, outro_voice_active=outro_voice_active
         )
 
     # ---------------------------------------------------------
@@ -998,3 +947,75 @@ def _build_climax_with_cta_voice(
             final_combined_audio = cta_audio_clip
 
     return climax_visual_layers, final_combined_audio, total_video_duration_updated
+
+# ================================================================
+# 🎬 मुख्य वीडियो कंपाइलर (Main Entry Function)
+# ================================================================
+# इस फ़ंक्शन का काम: 
+# app.py से आने वाले सभी पैरामीटर्स (मोड, ऑडियो, वीडियो क्लिप्स, क्वालिटी)
+# को स्वीकार करना और चुने गए मोड ("standard" या "live_loop") के हिसाब से 
+# सही कंपाइलर फ़ंक्शन को चलाकर अंतिम वीडियो तैयार करना।
+# ================================================================
+
+def compile_cinematic_video(
+    mode="standard",
+    visual_clips=None,
+    video_clips_timeline=None,
+    music_files_pool=None,
+    music_clips_timeline=None,
+    master_music_volume=0.3,
+    sfx_events=None,
+    script_text="",
+    outro_text="",
+    aspect_ratio="9:16",
+    duration_seconds=None,
+    quality="1080p",
+    sub_color="yellow",
+    sub_size=40,
+    voiceover_mode="hi-IN-SwaraNeural",
+    custom_audio_path=None,
+    outro_voice_active=True,
+    **kwargs
+):
+    """
+    [मॉड्यूल का काम]: 
+    १. स्क्रीन साइज़ और बिटरेट तय करता है (9:16 / 16:9 और 720p / 1080p)।
+    २. अगर यूज़र ने 'live_loop' चुना है, तो '_compile_live_loop_mode' चलाता है।
+    ३. अगर 'standard' मोड चुना है, तो '_compile_standard_mode' चलाता है।
+    """
+    # 1. स्क्रीन चौड़ाई, लंबाई और क्वालिटी बिटरेट सेट करना
+    target_width, target_height, _ = _resolve_export_settings(aspect_ratio, quality)
+
+    # 2. मोड के अनुसार सही कंपाइलर को कॉल करना
+    if mode == "live_loop":
+        return _compile_live_loop_mode(
+            visual_clips=visual_clips or [],
+            video_clips_timeline=video_clips_timeline or [],
+            outro_text=outro_text,
+            duration_seconds=duration_seconds,
+            target_width=target_width,
+            target_height=target_height,
+            master_music_volume=master_music_volume,
+            outro_voice_active=outro_voice_active,
+            aspect_ratio=aspect_ratio
+        )
+    else:
+        return _compile_standard_mode(
+            visual_clips=visual_clips or [],
+            video_clips_timeline=video_clips_timeline or [],
+            music_files_pool=music_files_pool or [],
+            music_clips_timeline=music_clips_timeline or [],
+            master_music_volume=master_music_volume,
+            sfx_events=sfx_events or [],
+            script_text=script_text,
+            outro_text=outro_text,
+            aspect_ratio=aspect_ratio,
+            duration_seconds=duration_seconds,
+            target_width=target_width,
+            target_height=target_height,
+            sub_color=sub_color,
+            sub_size=sub_size,
+            voiceover_mode=voiceover_mode,
+            custom_audio_path=custom_audio_path,
+            outro_voice_active=outro_voice_active
+        )

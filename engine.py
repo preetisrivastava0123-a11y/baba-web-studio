@@ -146,27 +146,27 @@ def _loop_audio_clip_to_duration(audio_clip, target_duration: float):
 # --------------------------------------------------------------
 # 3) आवाज़ (वॉइसओवर) तैयार करना — AI TTS या कस्टम अपलोडेड ऑडियो
 # --------------------------------------------------------------
-def _build_voice_or_silence_audio(script_text: str, voiceover_mode: str, custom_audio_path):
+def _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path):
     """
-    voiceover_mode=="custom" और custom_audio_path दिया गया हो तो वही ऑडियो
-    इस्तेमाल होता है। वरना, script_text खाली न हो तो voice.py से बाबा की
-    AI आवाज़ बनवाई जाती है। दोनों न हों (जैसे लाइव लूप मोड में) तो कोई आवाज़
-    नहीं होगी — (None, 0.0) लौटता है।
-
-    रिटर्न:
-        (voice_audio_clip या None, voice_duration_seconds)
+    वॉइस ओवर जनरेट करता है। अगर टेक्स्ट या ऑडियो न हो तो सेफ़ली (None, 0.0) लौटाता है।
     """
-    if voiceover_mode == "custom" and custom_audio_path:
-        voice_audio_clip = AudioFileClip(custom_audio_path)
-        return voice_audio_clip, voice_audio_clip.duration
+    try:
+        if custom_audio_path and os.path.exists(custom_audio_path):
+            audio_clip = AudioFileClip(custom_audio_path)
+            return audio_clip, audio_clip.duration
+        
+        if script_text and script_text.strip():
+            # एआई वॉइस जनरेट करने का लॉजिक (voice.py या edge-tts)
+            voice_file = generate_tts_voice(script_text, voiceover_mode) # आपके प्रोजेक्ट के हिसाब से
+            if voice_file and os.path.exists(voice_file):
+                audio_clip = AudioFileClip(voice_file)
+                return audio_clip, audio_clip.duration
 
-    if script_text and script_text.strip():
-        final_audio_path = create_baba_audio(script_text, "temp_baba_voice.mp3")
-        voice_audio_clip = AudioFileClip(final_audio_path)
-        return voice_audio_clip, voice_audio_clip.duration
-
-    return None, 0.0
-
+        # अगर कोई आवाज़ नहीं है, तो (None, 0.0) लौटाएँ (NoneType Unpack Error से बचाव)
+        return None, 0.0
+    except Exception as e:
+        print(f"Voice generation note: {e}")
+        return None, 0.0
 
 # --------------------------------------------------------------
 # 4) एक क्लिप को टारगेट साइज़ में क्रॉप-टू-फिल करना (शेयर्ड हेल्पर)

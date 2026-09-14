@@ -585,7 +585,7 @@ def _build_scrolling_ticker_overlay_clip(outro_text: str, video_duration: float,
         traveled_distance = (t * TICKER_SCROLL_SPEED_PX_PER_SEC) % cycle_distance
         return canvas_width - traveled_distance
 
-    return ticker_image_clip.with_position(lambda t: (_ticker_x_position(t), ticker_y_position))
+    return ticker_image_clip.with_position(lambda t: [_ticker_x_position(t), ticker_y_position])
 
 
 def _compile_live_loop_mode(

@@ -457,10 +457,8 @@ def _compile_standard_mode(
     )
 
     # चरण ७: क्लाइमेक्स लेयर्स (मयूर पंख + आउट्रो) — हमेशा आख़िरी 5.5 सेकंड में
-    climax_layers = (
-        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
-        if outro_voice_active else []
-    )
+   climax_layers, combined_audio, total_video_duration = _build_climax_with_cta_voice(total_video_duration, outro_text, aspect_ratio, outro_voice_active, combined_audio)
+
 
     # चरण ८: सभी लेयर्स को एक साथ कंपोज़िट करना
     all_layers = [background_visual_track, *track2_overlay_clips]

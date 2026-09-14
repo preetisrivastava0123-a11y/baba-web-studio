@@ -168,37 +168,11 @@ def _build_voice_or_silence_audio(script_text: str, voiceover_mode: str, custom_
     return None, 0.0
 
 
-# --------------------------------------------------------------
-# 4) एक क्लिप को टारगेट साइज़ में क्रॉप-टू-फिल करना (शेयर्ड हेल्पर)
-# --------------------------------------------------------------
-def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
-    """
-    पहले बड़ा-किनारा स्केल करता है, फिर बीच से टारगेट-साइज़ काटता है —
-    ताकि क्लिप का ओरिजिनल अनुपात (aspect ratio) बिगड़े बिना पूरा फ्रेम भरे।
-    """
-    original_width, original_height = raw_clip.size
-    target_aspect_ratio = target_width / target_height
-    original_aspect_ratio = original_width / original_height
-
-    if original_aspect_ratio > target_aspect_ratio:
-        resized_clip = raw_clip.resized(height=target_height)
-    else:
-        resized_clip = raw_clip.resized(width=target_width)
-
-    cropped_clip = resized_clip.cropped(
-        x_center=resized_clip.w / 2,
-        y_center=resized_clip.h / 2,
-        width=target_width,
-        height=target_height,
-    )
-    return cropped_clip
-
-
 def _build_track1_looped_visual_track(visual_clips: list, total_duration: float, target_width: int, target_height: int):
     """
-    गोदाम के सभी विज़ुअल्स को क्रम से (बारी-बारी से) एक-एक करके उठाता है।
-    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र (loop) शुरू करता है।
-    तस्वीरें टाइमलाइन पर एक के बाद एक साफ़ कट्स के साथ आएँगी।
+    गोदाम के सभी विज़ुअल्स को क्रम से एक-एक करके उठाता है।
+    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र शुरू करता है।
+    सभी तस्वीरें और वीडियो एक के बाद एक साफ़ सिनेमैटिक कट्स के साथ कनकैटिनेट होंगे।
     """
     if not visual_clips:
         raise ValueError("कम-से-कम एक विज़ुअल (ट्रैक 1) ज़रूरी है।")
@@ -208,7 +182,7 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
     cycle_index = 0
     total_items = len(visual_clips)
     
-    # जब तक पूरे वीडियो का टाइम पूरा नहीं होता, चक्र चलाते रहो
+    # जब तक पूरे वीडियो का टाइम पूरा नहीं होता, तब तक तस्वीरें बारी-बारी से जोड़ते रहो
     while elapsed_duration < total_duration - 0.01:
         item = visual_clips[cycle_index % total_items]
         remaining_duration = total_duration - elapsed_duration
@@ -220,21 +194,26 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
         if slot_duration <= 0:
             break
             
-        # क्लिप को उसकी सही टाइमलाइन पोजीशन (किस सेकंड पर दिखेगी) पर लॉक करना
-        prepared_clip = prepared_clip.with_start(elapsed_duration)
-        
-        if visual_clips_sequence:
-            prepared_clip = prepared_clip.with_effects([vfx.CrossFadeIn(CROSSFADE_DURATION_SECONDS)])
-            
+        # 🔐 मिस्टेक फिक्स 1: यहाँ से .with_start() को पूरी तरह हटा दिया गया है
+        # क्योंकि concatenate करने वाली क्लिप्स में मैन्युअल स्टार्ट टाइम नहीं दिया जाता!
         visual_clips_sequence.append(prepared_clip)
         elapsed_duration += slot_duration
         cycle_index += 1 # इंडेक्स आगे बढ़ाओ ताकि अगली इमेज लोड हो
         
-    # 🔐 कबाड़ फिक्स: concatenate हटाकर सीधे CompositeVideoClip का उपयोग करें
-    # ताकि हर क्लिप अपने दिए गए start_time पर ही स्क्रीन पर प्रकट हो!
-    combined_visual_track = CompositeVideoClip(
-        visual_clips_sequence, size=(target_width, target_height)
+    # 🔐 मिस्टेक फिक्स 2: कनकैटिनेट करने का असली और 100% सही MoviePy सिंटैक्स
+    # इसमें method="compose" का उपयोग करेंगे ताकि अलग-अलग साइज़ की क्लिप्स क्रैश न हों
+    from moviepy import concatenate_videoclips
+    combined_visual_track = concatenate_videoclips(
+        visual_clips_sequence, method="compose"
     ).with_duration(total_duration)
+    
+    # 9:16 कैनवस पर परफेक्ट क्रॉपिंग लॉक करना
+    combined_visual_track = combined_visual_track.cropped(
+        x_center=combined_visual_track.w / 2,
+        y_center=combined_visual_track.h / 2,
+        width=target_width,
+        height=target_height,
+    )
     
     return combined_visual_track
 

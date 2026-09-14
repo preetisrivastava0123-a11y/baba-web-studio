@@ -36,11 +36,13 @@
 ⚠️ मान्यताएँ (Assumptions) — असली फाइलें उपलब्ध न होने के कारण:
    - voice.py:      create_baba_audio(script_text, output_path) -> str
    - subtitle.py:   render_subtitle_html_to_png(text_string, output_image_path,
-                     canvas_width, text_color=None, font_size_px=None) -> str
-                     (⚠️ text_color/font_size_px अब नए पैरामीटर हैं — app.py अब
-                     sub_color/sub_size भेजता है, इसलिए subtitle.py को भी इन्हें
-                     स्वीकार करने लायक अपडेट करना होगा; न स्वीकारे तो सिर्फ़ यहाँ
-                     से ये दो kwargs हटा दीजिए)
+                     canvas_width, text_color=None, font_size=None) -> str
+                     (⚠️ असली पैरामीटर नाम "font_size" है, "font_size_px" नहीं —
+                     यह पहले ग़लती से font_size_px लिख दिया गया था, जिससे
+                     "got an unexpected keyword argument 'font_size_px'" एरर
+                     आ रहा था। engine.py के अंदर अपना इंटरनल वेरिएबल-नाम अब
+                     भी font_size_px है — बस render_subtitle_html_to_png()
+                     को कॉल करते वक़्त सही नाम font_size से भेजा जाता है)
    - climax.py:     create_climax_layer(video_duration, outro_text, aspect_ratio)
                      -> list (यह फंक्शन ख़ुद तय करता है कि आख़िरी 5.5 सेकंड में
                      मयूर-पंख/आउट्रो कब दिखाना है, इसलिए यहाँ सिर्फ़ सही
@@ -391,7 +393,10 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
         output_image_path=SUBTITLE_TEMP_PNG,
         canvas_width=canvas_width,
         text_color=text_color,
-        font_size_px=font_size_px,
+        # ⚠️ फिक्स: असली subtitle.py का पैरामीटर नाम "font_size" है, "font_size_px"
+        # नहीं — इसलिए यहाँ फंक्शन के अपने इंटरनल पैरामीटर (font_size_px) की वैल्यू
+        # को render_subtitle_html_to_png() को सही नाम "font_size" से भेजा जा रहा है।
+        font_size=font_size_px,
     )
 
     subtitle_clip = (

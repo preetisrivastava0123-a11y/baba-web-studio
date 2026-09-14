@@ -411,7 +411,7 @@ def _build_subtitle_overlay_clip(script_text: str, video_duration: float, canvas
 
 
 # --------------------------------------------------------------
-# 5र) सामान्य मोड का पूरा कंपाइलर — ऊपर के सभी हेल्पर्स को जोड़ता है
+# 5र) सामान्य मोड का पूरा कंपाइलर — (फिक्स्ड वर्ज़न)
 # --------------------------------------------------------------
 def _compile_standard_mode(
     visual_clips, video_clips_timeline, music_files_pool, music_clips_timeline,
@@ -424,13 +424,21 @@ def _compile_standard_mode(
     # चरण १: आवाज़ (वॉइसओवर) तैयार करना
     voice_clip, voice_duration = _build_voice_or_silence_audio(script_text, voiceover_mode, custom_audio_path)
 
-    # चरण २: कुल वीडियो-लंबाई तय करना
-    if is_long_format:
-        if not duration_seconds:
-            raise ValueError("Long Video के लिए duration_seconds ज़रूर दिया जाना चाहिए।")
-        total_video_duration = duration_seconds
+    # --------------------------------------------------------------
+    # चरण २: कुल वीडियो-लंबाई तय करना (8s + 1-इमेज समस्या का फ़िक्स)
+    # --------------------------------------------------------------
+    total_images = len(visual_clips) if visual_clips else 1
+    min_visuals_time = total_images * 4.0  # गोदाम की हर फोटो कम से कम 4 सेकंड दिखेगी
+
+    if duration_seconds and float(duration_seconds) > 0:
+        # 1. अगर UI से यूज़र ने समय (जैसे 30 या 60 सेकंड) सेलेक्ट किया है
+        total_video_duration = float(duration_seconds)
+    elif voice_duration > 0:
+        # 2. अगर UI समय खाली है, तो आवाज़ और सभी तस्वीरों के कुल समय में से जो बड़ा होगा
+        total_video_duration = max(voice_duration, min_visuals_time)
     else:
-        total_video_duration = voice_duration if voice_duration > 0 else SHORTS_SLOT_SECONDS
+        # 3. फॉलबैक: पूरी तस्वीरें दिखाने लायक पर्याप्त समय (न्यूनतम 30 सेकंड)
+        total_video_duration = max(min_visuals_time, 30.0)
 
     # चरण ३: ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक बनाना
     background_visual_track = _build_track1_looped_visual_track(

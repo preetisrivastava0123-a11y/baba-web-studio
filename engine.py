@@ -470,32 +470,29 @@ def _compile_standard_mode(
         if outro_voice_active else []
     )
 
-    # चरण ८: सभी लेयर्स को सुरक्षित (फ़्लैट) करके कंपोज़िट करना
+    # --------------------------------------------------------------
+    # चरण ८: सभी लेयर्स को फ़्लैट और सेफ़ करना (List + Tuple दोनों का फ़िक्स)
+    # --------------------------------------------------------------
     raw_layers = [background_visual_track]
 
-    # Track 2 लेयर्स जोड़ना
-    if isinstance(track2_overlay_clips, list):
-        raw_layers.extend(track2_overlay_clips)
-    elif track2_overlay_clips is not None:
-        raw_layers.append(track2_overlay_clips)
+    # सभी ओवरले और क्लाइमेक्स लेयर्स को लिस्ट में जोड़ें
+    for layer_item in [track2_overlay_clips, subtitle_overlay_clip, climax_layers]:
+        if layer_item is not None:
+            raw_layers.append(layer_item)
 
-    # सबटाइटल ओवरले जोड़ना
-    if subtitle_overlay_clip is not None:
-        raw_layers.append(subtitle_overlay_clip)
-
-    # क्लाइमेक्स लेयर्स जोड़ना
-    if isinstance(climax_layers, list):
-        raw_layers.extend(climax_layers)
-    elif climax_layers is not None:
-        raw_layers.append(climax_layers)
-
-    # नेस्टेड लिस्ट (List inside List) से बचाव का फ़्लैटनिंग लॉजिक
     flat_layers = []
-    for layer in raw_layers:
-        if isinstance(layer, list):
-            flat_layers.extend([item for item in layer if item is not None])
-        elif layer is not None:
-            flat_layers.append(layer)
+
+    # List, Tuple या Nested डाटा में से केवल असली MoviePy Clips निकालने का फ़ंक्शन
+    def _extract_only_clips(element):
+        if isinstance(element, (list, tuple)):
+            for sub_element in element:
+                _extract_only_clips(sub_element)
+        elif element is not None and hasattr(element, "layer_index") or hasattr(element, "duration"):
+            # केवल वही ऑब्जेक्ट आगे जाएगा जो वाकई एक VideoClip है
+            flat_layers.append(element)
+
+    for item in raw_layers:
+        _extract_only_clips(item)
 
     final_composed_video = CompositeVideoClip(
         flat_layers, size=(target_width, target_height),

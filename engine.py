@@ -128,21 +128,30 @@ def _resolve_export_settings(aspect_ratio: str = "9:16", quality: str = "1080p")
 
     # 4. तीनों सेटिंग्स लौटाना
     return target_width, target_height, export_bitrate
-# --------------------------------------------------------------
-# 2) एक ऑडियो क्लिप को तब तक लूप करना जब तक टारगेट ड्यूरेशन पूरी न हो
-# --------------------------------------------------------------
-def _loop_audio_clip_to_duration(audio_clip, target_duration: float):
-    """
-    छोटी ऑडियो क्लिप (जैसे बैकग्राउंड संगीत) को बार-बार जोड़कर
-    (concatenate) तब तक लंबा करता है जब तक वह target_duration तक
-    न पहुँच जाए, फिर ठीक उसी लंबाई पर काट (trim) देता है।
-    """
-    if audio_clip.duration >= target_duration:
-        return audio_clip.subclipped(0, target_duration)
 
-    loops_needed = int(target_duration // audio_clip.duration) + 1
-    looped_audio_clip = concatenate_audioclips([audio_clip] * loops_needed)
-    return looped_audio_clip.subclipped(0, target_duration)
+    
+# ================================================================
+# 🎵 2. ऑडियो लूपिंग (Audio Loop Helper)
+# ================================================================
+# [इस फ़ंक्शन का काम]: 
+# छोटी ऑडियो क्लिप (जैसे बैकग्राउंड संगीत) को बार-बार दोहराकर 
+# पूरे वीडियो की लंबाई के बराबर बनाना।
+# ================================================================
+
+def _loop_audio_clip(audio_clip, target_duration: float):
+    if audio_clip is None or target_duration <= 0:
+        return None
+    
+    # अगर ऑडियो क्लिप की लंबाई वीडियो से बड़ी या बराबर है
+    if audio_clip.duration >= target_duration:
+        return audio_clip.with_duration(target_duration)
+    
+    # बार-बार दोहराने के लिए लूप की संख्या तय करना
+    loop_count = int(np.ceil(target_duration / audio_clip.duration))
+    repeated_clips = [audio_clip] * loop_count
+    looped_clip = concatenate_audioclips(repeated_clips)
+    
+    return looped_clip.with_duration(target_duration)
 
 
 # --------------------------------------------------------------

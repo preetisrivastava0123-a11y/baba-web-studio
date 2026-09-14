@@ -795,3 +795,174 @@ if __name__ == "__main__":
         master_music_volume=0.8,
     )
     print(f"फाइनल (लाइव लूप मोड) वीडियो यहाँ सेव हुई: {live_loop_result_path}")
+
+
+"""
+==============================================================
+engine.py में जोड़ने के लिए नया हिस्सा — CTA वॉइस + हार्ड-कट डकिंग
+==============================================================
+🆕 यह cloud_media_director_studio.py के इन दो फंक्शन्स से सीखा गया तरीका है:
+   - build_cta_tail()       -> असली बोली गई "Like/Subscribe" आवाज़ बनाना,
+                                उसकी असली लंबाई नापना, CTA-विंडो उसी हिसाब से तय करना
+   - duck_audio_for_cta()   -> बैकग्राउंड-म्यूज़िक को hard-cut (कोई fade नहीं)
+                                तरीके से CTA के दौरान धीमा करना
+
+इसे अपनी मौजूदा engine.py में इस तरह जोड़ें:
+  1) नीचे दिए दोनों फंक्शन (_build_cta_voice_audio, _duck_audio_hard_cut)
+     को engine.py में climax.py के इम्पोर्ट के नीचे कहीं भी पेस्ट करें।
+  2) _compile_standard_mode() (या जो भी आपका मुख्य कंपाइलर फंक्शन है) में
+     "climax_layers = create_climax_layer(...)" वाली लाइन को नीचे दिए
+     "चरण ७ (अपडेटेड)" वाले ब्लॉक से replace करें।
+==============================================================
+"""
+
+import os
+
+from moviepy import AudioFileClip, concatenate_audioclips
+
+from voice import create_baba_audio     # पहले से मौजूद — बाबा की AI आवाज़ बनाने वाला फंक्शन
+from climax import create_climax_layer, SUBSCRIBE_MESSAGE   # SUBSCRIBE_MESSAGE अब climax.py से एक्सपोर्ट होता है
+
+
+# --------------------------------------------------------------
+# 🆕 १) असली बोली गई CTA-आवाज़ बनाना ("Channel ko like, subscribe karein" + outro_text)
+# --------------------------------------------------------------
+def _build_cta_voice_audio(outro_text: str) -> tuple:
+    """
+    voice.py के create_baba_audio() से CTA की असली बोली हुई आवाज़ बनाता है:
+    "Channel ko like, subscribe karein" + यूज़र का outro_text एक साथ।
+
+    🔐 सुरक्षा: अगर आवाज़ बनाने में कोई भी दिक्कत आए (जैसे edge-tts का
+    नेटवर्क-टाइमआउट), तो यह क्रैश नहीं करता — सिर्फ़ (None, 0.0) लौटा देता
+    है, ताकि पूरा वीडियो बिना CTA-आवाज़ के भी (सिर्फ़ टेक्स्ट/पंख के साथ)
+    आगे रेंडर हो सके।
+
+    रिटर्न:
+        (cta_audio_clip या None, cta_audio_duration_seconds)
+    """
+    cta_spoken_text = SUBSCRIBE_MESSAGE
+    if outro_text and outro_text.strip():
+        cta_spoken_text = f"{SUBSCRIBE_MESSAGE}. {outro_text.strip()}"
+
+    try:
+        cta_audio_path = create_baba_audio(cta_spoken_text, "temp_cta_voice.mp3")
+        cta_audio_clip = AudioFileClip(cta_audio_path)
+        return cta_audio_clip, cta_audio_clip.duration
+    except Exception as cta_voice_error:
+        print(f"⚠️ [ऑटो-स्किप] CTA-आवाज़ नहीं बन सकी — क्लाइमेक्स सिर्फ़ विज़ुअल (बिना आवाज़) रहेगा: {cta_voice_error}")
+        return None, 0.0
+
+
+# --------------------------------------------------------------
+# 🆕 २) बैकग्राउंड-ऑडियो को CTA के दौरान "हार्ड-कट" तरीके से धीमा करना
+# --------------------------------------------------------------
+def _duck_audio_hard_cut(background_audio_clip, duck_start_time: float, total_duration: float, duck_volume: float = 0.5):
+    """
+    cloud_media_director_studio.py के duck_audio_for_cta() से लिया गया
+    तरीका: बैकग्राउंड-ऑडियो को दो हिस्सों में काटकर सीधे वॉल्यूम बदलना —
+    कोई fade-in/fade-out इफ़ेक्ट-चेन नहीं जोड़ना।
+
+    ⚠️ क्यों ज़रूरी है: दो अलग "smoothing" इफ़ेक्ट (fade + volume-change)
+    एक साथ लगाने से ट्रांज़िशन "धीमा/लड़खड़ाता हुआ" (warped) सुनाई देता है।
+    सीधा hard-cut सबसे साफ़ और प्रोफ़ेशनल तरीका है — ठीक जैसा असली न्यूज़
+    चैनल/YouTube वीडियो में होता है।
+
+    पैरामीटर:
+        background_audio_clip -> मुख्य बैकग्राउंड-संगीत/मिक्स्ड ऑडियो क्लिप
+        duck_start_time        -> किस सेकंड से आवाज़ धीमी होनी शुरू होगी (= climax_start_time)
+        total_duration          -> पूरे वीडियो की कुल लंबाई
+        duck_volume             -> CTA के दौरान कितना वॉल्यूम रहेगा (0.5 = 50%)
+
+    अगर background_audio_clip=None हो, या duck_start_time अमान्य हो, तो
+    यह फंक्शन क्रैश नहीं करता — जो भी मिला वही सुरक्षित रूप से लौटा देता है।
+    """
+    if background_audio_clip is None:
+        return None
+    if duck_start_time <= 0 or duck_start_time >= background_audio_clip.duration:
+        return background_audio_clip
+
+    try:
+        main_part = background_audio_clip.subclipped(0, duck_start_time).with_volume_scaled(1.0)
+        end_part = background_audio_clip.subclipped(
+            duck_start_time, min(background_audio_clip.duration, total_duration)
+        ).with_volume_scaled(duck_volume)
+        return concatenate_audioclips([main_part, end_part])
+    except Exception as duck_error:
+        print(f"⚠️ [ऑटो-स्किप] CTA-ducking नहीं हो सकी, बैकग्राउंड-संगीत सामान्य वॉल्यूम पर रहेगा: {duck_error}")
+        return background_audio_clip
+
+
+# --------------------------------------------------------------
+# 🆕 चरण ७ (अपडेटेड) — इसे अपने _compile_standard_mode() के अंदर
+# पुरानी "climax_layers = create_climax_layer(...)" लाइन की जगह डालें
+# --------------------------------------------------------------
+"""
+पुराना कोड (हटाएँ):
+
+    climax_layers = (
+        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
+        if outro_voice_active else []
+    )
+
+नया कोड (इसकी जगह डालें):
+"""
+
+
+def _build_climax_with_cta_voice(
+    total_video_duration: float,
+    outro_text: str,
+    aspect_ratio: str,
+    outro_voice_active: bool,
+    combined_audio,   # अब तक बना मुख्य ऑडियो-मिक्स (आवाज़ + संगीत + SFX) — इसी को duck करेंगे
+):
+    """
+    चरण ७ का पूरा नया तरीका — विज़ुअल क्लाइमेक्स-लेयर्स भी बनाता है और
+    CTA-आवाज़ भी जोड़ता है, साथ ही बैकग्राउंड-ऑडियो को hard-cut ducking भी
+    करता है। सब कुछ एक ही जगह से लौटता है ताकि आगे कंपोज़िट करना आसान हो।
+
+    रिटर्न:
+        (climax_visual_layers: list, final_combined_audio, total_video_duration_updated)
+        -> total_video_duration_updated वही असली लंबाई है जो CTA-आवाज़ के
+           हिसाब से बढ़ी/बरकरार रही — आगे CompositeVideoClip में इसी का
+           इस्तेमाल करें, ताकि लंबी CTA-आवाज़ कभी वीडियो के अंत में कटे नहीं।
+    """
+    if not outro_voice_active:
+        return [], combined_audio, total_video_duration
+
+    # --- चरण A: असली बोली गई CTA-आवाज़ बनाना और उसकी असली लंबाई नापना ---
+    cta_audio_clip, cta_audio_duration = _build_cta_voice_audio(outro_text)
+
+    # --- चरण B: climax_duration तय करना — डिफ़ॉल्ट 5.5s, या CTA-आवाज़ जितनी लंबी हो उतना ---
+    from climax import CLIMAX_DURATION_SECONDS
+    required_climax_duration = max(CLIMAX_DURATION_SECONDS, cta_audio_duration + 0.4)
+
+    # --- चरण C: अगर CTA-आवाज़ की वजह से climax_duration बढ़ी हो, तो पूरे वीडियो
+    # की लंबाई भी उतनी ही बढ़ा देना, ताकि आवाज़/विज़ुअल कभी बीच में न कटें ---
+    total_video_duration_updated = max(total_video_duration, required_climax_duration + 1.0)
+
+    # --- चरण D: विज़ुअल क्लाइमेक्स-लेयर्स (पंख + पार्टिकल-ब्लास्ट + टेक्स्ट) बनाना ---
+    climax_visual_layers, climax_duration_used = create_climax_layer(
+        video_duration=total_video_duration_updated,
+        outro_text=outro_text,
+        aspect_ratio=aspect_ratio,
+        climax_duration_override=required_climax_duration,
+    )
+    climax_start_time = total_video_duration_updated - climax_duration_used
+
+    # --- चरण E: बैकग्राउंड-ऑडियो को hard-cut तरीके से CTA के दौरान धीमा करना ---
+    final_combined_audio = _duck_audio_hard_cut(
+        combined_audio, climax_start_time, total_video_duration_updated, duck_volume=0.5,
+    )
+
+    # --- चरण F: असली CTA-आवाज़ को सही समय पर मिक्स में जोड़ना ---
+    if cta_audio_clip is not None:
+        cta_audio_clip = cta_audio_clip.with_start(climax_start_time)
+        if final_combined_audio is not None:
+            from moviepy import CompositeAudioClip
+            final_combined_audio = CompositeAudioClip(
+                [final_combined_audio, cta_audio_clip]
+            ).with_duration(total_video_duration_updated)
+        else:
+            final_combined_audio = cta_audio_clip
+
+    return climax_visual_layers, final_combined_audio, total_video_duration_updated

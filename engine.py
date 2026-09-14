@@ -73,8 +73,6 @@ from moviepy import (
     vfx,
 )
 
-
-
 # --------------------------------------------------------------
 # बाकी स्वतंत्र ब्लॉक्स से ज़रूरी फंक्शन इम्पोर्ट करना
 # --------------------------------------------------------------
@@ -170,53 +168,110 @@ def _build_voice_or_silence_audio(script_text: str, voiceover_mode: str, custom_
     return None, 0.0
 
 
+# --------------------------------------------------------------
+# 4) एक क्लिप को टारगेट साइज़ में क्रॉप-टू-फिल करना (शेयर्ड हेल्पर)
+# --------------------------------------------------------------
+def _fit_clip_to_canvas(raw_clip, target_width: int, target_height: int):
+    """
+    पहले बड़ा-किनारा स्केल करता है, फिर बीच से टारगेट-साइज़ काटता है —
+    ताकि क्लिप का ओरिजिनल अनुपात (aspect ratio) बिगड़े बिना पूरा फ्रेम भरे।
+    """
+    original_width, original_height = raw_clip.size
+    target_aspect_ratio = target_width / target_height
+    original_aspect_ratio = original_width / original_height
+
+    if original_aspect_ratio > target_aspect_ratio:
+        resized_clip = raw_clip.resized(height=target_height)
+    else:
+        resized_clip = raw_clip.resized(width=target_width)
+
+    cropped_clip = resized_clip.cropped(
+        x_center=resized_clip.w / 2,
+        y_center=resized_clip.h / 2,
+        width=target_width,
+        height=target_height,
+    )
+    return cropped_clip
+
+
+# ================================================================
+# 🎭 सामान्य स्टूडियो मोड (mode == "standard") के हेल्पर्स
+# ================================================================
+
+# --------------------------------------------------------------
+# 5अ) ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक — हर आइटम की अपनी स्लॉट-लंबाई
+# --------------------------------------------------------------
+def _load_single_visual_clip_track1(item: dict, target_width: int, target_height: int, remaining_duration: float):
+    """
+    ट्रैक 1 का एक आइटम {"path","is_image","start","end"} लेकर उसे उसकी अपनी
+    "स्वाभाविक" स्लॉट-लंबाई के लिए तैयार करता है:
+      - फोटो: item["end"] (डिफ़ॉल्ट ५ सेकंड) तक, Ken Burns ज़ूम-इन के साथ
+      - वीडियो: अपनी पूरी लंबाई (item["end"]==0.0 = "पूरी क्लिप") — कभी
+        लूप/स्ट्रेच नहीं किया जाता, सिर्फ़ बाकी बची ड्यूरेशन से छोटा कर दिया जाता है
+    """
+    if item["is_image"]:
+        slot_duration = min(item["end"] if item["end"] > 0 else 5.0, remaining_duration)
+        raw_clip = ImageClip(item["path"]).with_duration(slot_duration)
+    else:
+        raw_clip = VideoFileClip(item["path"])
+        slot_duration = min(raw_clip.duration, remaining_duration)
+        raw_clip = raw_clip.subclipped(0, slot_duration)
+
+    prepared_clip = _fit_clip_to_canvas(raw_clip, target_width, target_height)
+
+    if item["is_image"]:
+        prepared_clip = prepared_clip.resized(
+            lambda t: 1 + KEN_BURNS_ZOOM_RATE * (t / max(slot_duration, 0.001))
+        )
+
+    return prepared_clip, slot_duration
+
+
 def _build_track1_looped_visual_track(visual_clips: list, total_duration: float, target_width: int, target_height: int):
     """
-    गोदाम के सभी विज़ुअल्स को क्रम से एक-एक करके उठाता है।
-    पूरी लिस्ट खत्म होने पर ही वापस पहली फाइल से चक्र शुरू करता है।
-    सभी तस्वीरें और वीडियो एक के बाद एक साफ़ सिनेमैटिक कट्स के साथ कनकैटिनेट होंगे।
+    ट्रैक 1 (गोदाम) के आइटम्स को क्रम से एक-एक करके जोड़ता है। लिस्ट खत्म होने
+    पर वापस पहली फाइल से चक्र (loop) शुरू हो जाता है — जब तक total_duration
+    पूरी न हो जाए। हर कट क्रॉसफेड से स्मूदली जुड़ता है।
     """
     if not visual_clips:
         raise ValueError("कम-से-कम एक विज़ुअल (ट्रैक 1) ज़रूरी है।")
-        
+
     visual_clips_sequence = []
     elapsed_duration = 0.0
     cycle_index = 0
     total_items = len(visual_clips)
-    
-    # जब तक पूरे वीडियो का टाइम पूरा नहीं होता, तब तक तस्वीरें बारी-बारी से जोड़ते रहो
+
     while elapsed_duration < total_duration - 0.01:
         item = visual_clips[cycle_index % total_items]
         remaining_duration = total_duration - elapsed_duration
-        
         prepared_clip, slot_duration = _load_single_visual_clip_track1(
-            item, target_width, target_height, remaining_duration
+            item, target_width, target_height, remaining_duration,
         )
-        
         if slot_duration <= 0:
             break
-            
+
+        if visual_clips_sequence:
+            prepared_clip = prepared_clip.with_effects([vfx.CrossFadeIn(CROSSFADE_DURATION_SECONDS)])
+
         visual_clips_sequence.append(prepared_clip)
         elapsed_duration += slot_duration
-        cycle_index += 1 # इंडेक्स आगे बढ़ाओ ताकि अगली इमेज लोड हो
-        
-    # ऊपर इम्पोर्ट फिक्स होने के बाद अब यह सीधे काम करेगा
+        cycle_index += 1
+
     combined_visual_track = concatenate_videoclips(
-        visual_clips_sequence, method="compose"
-    ).with_duration(total_duration)
-    
-    # 9:16 कैनवस पर परफेक्ट क्रॉपिंग लॉक करना
+        visual_clips_sequence, method="compose", padding=-CROSSFADE_DURATION_SECONDS,
+    )
+
+    # ---- सुरक्षा-नेट: केन-बर्न्स ज़ूम की वजह से फ्रेम कैनवस से थोड़ा बाहर
+    # निकल सकता है, इसलिए आख़िर में फिर से ठीक टारगेट-साइज़ पर सेंटर-क्रॉप
+    # कर देना, ताकि आगे सबटाइटल/क्लाइमेक्स लेयर से साइज़ हमेशा मैच करे।
     combined_visual_track = combined_visual_track.cropped(
         x_center=combined_visual_track.w / 2,
         y_center=combined_visual_track.h / 2,
         width=target_width,
         height=target_height,
-    )
-    
+    ).with_duration(total_duration)
+
     return combined_visual_track
-
-
-
 
 
 # --------------------------------------------------------------
@@ -402,8 +457,10 @@ def _compile_standard_mode(
     )
 
     # चरण ७: क्लाइमेक्स लेयर्स (मयूर पंख + आउट्रो) — हमेशा आख़िरी 5.5 सेकंड में
-   climax_layers, combined_audio, total_video_duration = _build_climax_with_cta_voice(total_video_duration, outro_text, aspect_ratio, outro_voice_active, combined_audio)
-
+    climax_layers = (
+        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
+        if outro_voice_active else []
+    )
 
     # चरण ८: सभी लेयर्स को एक साथ कंपोज़िट करना
     all_layers = [background_visual_track, *track2_overlay_clips]
@@ -738,174 +795,3 @@ if __name__ == "__main__":
         master_music_volume=0.8,
     )
     print(f"फाइनल (लाइव लूप मोड) वीडियो यहाँ सेव हुई: {live_loop_result_path}")
-
-
-"""
-==============================================================
-engine.py में जोड़ने के लिए नया हिस्सा — CTA वॉइस + हार्ड-कट डकिंग
-==============================================================
-🆕 यह cloud_media_director_studio.py के इन दो फंक्शन्स से सीखा गया तरीका है:
-   - build_cta_tail()       -> असली बोली गई "Like/Subscribe" आवाज़ बनाना,
-                                उसकी असली लंबाई नापना, CTA-विंडो उसी हिसाब से तय करना
-   - duck_audio_for_cta()   -> बैकग्राउंड-म्यूज़िक को hard-cut (कोई fade नहीं)
-                                तरीके से CTA के दौरान धीमा करना
-
-इसे अपनी मौजूदा engine.py में इस तरह जोड़ें:
-  1) नीचे दिए दोनों फंक्शन (_build_cta_voice_audio, _duck_audio_hard_cut)
-     को engine.py में climax.py के इम्पोर्ट के नीचे कहीं भी पेस्ट करें।
-  2) _compile_standard_mode() (या जो भी आपका मुख्य कंपाइलर फंक्शन है) में
-     "climax_layers = create_climax_layer(...)" वाली लाइन को नीचे दिए
-     "चरण ७ (अपडेटेड)" वाले ब्लॉक से replace करें।
-==============================================================
-"""
-
-import os
-
-from moviepy import AudioFileClip, concatenate_audioclips
-
-from voice import create_baba_audio     # पहले से मौजूद — बाबा की AI आवाज़ बनाने वाला फंक्शन
-from climax import create_climax_layer, SUBSCRIBE_MESSAGE   # SUBSCRIBE_MESSAGE अब climax.py से एक्सपोर्ट होता है
-
-
-# --------------------------------------------------------------
-# 🆕 १) असली बोली गई CTA-आवाज़ बनाना ("Channel ko like, subscribe karein" + outro_text)
-# --------------------------------------------------------------
-def _build_cta_voice_audio(outro_text: str) -> tuple:
-    """
-    voice.py के create_baba_audio() से CTA की असली बोली हुई आवाज़ बनाता है:
-    "Channel ko like, subscribe karein" + यूज़र का outro_text एक साथ।
-
-    🔐 सुरक्षा: अगर आवाज़ बनाने में कोई भी दिक्कत आए (जैसे edge-tts का
-    नेटवर्क-टाइमआउट), तो यह क्रैश नहीं करता — सिर्फ़ (None, 0.0) लौटा देता
-    है, ताकि पूरा वीडियो बिना CTA-आवाज़ के भी (सिर्फ़ टेक्स्ट/पंख के साथ)
-    आगे रेंडर हो सके।
-
-    रिटर्न:
-        (cta_audio_clip या None, cta_audio_duration_seconds)
-    """
-    cta_spoken_text = SUBSCRIBE_MESSAGE
-    if outro_text and outro_text.strip():
-        cta_spoken_text = f"{SUBSCRIBE_MESSAGE}. {outro_text.strip()}"
-
-    try:
-        cta_audio_path = create_baba_audio(cta_spoken_text, "temp_cta_voice.mp3")
-        cta_audio_clip = AudioFileClip(cta_audio_path)
-        return cta_audio_clip, cta_audio_clip.duration
-    except Exception as cta_voice_error:
-        print(f"⚠️ [ऑटो-स्किप] CTA-आवाज़ नहीं बन सकी — क्लाइमेक्स सिर्फ़ विज़ुअल (बिना आवाज़) रहेगा: {cta_voice_error}")
-        return None, 0.0
-
-
-# --------------------------------------------------------------
-# 🆕 २) बैकग्राउंड-ऑडियो को CTA के दौरान "हार्ड-कट" तरीके से धीमा करना
-# --------------------------------------------------------------
-def _duck_audio_hard_cut(background_audio_clip, duck_start_time: float, total_duration: float, duck_volume: float = 0.5):
-    """
-    cloud_media_director_studio.py के duck_audio_for_cta() से लिया गया
-    तरीका: बैकग्राउंड-ऑडियो को दो हिस्सों में काटकर सीधे वॉल्यूम बदलना —
-    कोई fade-in/fade-out इफ़ेक्ट-चेन नहीं जोड़ना।
-
-    ⚠️ क्यों ज़रूरी है: दो अलग "smoothing" इफ़ेक्ट (fade + volume-change)
-    एक साथ लगाने से ट्रांज़िशन "धीमा/लड़खड़ाता हुआ" (warped) सुनाई देता है।
-    सीधा hard-cut सबसे साफ़ और प्रोफ़ेशनल तरीका है — ठीक जैसा असली न्यूज़
-    चैनल/YouTube वीडियो में होता है।
-
-    पैरामीटर:
-        background_audio_clip -> मुख्य बैकग्राउंड-संगीत/मिक्स्ड ऑडियो क्लिप
-        duck_start_time        -> किस सेकंड से आवाज़ धीमी होनी शुरू होगी (= climax_start_time)
-        total_duration          -> पूरे वीडियो की कुल लंबाई
-        duck_volume             -> CTA के दौरान कितना वॉल्यूम रहेगा (0.5 = 50%)
-
-    अगर background_audio_clip=None हो, या duck_start_time अमान्य हो, तो
-    यह फंक्शन क्रैश नहीं करता — जो भी मिला वही सुरक्षित रूप से लौटा देता है।
-    """
-    if background_audio_clip is None:
-        return None
-    if duck_start_time <= 0 or duck_start_time >= background_audio_clip.duration:
-        return background_audio_clip
-
-    try:
-        main_part = background_audio_clip.subclipped(0, duck_start_time).with_volume_scaled(1.0)
-        end_part = background_audio_clip.subclipped(
-            duck_start_time, min(background_audio_clip.duration, total_duration)
-        ).with_volume_scaled(duck_volume)
-        return concatenate_audioclips([main_part, end_part])
-    except Exception as duck_error:
-        print(f"⚠️ [ऑटो-स्किप] CTA-ducking नहीं हो सकी, बैकग्राउंड-संगीत सामान्य वॉल्यूम पर रहेगा: {duck_error}")
-        return background_audio_clip
-
-
-# --------------------------------------------------------------
-# 🆕 चरण ७ (अपडेटेड) — इसे अपने _compile_standard_mode() के अंदर
-# पुरानी "climax_layers = create_climax_layer(...)" लाइन की जगह डालें
-# --------------------------------------------------------------
-"""
-पुराना कोड (हटाएँ):
-
-    climax_layers = (
-        create_climax_layer(video_duration=total_video_duration, outro_text=outro_text, aspect_ratio=aspect_ratio)
-        if outro_voice_active else []
-    )
-
-नया कोड (इसकी जगह डालें):
-"""
-
-
-def _build_climax_with_cta_voice(
-    total_video_duration: float,
-    outro_text: str,
-    aspect_ratio: str,
-    outro_voice_active: bool,
-    combined_audio,   # अब तक बना मुख्य ऑडियो-मिक्स (आवाज़ + संगीत + SFX) — इसी को duck करेंगे
-):
-    """
-    चरण ७ का पूरा नया तरीका — विज़ुअल क्लाइमेक्स-लेयर्स भी बनाता है और
-    CTA-आवाज़ भी जोड़ता है, साथ ही बैकग्राउंड-ऑडियो को hard-cut ducking भी
-    करता है। सब कुछ एक ही जगह से लौटता है ताकि आगे कंपोज़िट करना आसान हो।
-
-    रिटर्न:
-        (climax_visual_layers: list, final_combined_audio, total_video_duration_updated)
-        -> total_video_duration_updated वही असली लंबाई है जो CTA-आवाज़ के
-           हिसाब से बढ़ी/बरकरार रही — आगे CompositeVideoClip में इसी का
-           इस्तेमाल करें, ताकि लंबी CTA-आवाज़ कभी वीडियो के अंत में कटे नहीं।
-    """
-    if not outro_voice_active:
-        return [], combined_audio, total_video_duration
-
-    # --- चरण A: असली बोली गई CTA-आवाज़ बनाना और उसकी असली लंबाई नापना ---
-    cta_audio_clip, cta_audio_duration = _build_cta_voice_audio(outro_text)
-
-    # --- चरण B: climax_duration तय करना — डिफ़ॉल्ट 5.5s, या CTA-आवाज़ जितनी लंबी हो उतना ---
-    from climax import CLIMAX_DURATION_SECONDS
-    required_climax_duration = max(CLIMAX_DURATION_SECONDS, cta_audio_duration + 0.4)
-
-    # --- चरण C: अगर CTA-आवाज़ की वजह से climax_duration बढ़ी हो, तो पूरे वीडियो
-    # की लंबाई भी उतनी ही बढ़ा देना, ताकि आवाज़/विज़ुअल कभी बीच में न कटें ---
-    total_video_duration_updated = max(total_video_duration, required_climax_duration + 1.0)
-
-    # --- चरण D: विज़ुअल क्लाइमेक्स-लेयर्स (पंख + पार्टिकल-ब्लास्ट + टेक्स्ट) बनाना ---
-    climax_visual_layers, climax_duration_used = create_climax_layer(
-        video_duration=total_video_duration_updated,
-        outro_text=outro_text,
-        aspect_ratio=aspect_ratio,
-        climax_duration_override=required_climax_duration,
-    )
-    climax_start_time = total_video_duration_updated - climax_duration_used
-
-    # --- चरण E: बैकग्राउंड-ऑडियो को hard-cut तरीके से CTA के दौरान धीमा करना ---
-    final_combined_audio = _duck_audio_hard_cut(
-        combined_audio, climax_start_time, total_video_duration_updated, duck_volume=0.5,
-    )
-
-    # --- चरण F: असली CTA-आवाज़ को सही समय पर मिक्स में जोड़ना ---
-    if cta_audio_clip is not None:
-        cta_audio_clip = cta_audio_clip.with_start(climax_start_time)
-        if final_combined_audio is not None:
-            from moviepy import CompositeAudioClip
-            final_combined_audio = CompositeAudioClip(
-                [final_combined_audio, cta_audio_clip]
-            ).with_duration(total_video_duration_updated)
-        else:
-            final_combined_audio = cta_audio_clip
-
-    return climax_visual_layers, final_combined_audio, total_video_duration_updated

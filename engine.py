@@ -428,16 +428,16 @@ def _compile_standard_mode(
     # चरण २: कुल वीडियो-लंबाई तय करना (8s + 1-इमेज समस्या का फ़िक्स)
     # --------------------------------------------------------------
     total_images = len(visual_clips) if visual_clips else 1
-    min_visuals_time = total_images * 4.0  # गोदाम की हर फोटो कम से कम 4 सेकंड दिखेगी
+    min_visuals_time = total_images * 5.0  # गोदाम की हर फोटो 5 सेकंड तक चलेगी
 
     if duration_seconds and float(duration_seconds) > 0:
-        # 1. अगर UI से यूज़र ने समय (जैसे 30 या 60 सेकंड) सेलेक्ट किया है
+        # 1. UI (app.py) से चुना गया समय सबसे पहले लागू होगा
         total_video_duration = float(duration_seconds)
     elif voice_duration > 0:
-        # 2. अगर UI समय खाली है, तो आवाज़ और सभी तस्वीरों के कुल समय में से जो बड़ा होगा
+        # 2. अगर UI समय खाली है, तो आवाज़ और तस्वीरों के कुल समय में से जो बड़ा हो
         total_video_duration = max(voice_duration, min_visuals_time)
     else:
-        # 3. फॉलबैक: पूरी तस्वीरें दिखाने लायक पर्याप्त समय (न्यूनतम 30 सेकंड)
+        # 3. फॉलबैक: सभी तस्वीरें दिखाने लायक पर्याप्त समय (न्यूनतम 30 सेकंड)
         total_video_duration = max(min_visuals_time, 30.0)
 
     # चरण ३: ट्रैक 1 (गोदाम) से मुख्य पृष्ठभूमि विज़ुअल-ट्रैक बनाना

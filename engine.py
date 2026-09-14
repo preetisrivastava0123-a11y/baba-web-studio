@@ -69,8 +69,10 @@ from moviepy import (
     ImageClip,
     VideoFileClip,
     concatenate_audioclips,
+    concatenate_videoclips,
     vfx,
 )
+
 
 
 # --------------------------------------------------------------
@@ -194,15 +196,11 @@ def _build_track1_looped_visual_track(visual_clips: list, total_duration: float,
         if slot_duration <= 0:
             break
             
-        # 🔐 मिस्टेक फिक्स 1: यहाँ से .with_start() को पूरी तरह हटा दिया गया है
-        # क्योंकि concatenate करने वाली क्लिप्स में मैन्युअल स्टार्ट टाइम नहीं दिया जाता!
         visual_clips_sequence.append(prepared_clip)
         elapsed_duration += slot_duration
         cycle_index += 1 # इंडेक्स आगे बढ़ाओ ताकि अगली इमेज लोड हो
         
-    # 🔐 मिस्टेक फिक्स 2: कनकैटिनेट करने का असली और 100% सही MoviePy सिंटैक्स
-    # इसमें method="compose" का उपयोग करेंगे ताकि अलग-अलग साइज़ की क्लिप्स क्रैश न हों
-    from moviepy import concatenate_videoclips
+    # ऊपर इम्पोर्ट फिक्स होने के बाद अब यह सीधे काम करेगा
     combined_visual_track = concatenate_videoclips(
         visual_clips_sequence, method="compose"
     ).with_duration(total_duration)

@@ -268,7 +268,10 @@ def _build_feather_clip(climax_start_time: float, climax_duration: float, canvas
         x_fraction = 0.5 + (horizontal_wave_offset / canvas_width)
         y_fraction = 0.5   # ऊँचाई हमेशा केंद्र में स्थिर रहेगी
 
-        return (x_fraction, y_fraction)
+        # ⚠️ फिक्स: MoviePy 2.x+ में .with_position() को टुपल (x, y) नहीं,
+        # बल्कि लिस्ट [x, y] चाहिए — वरना "int() argument must be...
+        # not 'tuple'" वाला एरर आता है। इसलिए यहाँ स्क्वायर-ब्रैकेट।
+        return [x_fraction, y_fraction]
 
     feather_clip = feather_clip.with_position(wave_position, relative=True)
 
@@ -322,7 +325,8 @@ def _build_particle_burst_clips(climax_start_time: float, climax_duration: float
 
             x_fraction = 0.5 + (offset_x_px / canvas_width)
             y_fraction = 0.5 + (offset_y_px / canvas_height)
-            return (x_fraction, y_fraction)
+            # ⚠️ फिक्स: MoviePy 2.x+ के .with_position() को टुपल नहीं, लिस्ट [x, y] चाहिए
+            return [x_fraction, y_fraction]
 
         particle_image_clip = particle_image_clip.with_position(_particle_position, relative=True)
         particle_clips.append(particle_image_clip)
@@ -366,8 +370,12 @@ def _build_subscribe_image_clip(
     # यहाँ 0 भी हो सकता है अगर पंख की फ़ाइल नियम-१ के तहत छूट गई हो — तब
     # संदेश बस सीधे केंद्र के थोड़ा नीचे आ जाएगा, फिर भी बिना क्रैश हुए।)
     vertical_gap_below_feather = (feather_height / 2) + 20
+    # ⚠️ फिक्स: MoviePy 2.x+ के .with_position() को कहीं भी टुपल नहीं चाहिए —
+    # बाहरी (x, y) जोड़ी और अंदर वाली (center, offset) जोड़ी, दोनों को
+    # स्क्वायर-ब्रैकेट लिस्ट में बदला गया है, वरना "int() argument must be...
+    # not 'tuple'" एरर आता है।
     subscribe_clip = subscribe_clip.with_position(
-        lambda t: ("center", ("center", vertical_gap_below_feather))
+        lambda t: ["center", ["center", vertical_gap_below_feather]]
     )
 
     return subscribe_clip
@@ -404,8 +412,9 @@ def _build_outro_note_image_clip(
         return None
 
     vertical_gap_below_subscribe = (feather_height / 2) + 90
+    # ⚠️ फिक्स: यहाँ भी टुपल की जगह लिस्ट — ऊपर subscribe_clip जैसा ही कारण
     outro_note_clip = outro_note_clip.with_position(
-        lambda t: ("center", ("center", vertical_gap_below_subscribe))
+        lambda t: ["center", ["center", vertical_gap_below_subscribe]]
     )
 
     return outro_note_clip

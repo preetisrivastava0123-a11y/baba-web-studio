@@ -63,7 +63,7 @@ IMPORT/CONSTANT बदल दीजिए — बाकी पूरा ढा�
 # 📦 आवश्यक लाइब्रेरीज़ (Imports)
 # --------------------------------------------------------------
 import os
-
+import moviepy.vfx as vfx
 from moviepy import (
     AudioFileClip,
     CompositeAudioClip,
@@ -72,7 +72,6 @@ from moviepy import (
     VideoFileClip,
     concatenate_audioclips,
     concatenate_videoclips,
-    vfx,
 )
 
 # --------------------------------------------------------------

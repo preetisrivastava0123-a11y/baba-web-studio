@@ -263,7 +263,7 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
     # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE
+    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (NONE-SAFETY UPDATED)
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -276,18 +276,19 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
             return clip.transform(lambda get_frame, t: get_frame(t) * scale)
         return clip
 
+    # 1. Track 6: Voiceover Layer (Safeguarded)
     has_voiceover = False
-    if voiceover_path and isinstance(voiceover_path, (str, bytes, os.PathLike)) and os.path.exists(voiceover_path):
+    if is_valid_path(voiceover_path):
         vo_clip = AudioFileClip(voiceover_path)
         vo_clip = vo_clip.subclipped(0, min(vo_clip.duration, total_duration)).with_start(0.0)
         audio_tracks.append(vo_clip)
         has_voiceover = True
 
-    # 2. Track 3: Main Music Layer
+    # 2. Track 3 & 4: Main Music Layer (Safeguarded)
     bg_music_vol = 0.30 if (has_voiceover and auto_ducking) else master_music_vol
     for a_item in audio_files:
         a_path = a_item.get("path")
-        if a_path and os.path.exists(a_path):
+        if is_valid_path(a_path):
             mode = a_item.get("mode", "🎵 Song (Default)")
             m_clip = AudioFileClip(a_path)
             
@@ -304,10 +305,10 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
             m_clip = apply_volume_scale(m_clip, mode_vol)
             audio_tracks.append(m_clip)
 
-    # 3. Track 7: SFX Events / Outro Sound Effects
+    # 3. Track 7: SFX Events (Safeguarded)
     for sfx in sfx_events:
         s_path = sfx.get("path")
-        if s_path and os.path.exists(s_path):
+        if is_valid_path(s_path):
             st_t = sfx.get("start", 0.0)
             end_t = sfx.get("end", st_t + 2.0)
             vol = sfx.get("volume", 0.8)

@@ -117,6 +117,10 @@ def compile_cinematic_video(
     if music_timeline_slots is None: music_timeline_slots = []
     if sfx_events is None: sfx_events = []
 
+    # 💥 SAFEGUARD HELPER: Prevents 'NoneType' crashes across all tracks
+    def is_valid_path(p):
+        return p is not None and isinstance(p, (str, bytes, os.PathLike)) and os.path.exists(p)
+
     # Format & Resolution Setup
     if "9:16" in video_format:
         target_size = (720, 1280) if "720p" in video_quality else (1080, 1920)
@@ -125,8 +129,7 @@ def compile_cinematic_video(
         
     fps = 24
     w, h = target_size
-
-    # --------------------------------------------------------------------------
+   # --------------------------------------------------------------------------
     # TRACK 1: VISUAL COMPOSITION ENGINE (DYNAMIC DURATION CALCULATION)
     # --------------------------------------------------------------------------
     bg_clips = []
@@ -135,7 +138,7 @@ def compile_cinematic_video(
 
     for v_item in visual_files:
         path = v_item.get("path")
-        if not path or not os.path.exists(path):
+        if not is_valid_path(path):
             continue
             
         is_img = v_item.get("is_image", True)
@@ -165,14 +168,13 @@ def compile_cinematic_video(
     video_layers = [main_visual_track]
     for slot in video_timeline_slots:
         path = slot.get("path")
-        if path and os.path.exists(path):
+        if is_valid_path(path):
             st_t = min(slot.get("start", 0.0), total_duration - 1.0)
             dur = min(slot.get("end", st_t + 4.0) - st_t, total_duration - st_t)
             
             ov_clip = VideoFileClip(path).subclipped(0, min(dur, 4.0))
             ov_clip = ov_clip.resized(new_size=(int(w*0.8), int(h*0.8))).with_position("center").with_start(st_t)
             video_layers.append(ov_clip)
-
    # ------------------------------------------------------------------------------
 # CLIMAX ENGINE: REAL FIREWORKS BLAST & DEVANAGARI HINDI CTA (BOTTOM OVERLAY)
 # ------------------------------------------------------------------------------

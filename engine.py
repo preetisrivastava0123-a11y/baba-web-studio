@@ -262,8 +262,8 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
-    # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (NONE-SAFETY UPDATED)
+   # --------------------------------------------------------------------------
+    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (STRICT NONE-SAFE)
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -284,57 +284,42 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
         audio_tracks.append(vo_clip)
         has_voiceover = True
 
-    # 2. Track 3 & 4: Main Music Layer (Safeguarded)
+    # 2. Track 3 & 4: Main Music Layer (Safeguarded against None values inside items)
     bg_music_vol = 0.30 if (has_voiceover and auto_ducking) else master_music_vol
     for a_item in audio_files:
-        a_path = a_item.get("path")
-        if is_valid_path(a_path):
-            mode = a_item.get("mode", "🎵 Song (Default)")
-            m_clip = AudioFileClip(a_path)
-            
-            if "Background" in mode: mode_vol = bg_music_vol * 0.4
-            elif "Instrument" in mode: mode_vol = bg_music_vol * 0.7
-            else: mode_vol = bg_music_vol
+        if isinstance(a_item, dict):
+            a_path = a_item.get("path", None)
+            if is_valid_path(a_path):
+                mode = a_item.get("mode", "🎵 Song (Default)")
+                m_clip = AudioFileClip(a_path)
                 
-            # Looping to full video duration
-            if m_clip.duration < total_duration:
-                loops_needed = math.ceil(total_duration / m_clip.duration)
-                m_clip = concatenate_audioclips([m_clip] * loops_needed)
-                
-            m_clip = m_clip.subclipped(0, total_duration).with_start(0.0)
-            m_clip = apply_volume_scale(m_clip, mode_vol)
-            audio_tracks.append(m_clip)
+                if "Background" in mode: mode_vol = bg_music_vol * 0.4
+                elif "Instrument" in mode: mode_vol = bg_music_vol * 0.7
+                else: mode_vol = bg_music_vol
+                    
+                if m_clip.duration < total_duration:
+                    loops_needed = math.ceil(total_duration / m_clip.duration)
+                    m_clip = concatenate_audioclips([m_clip] * loops_needed)
+                    
+                m_clip = m_clip.subclipped(0, total_duration).with_start(0.0)
+                m_clip = apply_volume_scale(m_clip, mode_vol)
+                audio_tracks.append(m_clip)
 
-    # 3. Track 7: SFX Events (Safeguarded)
+    # 3. Track 7: SFX Events (Safeguarded against None values inside items)
     for sfx in sfx_events:
-        s_path = sfx.get("path")
-        if is_valid_path(s_path):
-            st_t = sfx.get("start", 0.0)
-            end_t = sfx.get("end", st_t + 2.0)
-            vol = sfx.get("volume", 0.8)
-            
-            s_clip = AudioFileClip(s_path)
-            s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t)
-            s_clip = apply_volume_scale(s_clip, vol)
-            audio_tracks.append(s_clip)
+        if isinstance(sfx, dict):
+            s_path = sfx.get("path", None)
+            if is_valid_path(s_path):
+                st_t = sfx.get("start", 0.0)
+                end_t = sfx.get("end", st_t + 2.0)
+                vol = sfx.get("volume", 0.8)
+                
+                s_clip = AudioFileClip(s_path)
+                s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t)
+                s_clip = apply_volume_scale(s_clip, vol)
+                audio_tracks.append(s_clip)
 
     # Audio Layer Integration
     if audio_tracks:
         composite_audio = CompositeAudioClip(audio_tracks).subclipped(0, total_duration)
         final_visual_video = final_visual_video.with_audio(composite_audio)
-
-    # --------------------------------------------------------------------------
-    # RENDER ENGINE EXPORT
-    # --------------------------------------------------------------------------
-    preset = "ultrafast" if "720p" in video_quality else "medium"
-    
-    final_visual_video.write_videofile(
-        output_path,
-        fps=fps,
-        codec="libx264",
-        audio_codec="aac",
-        preset=preset,
-        threads=4
-    )
-
-    return output_path

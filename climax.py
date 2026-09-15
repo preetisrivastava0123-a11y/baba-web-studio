@@ -1,243 +1,167 @@
-# ==============================================================
-# 🎬 BABA WEB STUDIO: ADVANCED CLIMAX OUTRO ENGINE (climax.py)
-# ==============================================================
+# ==========================================
+# CLIMAX ENGINE: SPECIAL ENGAGEMENT BOOSTER
+# ==========================================
 import os
-import re
-import math
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-from moviepy import VideoClip
-
-_EMOJI_PATTERN = re.compile(
-    "["
-    "\U0001F300-\U0001FAFF"
-    "\U00002600-\U000027BF"
-    "\U0001F1E6-\U0001F1FF"
-    "\U00002190-\U000021FF"
-    "\U00002B00-\U00002BFF"
-    "]+",
-    flags=re.UNICODE,
+import cv2
+from moviepy.editor import (
+    VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, 
+    CompositeAudioClip, concatenate_videoclips, ColorClip
 )
 
-def _find_first_existing(paths):
-    for p in paths:
-        if p and os.path.exists(p):
-            return p
-    return None
 
-def _load_font(size, prefer_emoji=False):
-    devanagari_candidates = [
-        "C:/Windows/Fonts/Nirmala.ttf",
-        "C:/Windows/Fonts/NirmalaB.ttf",
-        "C:/Windows/Fonts/mangal.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
-        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.otf",
-        "/System/Library/Fonts/Supplemental/Devanagari MT.ttf",
-        "/System/Library/Fonts/Supplemental/Kohinoor Devanagari.ttc",
-        "NotoSansDevanagari-Regular.ttf",
-    ]
-    emoji_candidates = [
-        "C:/Windows/Fonts/seguiemj.ttf",
-        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
-        "/System/Library/Fonts/Apple Color Emoji.ttc",
-    ]
-    generic_candidates = [
-        "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-    ]
+# ==========================================
+# 1. PROCEDURAL VISUAL EFFECTS (PARTICLES & CONFETTI)
+# ==========================================
+def generate_fireworks_confetti_frame(width, height, t, total_dur):
+    """
+    आतिशबाज़ी (Fireworks), कन्फेटी (Confetti Shower) और बैलून्स का 
+    डायनामिक OpenCV फ़्रेम जनरेट करता है।
+    """
+    # Create dark/translucent base canvas for climax
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    
+    # Seed based on frame time for smooth animation
+    np.random.seed(int(t * 30))
+    
+    # 💥 1. Confetti Shower Layer (Falling Colored Rectangles)
+    num_confetti = 80
+    for _ in range(num_confetti):
+        cx = np.random.randint(0, width)
+        cy = int((np.random.rand() * height + t * 400)) % height
+        color = tuple(map(int, np.random.randint(100, 255, size=3)))
+        cv2.rectangle(img, (cx, cy), (cx + 12, cy + 20), color, -1)
+        
+    # 💥 2. Fireworks Particle Sparks Layer
+    num_sparks = 60
+    center_x, center_y = width // 2, height // 3
+    for _ in range(num_sparks):
+        angle = np.random.uniform(0, 2 * np.pi)
+        speed = np.random.uniform(50, 350)
+        radius = int((t * speed) % 250)
+        sx = int(center_x + radius * np.cos(angle))
+        sy = int(center_y + radius * np.sin(angle))
+        if 0 <= sx < width and 0 <= sy < height:
+            color = (0, 255, 255) if np.random.rand() > 0.5 else (255, 105, 180)
+            cv2.circle(img, (sx, sy), np.random.randint(3, 7), color, -1)
+            
+    # 🎈 3. Floating Balloons (Bottom to Top Motion)
+    num_balloons = 6
+    for i in range(num_balloons):
+        bx = int((i + 1) * (width / (num_balloons + 1)))
+        by = int(height - ((t * 120 + i * 150) % (height + 200)))
+        cv2.circle(img, (bx, by), 35, (0, 140, 255), -1)  # Red/Orange Balloon
+        cv2.line(img, (bx, by + 35), (bx, by + 80), (200, 200, 200), 2)  # String
 
-    ordered = (emoji_candidates + devanagari_candidates) if prefer_emoji else \
-              (devanagari_candidates + generic_candidates)
+    return img
 
-    path = _find_first_existing(ordered)
-    if path is None:
-        return ImageFont.load_default()
 
-    try:
-        return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
-    except Exception:
-        try:
-            return ImageFont.truetype(path, size)
-        except Exception:
-            return ImageFont.load_default()
+# ==========================================
+# 2. CALL-TO-ACTION (CTA) & BADGE OVERLAYS
+# ==========================================
+def create_cta_overlay(width, height, duration, channel_name="बाबा वेब स्टूडियो"):
+    """
+    👍 LIKE & 🔔 SUBSCRIBE का 3D Pop-up animated badge और न्यूज़ टिक्कर बनाता है।
+    """
+    # Animated Pop-up Badge Text
+    cta_text = f"👍 LIKE & 🔔 SUBSCRIBE\n{channel_name}"
+    
+    badge_clip = TextClip(
+        cta_text,
+        fontsize=55 if width < height else 70,
+        color="yellow",
+        font="Arial-Bold",
+        stroke_color="black",
+        stroke_width=3,
+        method="caption",
+        size=(int(width * 0.85), None),
+        align="center"
+    )
+    
+    # Center positioning with scaling effect
+    badge_clip = badge_clip.set_position(('center', int(height * 0.4))).set_duration(duration)
+    
+    # Bottom Bar / News Ticker Note Overlay
+    ticker_note = TextClip(
+        "🔔 ऐसी ही और दिव्य वीडियो के लिए अभी सब्सक्राइब करें!",
+        fontsize=35,
+        color="white",
+        bg_color="red",
+        font="Arial-Bold",
+        method="caption",
+        size=(width, 60),
+        align="center"
+    ).set_position(('center', height - 80)).set_duration(duration)
 
-def _draw_mixed_text(draw, xy, text, text_font, emoji_font, fill):
-    x, y = xy
-    total_w = 0
-    pos = 0
-    for m in _EMOJI_PATTERN.finditer(text):
-        if m.start() > pos:
-            chunk = text[pos:m.start()]
-            draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
-            bbox = draw.textbbox((0, 0), chunk, font=text_font)
-            total_w += bbox[2] - bbox[0]
-        emoji_chunk = m.group()
-        draw.text((x + total_w, y), emoji_chunk, font=emoji_font, fill=fill)
-        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
-        total_w += bbox[2] - bbox[0]
-        pos = m.end()
-    if pos < len(text):
-        chunk = text[pos:]
-        draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
-        bbox = draw.textbbox((0, 0), chunk, font=text_font)
-        total_w += bbox[2] - bbox[0]
-    return total_w
+    return badge_clip, ticker_note
 
-def _measure_mixed_text(draw, text, text_font, emoji_font):
-    w = 0
-    h = 0
-    pos = 0
-    for m in _EMOJI_PATTERN.finditer(text):
-        if m.start() > pos:
-            chunk = text[pos:m.start()]
-            bbox = draw.textbbox((0, 0), chunk, font=text_font)
-            w += bbox[2] - bbox[0]
-            h = max(h, bbox[3] - bbox[1])
-        emoji_chunk = m.group()
-        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
-        w += bbox[2] - bbox[0]
-        h = max(h, bbox[3] - bbox[1])
-        pos = m.end()
-    if pos < len(text):
-        chunk = text[pos:]
-        bbox = draw.textbbox((0, 0), chunk, font=text_font)
-        w += bbox[2] - bbox[0]
-        h = max(h, bbox[3] - bbox[1])
-    return w, h
 
-def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
-    w, h = target_size
-    np.random.seed(101)
+# ==========================================
+# 3. MAIN CLIMAX ATTACHMENT FUNCTION
+# ==========================================
+def attach_10s_climax(main_video_path, output_path, is_shorts=True, channel_name="बाबा वेब स्टूडियो", ticker_text=None):
+    """
+    engine.py द्वारा पास किए गए मेन वीडियो के अंत में 
+    Shorts (10s) या Long (15s) का Climax जोड़ता है।
+    """
+    if not os.path.exists(main_video_path):
+        raise FileNotFoundError(f"Main video file not found at: {main_video_path}")
+        
+    main_clip = VideoFileClip(main_video_path)
+    width, height = main_clip.w, main_clip.h
+    
+    # ⏱️ Climax Timing Reservation: Shorts = 10 Sec, Long = 15 Sec
+    climax_duration = 10.0 if is_shorts else 15.0
+    
+    # 1. Create Particle FX Video Clip
+    particle_clip = VideoFileClip.fl_make_frame(
+        lambda t: generate_fireworks_confetti_frame(width, height, t, climax_duration),
+        duration=climax_duration
+    )
+    
+    # 2. Generate CTA Overlay Elements
+    badge_clip, ticker_note = create_cta_overlay(width, height, climax_duration, channel_name)
+    
+    # Composite Climax Visual Scene
+    climax_visual = CompositeVideoClip(
+        [particle_clip, badge_clip, ticker_note], 
+        size=(width, height)
+    ).set_duration(climax_duration)
+    
+    # 3. Audio & Voiceover Integration (SFX & AI Voice)
+    climax_audio_tracks = []
+    
+    # SFX: Applause / Crowds Cheering (Generated or Loaded)
+    sfx_applause_path = "assets/sfx/applause.mp3"
+    if os.path.exists(sfx_applause_path):
+        applause_sfx = AudioFileClip(sfx_applause_path).volumex(0.8).set_duration(climax_duration)
+        climax_audio_tracks.append(applause_sfx)
 
-    colors = [
-        (255, 50, 150),
-        (0, 230, 255),
-        (255, 215, 0),
-        (50, 255, 100),
-        (255, 100, 50),
-        (200, 100, 255),
-        (255, 255, 255),
-    ]
-
-    n_centers = 8
-    burst_configs = []
-    for i in range(n_centers):
-        burst_configs.append({
-            "cx": int(w * np.random.uniform(0.15, 0.85)),
-            "cy": int(h * np.random.uniform(0.10, 0.40)),
-            "color": colors[i % len(colors)],
-            "delay": (duration / n_centers) * i * 0.5,
-            "period": np.random.uniform(1.6, 2.6),
-        })
-
-    sparks = []
-    for cfg in burst_configs:
-        for _ in range(45):
-            sparks.append({
-                "cx": cfg["cx"],
-                "cy": cfg["cy"],
-                "angle": np.random.uniform(0, 2 * math.pi),
-                "speed": np.random.uniform(200, 700),
-                "color": cfg["color"],
-                "delay": cfg["delay"],
-                "period": cfg["period"],
-            })
-
-    fountains = []
-    for _ in range(70):
-        fountains.append({
-            "x": np.random.uniform(w * 0.08, w * 0.92),
-            "speed_y": np.random.uniform(-950, -500),
-            "speed_x": np.random.uniform(-100, 100),
-            "color": colors[np.random.randint(0, len(colors))],
-            "period": np.random.uniform(1.8, 2.4),
-            "phase": np.random.uniform(0, 2.0),
-        })
-
-    floating_items = [
-        {"text": "\U0001F44D LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 170, "phase": 0.0},
-        {"text": "\U0001F514 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 205, "phase": 1.3},
-        {"text": "\U0001F534 SUBSCRIBE", "bg": (255, 45, 85), "x": int(w * 0.62), "speed": 185, "phase": 0.7},
-        {"text": "\u2197\uFE0F SHARE", "bg": (52, 199, 89), "x": int(w * 0.85), "speed": 200, "phase": 1.9},
-    ]
-
-    font_large = _load_font(38, prefer_emoji=False)
-    font_large_emoji = _load_font(38, prefer_emoji=True)
-    font_btn = _load_font(24, prefer_emoji=False)
-    font_btn_emoji = _load_font(24, prefer_emoji=True)
-
-    def make_frame(t):
-        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        # 1. आतिशबाजी (Fireworks)
-        for s in sparks:
-            rel_t = t - s["delay"]
-            if rel_t <= 0:
-                continue
-            cycle_t = rel_t % s["period"]
-            dist = s["speed"] * cycle_t
-            px = int(s["cx"] + dist * math.cos(s["angle"]))
-            py = int(s["cy"] + dist * math.sin(s["angle"]) + 120 * (cycle_t ** 2))
-            tail_x = int(px - 25 * math.cos(s["angle"]))
-            tail_y = int(py - 25 * math.sin(s["angle"]))
-            if 0 <= px < w and 0 <= py < h:
-                alpha = max(0, int(255 * (1 - cycle_t / s["period"])))
-                draw.line([(tail_x, tail_y), (px, py)], fill=s["color"] + (alpha,), width=4)
-                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
-
-        # 2. फाउंटेन पार्टिकल्स (Fountains)
-        for f in fountains:
-            ft = (t + f["phase"]) % f["period"]
-            fx = int(f["x"] + f["speed_x"] * ft)
-            fy = int(h * 0.88 + f["speed_y"] * ft + 350 * (ft ** 2))
-            if 0 <= fx < w and 0 <= fy < h:
-                alpha = max(0, int(220 * (1 - ft / f["period"])))
-                draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f["color"] + (alpha,))
-
-        # 3. गिरते हुए बेज (Badges: Like, Share, Subscribe)
-        for item in floating_items:
-            curr_y = int(((t + item["phase"]) * item["speed"]) % (h + 100)) - 50
-            curr_x = int(item["x"] + 20 * math.sin(t * 3 + item["phase"]))
-
-            bw, bh = 190, 50
-            draw.rounded_rectangle(
-                [curr_x - bw // 2 + 3, curr_y + 3, curr_x + bw // 2 + 3, curr_y + bh + 3],
-                radius=15, fill=(0, 0, 0, 120),
-            )
-            draw.rounded_rectangle(
-                [curr_x - bw // 2, curr_y, curr_x + bw // 2, curr_y + bh],
-                radius=15, fill=item["bg"] + (240,), outline=(255, 255, 255, 255), width=2,
-            )
-            text_w, text_h = _measure_mixed_text(draw, item["text"], font_btn, font_btn_emoji)
-            tx = curr_x - text_w // 2
-            ty = curr_y + (bh - text_h) // 2
-            _draw_mixed_text(draw, (tx, ty), item["text"], font_btn, font_btn_emoji, fill=(255, 255, 255, 255))
-
-        # 4. मुख्य हिंदी CTA बैनर (Bottom Card)
-        pulse = 1.0 + 0.04 * math.sin(t * 8)
-        bw, bh = int(w * 0.90), int(130 * pulse)
-        bx = (w - bw) // 2
-        by = int(h * 0.82)
-
-        draw.rounded_rectangle(
-            [bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=22, fill=(0, 0, 0, 180)
-        )
-        draw.rounded_rectangle(
-            [bx, by, bx + bw, by + bh], radius=22, fill=(210, 20, 30, 250),
-            outline=(255, 215, 0, 255), width=5,
-        )
-
-        text = "\U0001F514 लाइक और सब्सक्राइब जरूर करें!"
-        text_w, text_h = _measure_mixed_text(draw, text, font_large, font_large_emoji)
-        tx = bx + (bw - text_w) // 2
-        ty = by + (bh - text_h) // 2
-        _draw_mixed_text(draw, (tx, ty), text, font_large, font_large_emoji, fill=(255, 255, 255, 255))
-
-        return np.array(img)
-
-    return VideoClip(make_frame, duration=duration).with_fps(fps)
+    # Voiceover: AI Climax Announcement
+    voiceover_path = "assets/voiceover/climax_vo.mp3"
+    if os.path.exists(voiceover_path):
+        voice_clip = AudioFileClip(voiceover_path).volumex(1.0)
+        climax_audio_tracks.append(voice_clip)
+        
+    # Combine Audio Layers if available
+    if climax_audio_tracks:
+        climax_audio = CompositeAudioClip(climax_audio_tracks).set_duration(climax_duration)
+        climax_visual = climax_visual.set_audio(climax_audio)
+        
+    # 4. Final Stitching: Main Video + Climax Video
+    final_master_video = concatenate_videoclips([main_clip, climax_visual], method="compose")
+    
+    # Render Master Video Output
+    final_master_video.write_videofile(
+        output_path, 
+        fps=30, 
+        codec="libx264", 
+        audio_codec="aac",
+        threads=4
+    )
+    
+    # Close resources
+    main_clip.close()
+    final_master_video.close()
+    
+    return output_path

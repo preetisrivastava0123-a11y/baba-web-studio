@@ -407,3 +407,6 @@ if __name__ == "__main__":
         frame = clip.get_frame(sample_t)
         Image.fromarray(frame).save(f"/tmp/climax_preview_{sample_t:.1f}.png")
     print("Preview frames written to /tmp/climax_preview_*.png")
+
+# app.py के साथ कनेक्ट करने के लिए (Alias)
+compile_cinematic_video = render_video_engine

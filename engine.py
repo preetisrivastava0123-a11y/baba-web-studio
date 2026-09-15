@@ -274,9 +274,8 @@ def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
             return clip.transform(lambda get_frame, t: get_frame(t) * scale)
         return clip
 
-    # 1. Track 6: Voiceover Layer
     has_voiceover = False
-    if voiceover_path and os.path.exists(voiceover_path):
+    if voiceover_path and isinstance(voiceover_path, (str, bytes, os.PathLike)) and os.path.exists(voiceover_path):
         vo_clip = AudioFileClip(voiceover_path)
         vo_clip = vo_clip.subclipped(0, min(vo_clip.duration, total_duration)).with_start(0.0)
         audio_tracks.append(vo_clip)

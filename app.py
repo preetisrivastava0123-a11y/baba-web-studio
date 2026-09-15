@@ -342,25 +342,27 @@ st.header("🚀 वीडियो रेंडरिंग ऑप्शंस")
 
 r_col1, r_col2 = st.columns(2)
 
+# safe_files सुनिश्चित करता है कि None जाने की जगह हमेशा List ([]) ही जाए
+safe_files = track1_files if ('track1_files' in locals() and track1_files is not None) else []
+
 with r_col1:
     if st.button("⚡ Quick Draft Render (360p Fast Preview)", use_container_width=True, key="btn_draft_render"):
-        st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है... (`engine.py` को ट्रांसफर हो रहा है)")
+        st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है...")
         
         payload = {
-    "video_format": video_format,
-    "base_duration": total_duration,
-    "enable_climax": enable_climax,
-    "t1_files": track1_files if track1_files is not None else [], # <--- यह पक्का करें
-    "t1_def_dur": st.session_state.get("t1_def_dur", 5),
-    "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
-    "ticker_text": ticker_text,
-    "is_draft": True
-}
+            "video_format": video_format,
+            "base_duration": total_duration,
+            "enable_climax": enable_climax,
+            "t1_files": safe_files,  # <--- अब कभी None नहीं जाएगा
+            "t1_def_dur": st.session_state.get("t1_def_dur", 5),
+            "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
+            "ticker_text": ticker_text,
+            "is_draft": True
+        }
         
         import engine
         output_file = engine.master_render_pipeline(payload)
         
-        # Save output path & refresh page to display video in Preview Canvas
         st.session_state.preview_video_path = output_file
         st.rerun()
 
@@ -372,6 +374,9 @@ with r_col2:
             "video_format": video_format,
             "base_duration": total_duration,
             "enable_climax": enable_climax,
+            "t1_files": safe_files,  # <--- अब कभी None नहीं जाएगा
+            "t1_def_dur": st.session_state.get("t1_def_dur", 5),
+            "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
             "ticker_text": ticker_text,
             "is_draft": False
         }

@@ -22,23 +22,25 @@ from moviepy.editor import ImageClip, VideoFileClip, ColorClip, concatenate_vide
 
 def process_visuals(t1_files=None, default_duration=5, is_shorts=True, ken_burns=True):
     processed_clips = []
-    # Target Size: Shorts = (1080, 1920), Long = (1920, 1080)
     target_size = (1080, 1920) if is_shorts else (1920, 1080)
     
-    # 1. Safe Check: अगर t1_files खाली, None या गैर-लिस्ट (Non-list) हो
+    # 1. Type Guard Check
     if not isinstance(t1_files, (list, tuple)) or not t1_files:
         blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
         return concatenate_videoclips([blank_clip], method="compose")
 
-    # 2. UploadedFiles को सही तरह से टेम्परेरी डिस्क फाइल में लिखना
+    # 2. Process Files Safely
     for file in t1_files:
         temp_path = None
         
-        if hasattr(file, 'read'):
+        # Streamlit UploadedFile handling
+        if hasattr(file, 'name'):
             ext = os.path.splitext(file.name)[1]
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                content = file.getvalue() if hasattr(file, 'getvalue') else file.read()
-                tmp.write(content)
+                if hasattr(file, 'getvalue'):
+                    tmp.write(file.getvalue())
+                elif hasattr(file, 'read'):
+                    tmp.write(file.read())
                 temp_path = tmp.name
         elif isinstance(file, str):
             temp_path = file
@@ -47,22 +49,19 @@ def process_visuals(t1_files=None, default_duration=5, is_shorts=True, ken_burns
             try:
                 ext_lower = temp_path.lower()
                 
-                # Image Files Handling (MoviePy resize position fix)
                 if ext_lower.endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     clip = ImageClip(temp_path).set_duration(default_duration)
-                    # MoviePy kompatibility fix: resize(target_size) passing tuple directly
                     clip = clip.resize(target_size)
                     processed_clips.append(clip)
                     
-                # MP4 / Video Files Handling
                 elif ext_lower.endswith(('.mp4', '.mov', '.avi')):
                     clip = VideoFileClip(temp_path)
                     clip = clip.resize(target_size)
                     processed_clips.append(clip)
             except Exception as e:
-                print(f"Error loading clip {temp_path}: {e}")
+                print(f"Error loading media: {e}")
 
-    # 3. Fallback Check: अगर कोई क्लिप लोड नहीं हो पाई
+    # 3. Fallback Clip
     if not processed_clips:
         blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
         processed_clips.append(blank_clip)

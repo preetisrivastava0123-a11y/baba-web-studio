@@ -170,7 +170,7 @@ def compile_cinematic_video(
     final_visual_video = CompositeVideoClip(video_layers, size=target_size)
 
     # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (UNIVERSAL FIX)
+    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (MOVIEPY v2 FINAL FIX)
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -182,6 +182,17 @@ def compile_cinematic_video(
             vo_clip = vo_clip.subclipped(0, total_duration)
         audio_tracks.append(vo_clip.with_start(0.0))
         has_voiceover = True
+
+    # Volume Modifier Helper Function (Works on ALL MoviePy Versions)
+    def apply_volume_scale(clip, scale):
+        if hasattr(clip, "volumex"):
+            return clip.volumex(scale)
+        elif hasattr(clip, "with_volume_scaling"):
+            return clip.with_volume_scaling(scale)
+        elif hasattr(clip, "transform"):
+            # MoviePy v2.x standard transform
+            return clip.transform(lambda get_frame, t: get_frame(t) * scale)
+        return clip
 
     # 2. Main Music Layer (Track 3) with Modes & Auto-Looping
     bg_music_vol = 0.30 if (has_voiceover and auto_ducking) else master_music_vol
@@ -204,16 +215,8 @@ def compile_cinematic_video(
                 loops_needed = math.ceil(total_duration / m_clip.duration)
                 m_clip = concatenate_audioclips([m_clip] * loops_needed)
                 
-            # Volume Adjustment Engine (Fallback Support for all MoviePy Versions)
             m_clip = m_clip.subclipped(0, total_duration)
-            if hasattr(m_clip, "volumex"):
-                m_clip = m_clip.volumex(mode_vol)
-            elif hasattr(m_clip, "with_volume_scaling"):
-                m_clip = m_clip.with_volume_scaling(mode_vol)
-            else:
-                # Direct audio array volume scaling fallback
-                m_clip = m_clip.fl_make_frame(lambda t: m_clip.get_frame(t) * mode_vol)
-
+            m_clip = apply_volume_scale(m_clip, mode_vol)
             audio_tracks.append(m_clip)
 
     # 3. Track 4: Music Clips Timeline
@@ -226,10 +229,7 @@ def compile_cinematic_video(
             
             m_clip = AudioFileClip(m_path)
             m_clip = m_clip.subclipped(0, min(dur, m_clip.duration)).with_start(st_t)
-            if hasattr(m_clip, "volumex"):
-                m_clip = m_clip.volumex(master_music_vol)
-            elif hasattr(m_clip, "with_volume_scaling"):
-                m_clip = m_clip.with_volume_scaling(master_music_vol)
+            m_clip = apply_volume_scale(m_clip, master_music_vol)
             audio_tracks.append(m_clip)
 
     # 4. Track 7: SFX Events Timeline
@@ -242,12 +242,8 @@ def compile_cinematic_video(
             
             s_clip = AudioFileClip(s_path)
             s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t)
-            if hasattr(s_clip, "volumex"):
-                s_clip = s_clip.volumex(vol)
-            elif hasattr(s_clip, "with_volume_scaling"):
-                s_clip = s_clip.with_volume_scaling(vol)
+            s_clip = apply_volume_scale(s_clip, vol)
             audio_tracks.append(s_clip)
-
     # --------------------------------------------------------------------------
     # CLIMAX ENGINE & VIDEO EXPORT
     # --------------------------------------------------------------------------

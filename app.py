@@ -381,22 +381,96 @@ else:
 
 st.markdown('</div>', unsafe_allow_html=True)
 
-# ------------------------------------------------------------------------------
-# 🎆 PYTHON CLIMAX ENGINE & RENDER OPTIONS
-# ------------------------------------------------------------------------------
+# ==============================================================================
+# 🎆 PYTHON CLIMAX ENGINE & RENDER OPTIONS (FIXED & CONNECTED)
+# ==============================================================================
+import tempfile
+from engine import compile_cinematic_video
+
 st.markdown('<div class="track-card"><div class="track-title">🎆 Python Climax Engine & Render Console</div>', unsafe_allow_html=True)
 st.caption("✨ ऑटो-आतिशबाज़ी स्पार्क्स (Particle Fireworks), फ़्लोटिंग बैलून्स एवं 3D 'LIKE & SUBSCRIBE' एनिमेटेड बैज विथ गोल्ड ग्लो!")
 
+# अपलोड की गई फाइलों को डिस्क पर सेव करने का हेल्पर फंक्शन
+def process_uploaded_files(file_list):
+    saved_data = []
+    temp_dir = tempfile.mkdtemp()
+    for idx, f in enumerate(file_list):
+        file_path = os.path.join(temp_dir, f.name)
+        with open(file_path, "wb") as out:
+            out.write(f.getbuffer())
+        is_img = f.type.startswith("image") if (hasattr(f, "type") and f.type) else True
+        saved_data.append({
+            "path": file_path,
+            "is_image": is_img,
+            "start": 0.0,
+            "end": 5.0,
+            "ken_burns": True,
+            "mode": "🎵 Song (Default)"
+        })
+    return saved_data
+
 c_rnd1, c_rnd2 = st.columns(2)
+
 with c_rnd1:
     if st.button("⚡ क्विक ड्राफ्ट रेंडर (360p Fast Test)", use_container_width=True):
-        st.info("⚡ क्विक ड्राफ्ट टेस्ट रेंडरिंग प्रोसेस जारी है...")
+        if not st.session_state["visual_files"] or not st.session_state["audio_files"]:
+            st.error("❌ अनिवार्य ट्रैक्स (Track 1 और Track 3) में फाइल अपलोड करना आवश्यक है!")
+        else:
+            with st.spinner("⚡ 360p ड्राफ्ट वीडियो तैयार हो रहा है..."):
+                try:
+                    vis_data = process_uploaded_files(st.session_state["visual_files"])
+                    aud_data = process_uploaded_files(st.session_state["audio_files"])
+                    
+                    out_path = compile_cinematic_video(
+                        video_format=video_format,
+                        video_quality="🔘 720p HD (तेज़ प्रोसेसिंग)",
+                        visual_files=vis_data,
+                        audio_files=aud_data,
+                        output_path="quick_draft.mp4"
+                    )
+                    st.success("✅ ड्राफ्ट रेंडर तैयार है!")
+                    st.video(out_path)
+                except Exception as e:
+                    st.error(f"❌ ड्राफ्ट रेंडरिंग एरर: {str(e)}")
 
 with c_rnd2:
     if st.button("🎬 फाइनल वीडियो बनाएं (Full HD Render)", use_container_width=True):
         if not st.session_state["visual_files"] or not st.session_state["audio_files"]:
             st.error("❌ अनिवार्य ट्रैक्स (Track 1 और Track 3) में फाइल अपलोड करना आवश्यक है!")
         else:
-            st.success("🚀 मास्टर 7-ट्रैक रेंडरिंग प्रक्रिया शुरू हो गई है...")
+            with st.spinner("🚀 मास्टर 7-ट्रैक रेंडरिंग प्रक्रिया शुरू हो गई है... कृपया प्रतीक्षा करें"):
+                try:
+                    # 1. फाइल्स सेव करें
+                    vis_data = process_uploaded_files(st.session_state["visual_files"])
+                    aud_data = process_uploaded_files(st.session_state["audio_files"])
+                    
+                    # 2. engine.py को पूरा डेटा भेजकर रेंडर करें
+                    output_path = compile_cinematic_video(
+                        video_format=video_format,
+                        video_quality=video_quality,
+                        visual_files=vis_data,
+                        video_timeline_slots=st.session_state.get("video_timeline_slots", []),
+                        audio_files=aud_data,
+                        music_timeline_slots=st.session_state.get("music_timeline_slots", []),
+                        master_music_vol=st.session_state.get("master_vol_tr4", 0.8),
+                        sfx_events=st.session_state.get("sfx_events", []),
+                        story_script=st.session_state.get("story_script", ""),
+                        output_path="final_master_video.mp4"
+                    )
+                    
+                    st.success("🎉 मास्टर वीडियो सफलतापूर्वक तैयार हो गया है!")
+                    
+                    # 3. वीडियो प्लेयर और डाउनलोड बटन
+                    st.video(output_path)
+                    with open(output_path, "rb") as file:
+                        st.download_button(
+                            label="📥 मास्टर वीडियो डाउनलोड करें",
+                            data=file,
+                            file_name="Baba_Studio_Master_Video.mp4",
+                            mime="video/mp4",
+                            use_container_width=True
+                        )
+                except Exception as e:
+                    st.error(f"❌ रेंडरिंग एरर: {str(e)}")
 
 st.markdown('</div>', unsafe_allow_html=True)

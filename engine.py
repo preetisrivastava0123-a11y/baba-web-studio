@@ -170,7 +170,7 @@ def compile_cinematic_video(
     final_visual_video = CompositeVideoClip(video_layers, size=target_size)
 
     # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (MOVIEPY v2 FIXED)
+    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (UNIVERSAL FIX)
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -204,8 +204,16 @@ def compile_cinematic_video(
                 loops_needed = math.ceil(total_duration / m_clip.duration)
                 m_clip = concatenate_audioclips([m_clip] * loops_needed)
                 
-            # MoviePy v2 Volume Modifier Fix: with_volume_scaling
-            m_clip = m_clip.subclipped(0, total_duration).with_volume_scaling(mode_vol)
+            # Volume Adjustment Engine (Fallback Support for all MoviePy Versions)
+            m_clip = m_clip.subclipped(0, total_duration)
+            if hasattr(m_clip, "volumex"):
+                m_clip = m_clip.volumex(mode_vol)
+            elif hasattr(m_clip, "with_volume_scaling"):
+                m_clip = m_clip.with_volume_scaling(mode_vol)
+            else:
+                # Direct audio array volume scaling fallback
+                m_clip = m_clip.fl_make_frame(lambda t: m_clip.get_frame(t) * mode_vol)
+
             audio_tracks.append(m_clip)
 
     # 3. Track 4: Music Clips Timeline
@@ -217,7 +225,11 @@ def compile_cinematic_video(
             dur = max(end_t - st_t, 0.5)
             
             m_clip = AudioFileClip(m_path)
-            m_clip = m_clip.subclipped(0, min(dur, m_clip.duration)).with_start(st_t).with_volume_scaling(master_music_vol)
+            m_clip = m_clip.subclipped(0, min(dur, m_clip.duration)).with_start(st_t)
+            if hasattr(m_clip, "volumex"):
+                m_clip = m_clip.volumex(master_music_vol)
+            elif hasattr(m_clip, "with_volume_scaling"):
+                m_clip = m_clip.with_volume_scaling(master_music_vol)
             audio_tracks.append(m_clip)
 
     # 4. Track 7: SFX Events Timeline
@@ -229,7 +241,11 @@ def compile_cinematic_video(
             vol = sfx.get("volume", 0.8)
             
             s_clip = AudioFileClip(s_path)
-            s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t).with_volume_scaling(vol)
+            s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t)
+            if hasattr(s_clip, "volumex"):
+                s_clip = s_clip.volumex(vol)
+            elif hasattr(s_clip, "with_volume_scaling"):
+                s_clip = s_clip.with_volume_scaling(vol)
             audio_tracks.append(s_clip)
 
     # --------------------------------------------------------------------------

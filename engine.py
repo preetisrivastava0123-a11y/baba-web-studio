@@ -16,43 +16,39 @@ except ImportError:
 # ==========================================
 # 1. VISUAL ENGINE (TRACK 1 & TRACK 2)
 # ==========================================
-def process_visuals(t1_files, t2_clips, target_res=(1080, 1920), default_img_dur=5, ken_burns=True):
-    """
-    Track 1 images/videos और Track 2 side clips को क्रमबद्ध (Order) करके 
-    ट्रिम, क्रॉप (9:16 / 16:9) और Ken Burns इफेक्ट लागू करता है।
-    """
+from moviepy.editor import ImageClip, ColorClip, concatenate_videoclips
+import numpy as np
+
+def process_visuals(t1_files, default_duration=5, is_shorts=True, ken_burns=True):
     processed_clips = []
     
-    # Process Track 1 Items
-    for item in t1_files:
-        file_path = item.get("path")
-        is_video = file_path.lower().endswith(('.mp4', '.mov', '.avi'))
+    # 📐 वीडियो रेजोल्यूशन सेट करें (Shorts = 1080x1920, Long = 1920x1080)
+    target_size = (1080, 1920) if is_shorts else (1920, 1080)
+    
+    # 🚨 अगर यूज़र ने कोई फाइल अपलोड नहीं की है (EMPTY LIST CHECK)
+    if not t1_files:
+        # एक डिफ़ॉल्ट डार्क स्लॉट बना दें ताकि ऐप क्रैश न हो
+        blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
+        processed_clips.append(blank_clip)
+        return concatenate_videoclips(processed_clips, method="compose")
+
+    # 🖼️ अगर फाइलें मौजूद हैं तो प्रोसेस करें
+    for file in t1_files:
+        # अगर Streamlit का UploadedFile ऑब्जेक्ट है तो पाथ निकालें
+        file_path = file.name if hasattr(file, 'name') else file
         
-        if is_video:
-            clip = VideoFileClip(file_path)
-            start_sec = item.get("start", 0)
-            end_sec = item.get("end", clip.duration)
-            clip = clip.subclip(start_sec, min(end_sec, clip.duration))
-        else:
-            clip = ImageClip(file_path).set_duration(default_img_dur)
-            if ken_burns:
-                # Ken Burns Zoom-In Animation
-                clip = clip.resize(lambda t: 1 + 0.04 * t)
-        
-        # Auto-Crop/Resize to Target Resolution
-        clip = clip.resize(height=target_res[1]) if clip.w / clip.h < target_res[0] / target_res[1] else clip.resize(width=target_res[0])
-        clip = clip.crop(x_center=clip.w / 2, y_center=clip.h / 2, width=target_res[0], height=target_res[1])
-        processed_clips.append(clip)
-        
-    # Process Track 2 Optional Side Clips
-    for clip_info in t2_clips:
-        if os.path.exists(clip_info.get("path", "")):
-            c = VideoFileClip(clip_info["path"]).subclip(clip_info.get("start", 0), clip_info.get("end", 5))
-            c = c.resize(height=target_res[1]).crop(x_center=c.w / 2, y_center=c.h / 2, width=target_res[0], height=target_res[1])
-            processed_clips.append(c)
+        try:
+            clip = ImageClip(file_path).set_duration(default_duration).resize(newsize=target_size)
+            processed_clips.append(clip)
+        except Exception as e:
+            print(f"File load error: {e}")
+
+    # 🛑 सुरक्षा जांच: अगर कोई भी क्लिप लोड नहीं हो पाई
+    if not processed_clips:
+        blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
+        processed_clips.append(blank_clip)
 
     return concatenate_videoclips(processed_clips, method="compose")
-
 
 # ==========================================
 # 2. AUDIO ENGINE & AUTO-LOOPING (TRACK 3 & TRACK 4)

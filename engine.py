@@ -54,81 +54,95 @@ def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1280, 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
 # ------------------------------------------------------------------------------
-# 2) CLIMAX ENGINE: FIREWORKS & HINDI CTA BADGE (Last 4 Sec Bottom Overlay)
+# 2) CLIMAX ENGINE: MULTI-COLOR FIREWORKS & SAFE HINDI CTA (BOTTOM OVERLAY)
 # ------------------------------------------------------------------------------
-def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
+def create_climax_outro_clip(duration=6.0, target_size=(1080, 1920), fps=24):
     w, h = target_size
-    num_sparks = 80
-    np.random.seed(101)
+    num_bursts = 5  # 5 अलग-अलग जगहों पर रंग-बिरंगे धमाके
+    np.random.seed(42)
 
-    sparks = [{
-        'x': w // 2,
-        'y': int(h * 0.4),
-        'angle': np.random.uniform(0, 2 * math.pi),
-        'speed': np.random.uniform(300, 700),
-        'color': (np.random.randint(230, 255), np.random.randint(180, 255), np.random.randint(20, 100))
-    } for _ in range(num_sparks)]
+    # कई रंगों और कई केंद्रों (Burst Centers) का सेटअप
+    burst_centers = [
+        (int(w * 0.2), int(h * 0.25), (255, 50, 150)),   # पिंक / मैजेंटा
+        (int(w * 0.8), int(h * 0.25), (0, 230, 255)),   # स्काई ब्लू
+        (int(w * 0.5), int(h * 0.35), (255, 215, 0)),   # गोल्डन येलो
+        (int(w * 0.35), int(h * 0.15), (50, 255, 100)),  # नियॉन ग्रीन
+        (int(w * 0.65), int(h * 0.15), (255, 100, 50))   # ऑरेंज / रेड
+    ]
+
+    sparks = []
+    for cx, cy, color in burst_centers:
+        for _ in range(35):
+            sparks.append({
+                'cx': cx,
+                'cy': cy,
+                'angle': np.random.uniform(0, 2 * math.pi),
+                'speed': np.random.uniform(250, 650),
+                'color': color
+            })
 
     def make_frame(t):
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # 1. Fireworks Spark Trails
+        # 1. 🎇 Multi-burst Colorful Fireworks Explosion (इमेज #2 जैसा लुक)
         for s in sparks:
-            dist = s['speed'] * t
-            px = int(s['x'] + dist * math.cos(s['angle']))
-            py = int(s['y'] + dist * math.sin(s['angle']) + 150 * (t ** 2))
-            
-            tail_x = int(px - 25 * math.cos(s['angle']))
-            tail_y = int(py - 25 * math.sin(s['angle']))
-            
+            dist = s['speed'] * (t % 3.0)  # बार-बार ब्लास्ट लूप
+            px = int(s['cx'] + dist * math.cos(s['angle']))
+            py = int(s['cy'] + dist * math.sin(s['angle']) + 80 * ((t % 3.0) ** 2))
+
+            tail_x = int(px - 20 * math.cos(s['angle']))
+            tail_y = int(py - 20 * math.sin(s['angle']))
+
             if 0 <= px < w and 0 <= py < h:
-                draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (220,), width=4)
-                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, 255))
+                draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (230,), width=4)
+                draw.ellipse([px - 3, py - 3, px + 3, py + 3], fill=(255, 255, 255, 255))
 
-        # Expanding Ring
-        ring_r = int(t * 600)
-        if ring_r < w:
-            draw.ellipse(
-                [w//2 - ring_r, int(h*0.4) - ring_r, w//2 + ring_r, int(h*0.4) + ring_r],
-                outline=(255, 215, 0, max(0, int(200 - t * 50))), width=6
-            )
-
-        # 2. Hindi CTA Card at Bottom
-        scale = 1.0 + 0.04 * math.sin(t * 10)
-        bw, bh = int(w * 0.85), int(120 * scale)
+        # 2. 🎴 HINDI CTA BADGE (नीचे की तरफ)
+        scale = 1.0 + 0.03 * math.sin(t * 8)
+        bw, bh = int(w * 0.88), int(120 * scale)
         bx = (w - bw) // 2
-        by = int(h * 0.78)
+        by = int(h * 0.80)
 
+        # कार्ड बैकग्राउंड
         draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=20, fill=(0, 0, 0, 160))
         draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=20, fill=(210, 30, 30, 245), outline=(255, 215, 0), width=5)
 
-        # Hindi Font Support
-        font_names = ["mangal.ttf", "nirmala.ttf", "arial.ttf", "DejaVuSans.ttf"]
+        # 3. 🔤 देवनागरी फॉन्ट लोड करने का सुरक्षित तरीका
+        font_paths = [
+            "C:/Windows/Fonts/mangal.ttf",
+            "C:/Windows/Fonts/nirmala.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "mangal.ttf",
+            "nirmala.ttf"
+        ]
         font = None
-        font_size = int(38 * scale)
+        font_size = int(36 * scale)
 
-        for fn in font_names:
+        for fp in font_paths:
             try:
-                font = ImageFont.truetype(fn, font_size)
-                break
+                if os.path.exists(fp):
+                    font = ImageFont.truetype(fp, font_size)
+                    break
             except Exception:
                 continue
 
-        if not font:
+        if font is None:
             font = ImageFont.load_default()
 
+        # 🔥 शुद्ध हिंदी टेक्स्ट
         text = "🔔 लाइक और सब्सक्राइब करें"
-        
+
         try:
             tb = draw.textbbox((0, 0), text, font=font)
             tw, th = tb[2] - tb[0], tb[3] - tb[1]
         except Exception:
-            tw, th = int(bw * 0.7), 40
+            tw, th = int(bw * 0.7), 35
 
         tx = bx + (bw - tw) // 2
         ty = by + (bh - th) // 2
-        
+
         draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
 
         return np.array(img)
@@ -171,7 +185,7 @@ def compile_cinematic_video(
     # TRACK 1: VISUAL COMPOSITION ENGINE
     # --------------------------------------------------------------------------
     bg_clips = []
-    default_clip_dur = 4.0
+    default_clip_dur = 6.0
 
     for v_item in visual_files:
         if not isinstance(v_item, dict):

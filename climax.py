@@ -1,286 +1,243 @@
-"""
-==============================================================
-बाबा जनरेटिव वेब स्टूडियो — climax.py (शुद्ध हिंदी + पार्टिकल 3D आउट्रो)
-==============================================================
-[मॉड्यूल का काम]:
-- मयूर पंख न होने पर भी स्वतंत्र पार्टिकल-ब्लास्ट एनीमेशन रेंडर करना।
-- 'चैनल को लाइक और सब्सक्राइब करें 🔔' का शुद्ध देवनागरी हिंदी कार्ड बनाना।
-- edge-tts के माध्यम से आख़िरी 10/5.5 सेकंड के लिए AI हिंदी वॉइसओवर ऑडियो तैयार करना।
-==============================================================
-"""
-
-import math
+# ==============================================================
+# 🎬 BABA WEB STUDIO: ADVANCED CLIMAX OUTRO ENGINE (climax.py)
+# ==============================================================
 import os
-import random
-import tempfile
-import asyncio
-
+import re
+import math
 import numpy as np
-from PIL import Image, ImageDraw
-from moviepy import ImageClip, VideoClip, AudioFileClip
+from PIL import Image, ImageDraw, ImageFont
+from moviepy import VideoClip
 
-from subtitle import render_subtitle_html_to_png
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF"
+    "]+",
+    flags=re.UNICODE,
+)
 
+def _find_first_existing(paths):
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return None
 
-# --------------------------------------------------------------
-# ⚙️ 1. सेटिंग्स और कांस्टेंट्स (Constants)
-# --------------------------------------------------------------
-PEACOCK_FEATHER_IMAGE = "peacock_feather.png"
-CLIMAX_DURATION_SECONDS = 5.5  # डिफ़ॉल्ट आउट्रो समय (सेकंड में)
+def _load_font(size, prefer_emoji=False):
+    devanagari_candidates = [
+        "C:/Windows/Fonts/Nirmala.ttf",
+        "C:/Windows/Fonts/NirmalaB.ttf",
+        "C:/Windows/Fonts/mangal.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.otf",
+        "/System/Library/Fonts/Supplemental/Devanagari MT.ttf",
+        "/System/Library/Fonts/Supplemental/Kohinoor Devanagari.ttc",
+        "NotoSansDevanagari-Regular.ttf",
+    ]
+    emoji_candidates = [
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    ]
+    generic_candidates = [
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
 
-WAVE_FREQUENCY = 4.5
-WAVE_AMPLITUDE_PX = 15
+    ordered = (emoji_candidates + devanagari_candidates) if prefer_emoji else \
+              (devanagari_candidates + generic_candidates)
 
-# शुद्ध देवनागरी हिंदी सब्सक्राइब संदेश
-SUBSCRIBE_MESSAGE = "चैनल को लाइक और सब्सक्राइब करें 🔔"
-GOLD_COLOR = "#FFD700"
-WHITE_COLOR = "#FFFFFF"
+    path = _find_first_existing(ordered)
+    if path is None:
+        return ImageFont.load_default()
 
-# 🎈 प्रोसीजरल पार्टिकल-ब्लास्ट सेटिंग्स (बिना किसी बाहरी इमेज फ़ाइल के)
-PARTICLE_COUNT = 90
-PARTICLE_MIN_SPEED_PX = 220
-PARTICLE_MAX_SPEED_PX = 620
-PARTICLE_MIN_SIZE_PX = 4
-PARTICLE_MAX_SIZE_PX = 10
-PARTICLE_COLOR_CHOICES = [
-    (255, 215, 0),    # सुनहरा
-    (255, 255, 255),  # सफ़ेद
-    (0, 255, 204),    # नीयन-फ़िरोज़ी
-    (255, 105, 180),  # गुलाबी
-]
-
-FORMAT_LAYOUT_SETTINGS = {
-    "9:16": {"canvas_width": 1080, "canvas_height": 1920, "font_scale": 1.0},
-    "16:9": {"canvas_width": 1920, "canvas_height": 1080, "font_scale": 1.35},
-}
-DEFAULT_ASPECT_RATIO = "9:16"
-
-TEMP_PNG_DIR = os.path.join(tempfile.gettempdir(), "baba_climax_pngs")
-
-
-def _resolve_layout_settings(aspect_ratio: str):
-    """[काम]: एस्पेक्ट रेशियो (9:16 या 16:9) के हिसाब से चौड़ाई और फ़ॉन्ट स्केल तय करना"""
-    return FORMAT_LAYOUT_SETTINGS.get(aspect_ratio, FORMAT_LAYOUT_SETTINGS[DEFAULT_ASPECT_RATIO])
-
-
-# --------------------------------------------------------------
-# 🔐 2. ऑटो-स्किप गार्ड #1 — पंख सुरक्षित ढंग से लोड करना
-# --------------------------------------------------------------
-def _safe_load_image_clip(path: str, climax_start_time: float, climax_duration: float):
-    """[काम]: पंख की इमेज लोड करना; न मिलने पर क्रैश होने से बचाकर None लौटाना"""
-    if not path:
-        return None
     try:
-        if not os.path.exists(path):
-            print(f"⚠️ [ऑटो-स्किप] '{path}' सर्वर पर नहीं मिली — यह लेयर छोड़ी जा रही है।")
-            return None
-        return ImageClip(path).with_start(climax_start_time).with_duration(climax_duration)
-    except Exception as error:
-        print(f"⚠️ [ऑटो-स्किप] '{path}' लोड नहीं हो सकी: {error}")
-        return None
+        return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            return ImageFont.load_default()
 
+def _draw_mixed_text(draw, xy, text, text_font, emoji_font, fill):
+    x, y = xy
+    total_w = 0
+    pos = 0
+    for m in _EMOJI_PATTERN.finditer(text):
+        if m.start() > pos:
+            chunk = text[pos:m.start()]
+            draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
+            bbox = draw.textbbox((0, 0), chunk, font=text_font)
+            total_w += bbox[2] - bbox[0]
+        emoji_chunk = m.group()
+        draw.text((x + total_w, y), emoji_chunk, font=emoji_font, fill=fill)
+        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
+        total_w += bbox[2] - bbox[0]
+        pos = m.end()
+    if pos < len(text):
+        chunk = text[pos:]
+        draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
+        bbox = draw.textbbox((0, 0), chunk, font=text_font)
+        total_w += bbox[2] - bbox[0]
+    return total_w
 
-# --------------------------------------------------------------
-# 🔐 3. ऑटो-स्किप गार्ड #2 — हिंदी टेक्स्ट से PNG बनाकर ImageClip बनाना
-# --------------------------------------------------------------
-def _text_to_image_clip(text, output_filename, font_size, color, climax_start_time, climax_duration, canvas_width):
-    """[काम]: HTML/PIL के ज़रिए हिंदी टेक्स्ट की पारदर्शी PNG इमेज रेंडर करना"""
-    if not text or not text.strip():
-        return None
-    try:
-        os.makedirs(TEMP_PNG_DIR, exist_ok=True)
-        output_path = os.path.join(TEMP_PNG_DIR, output_filename)
-        rendered_png_path = render_subtitle_html_to_png(
-            text_string=text, output_image_path=output_path,
-            font_size=font_size, text_color=color, canvas_width=canvas_width,
-        )
-        return ImageClip(rendered_png_path).with_start(climax_start_time).with_duration(climax_duration)
-    except Exception as error:
-        print(f"⚠️ [ऑटो-स्किप] टेक्स्ट-लेयर '{output_filename}' नहीं बन सकी: {error}")
-        return None
+def _measure_mixed_text(draw, text, text_font, emoji_font):
+    w = 0
+    h = 0
+    pos = 0
+    for m in _EMOJI_PATTERN.finditer(text):
+        if m.start() > pos:
+            chunk = text[pos:m.start()]
+            bbox = draw.textbbox((0, 0), chunk, font=text_font)
+            w += bbox[2] - bbox[0]
+            h = max(h, bbox[3] - bbox[1])
+        emoji_chunk = m.group()
+        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
+        w += bbox[2] - bbox[0]
+        h = max(h, bbox[3] - bbox[1])
+        pos = m.end()
+    if pos < len(text):
+        chunk = text[pos:]
+        bbox = draw.textbbox((0, 0), chunk, font=text_font)
+        w += bbox[2] - bbox[0]
+        h = max(h, bbox[3] - bbox[1])
+    return w, h
 
+def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
+    w, h = target_size
+    np.random.seed(101)
 
-# --------------------------------------------------------------
-# 🌊 4. लहराता हुआ मयूर पंख
-# --------------------------------------------------------------
-def _build_feather_clip(climax_start_time, climax_duration, canvas_width):
-    """[काम]: मयूर पंख को स्क्रीन पर वेव मोशन (लहराता हुआ) देना"""
-    feather_clip = _safe_load_image_clip(PEACOCK_FEATHER_IMAGE, climax_start_time, climax_duration)
-    if feather_clip is None:
-        return None, 0
+    colors = [
+        (255, 50, 150),
+        (0, 230, 255),
+        (255, 215, 0),
+        (50, 255, 100),
+        (255, 100, 50),
+        (200, 100, 255),
+        (255, 255, 255),
+    ]
 
-    feather_height = feather_clip.size[1]
-
-    def wave_position(t):
-        horizontal_offset = math.sin(t * WAVE_FREQUENCY) * WAVE_AMPLITUDE_PX
-        return [0.5 + (horizontal_offset / canvas_width), 0.5]
-
-    feather_clip = feather_clip.with_position(wave_position, relative=True)
-    return feather_clip, feather_height
-
-
-# --------------------------------------------------------------
-# 🎈 5. प्रोसीजरल पार्टिकल-ब्लास्ट (स्वतंत्र पार्टिकल एनीमेशन)
-# --------------------------------------------------------------
-def _build_particle_burst_clip(climax_start_time: float, climax_duration: float, canvas_width: int, canvas_height: int):
-    """
-    [काम]: स्क्रीन के केंद्र से फूटने वाले रंगीन कणों (Particles) का एनीमेशन बनाना।
-    यह कोड से (PIL) बनता है, इसलिए मयूर पंख हो या न हो, यह ब्लास्ट हमेशा दिखेगा।
-    """
-    center_x, center_y = canvas_width // 2, canvas_height // 2
-
-    particles = []
-    for _ in range(PARTICLE_COUNT):
-        particles.append({
-            "angle": random.uniform(0, 2 * math.pi),
-            "speed": random.uniform(PARTICLE_MIN_SPEED_PX, PARTICLE_MAX_SPEED_PX),
-            "size": random.uniform(PARTICLE_MIN_SIZE_PX, PARTICLE_MAX_SIZE_PX),
-            "color": random.choice(PARTICLE_COLOR_CHOICES),
+    n_centers = 8
+    burst_configs = []
+    for i in range(n_centers):
+        burst_configs.append({
+            "cx": int(w * np.random.uniform(0.15, 0.85)),
+            "cy": int(h * np.random.uniform(0.10, 0.40)),
+            "color": colors[i % len(colors)],
+            "delay": (duration / n_centers) * i * 0.5,
+            "period": np.random.uniform(1.6, 2.6),
         })
 
-    def make_color_frame(t):
-        frame_image = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
-        draw_context = ImageDraw.Draw(frame_image)
-        travel_fraction = t / max(climax_duration, 0.001)
-        fade_alpha = int(255 * max(0.0, 1.0 - travel_fraction))
-        for particle in particles:
-            radius_traveled = particle["speed"] * travel_fraction
-            particle_x = center_x + math.cos(particle["angle"]) * radius_traveled
-            particle_y = center_y + math.sin(particle["angle"]) * radius_traveled
-            half_size = particle["size"]
-            draw_context.ellipse(
-                [particle_x - half_size, particle_y - half_size,
-                 particle_x + half_size, particle_y + half_size],
-                fill=particle["color"] + (fade_alpha,),
+    sparks = []
+    for cfg in burst_configs:
+        for _ in range(45):
+            sparks.append({
+                "cx": cfg["cx"],
+                "cy": cfg["cy"],
+                "angle": np.random.uniform(0, 2 * math.pi),
+                "speed": np.random.uniform(200, 700),
+                "color": cfg["color"],
+                "delay": cfg["delay"],
+                "period": cfg["period"],
+            })
+
+    fountains = []
+    for _ in range(70):
+        fountains.append({
+            "x": np.random.uniform(w * 0.08, w * 0.92),
+            "speed_y": np.random.uniform(-950, -500),
+            "speed_x": np.random.uniform(-100, 100),
+            "color": colors[np.random.randint(0, len(colors))],
+            "period": np.random.uniform(1.8, 2.4),
+            "phase": np.random.uniform(0, 2.0),
+        })
+
+    floating_items = [
+        {"text": "\U0001F44D LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 170, "phase": 0.0},
+        {"text": "\U0001F514 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 205, "phase": 1.3},
+        {"text": "\U0001F534 SUBSCRIBE", "bg": (255, 45, 85), "x": int(w * 0.62), "speed": 185, "phase": 0.7},
+        {"text": "\u2197\uFE0F SHARE", "bg": (52, 199, 89), "x": int(w * 0.85), "speed": 200, "phase": 1.9},
+    ]
+
+    font_large = _load_font(38, prefer_emoji=False)
+    font_large_emoji = _load_font(38, prefer_emoji=True)
+    font_btn = _load_font(24, prefer_emoji=False)
+    font_btn_emoji = _load_font(24, prefer_emoji=True)
+
+    def make_frame(t):
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 1. आतिशबाजी (Fireworks)
+        for s in sparks:
+            rel_t = t - s["delay"]
+            if rel_t <= 0:
+                continue
+            cycle_t = rel_t % s["period"]
+            dist = s["speed"] * cycle_t
+            px = int(s["cx"] + dist * math.cos(s["angle"]))
+            py = int(s["cy"] + dist * math.sin(s["angle"]) + 120 * (cycle_t ** 2))
+            tail_x = int(px - 25 * math.cos(s["angle"]))
+            tail_y = int(py - 25 * math.sin(s["angle"]))
+            if 0 <= px < w and 0 <= py < h:
+                alpha = max(0, int(255 * (1 - cycle_t / s["period"])))
+                draw.line([(tail_x, tail_y), (px, py)], fill=s["color"] + (alpha,), width=4)
+                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
+
+        # 2. फाउंटेन पार्टिकल्स (Fountains)
+        for f in fountains:
+            ft = (t + f["phase"]) % f["period"]
+            fx = int(f["x"] + f["speed_x"] * ft)
+            fy = int(h * 0.88 + f["speed_y"] * ft + 350 * (ft ** 2))
+            if 0 <= fx < w and 0 <= fy < h:
+                alpha = max(0, int(220 * (1 - ft / f["period"])))
+                draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f["color"] + (alpha,))
+
+        # 3. गिरते हुए बेज (Badges: Like, Share, Subscribe)
+        for item in floating_items:
+            curr_y = int(((t + item["phase"]) * item["speed"]) % (h + 100)) - 50
+            curr_x = int(item["x"] + 20 * math.sin(t * 3 + item["phase"]))
+
+            bw, bh = 190, 50
+            draw.rounded_rectangle(
+                [curr_x - bw // 2 + 3, curr_y + 3, curr_x + bw // 2 + 3, curr_y + bh + 3],
+                radius=15, fill=(0, 0, 0, 120),
             )
-        return np.array(frame_image.convert("RGB"))
-
-    def make_mask_frame(t):
-        mask_image = Image.new("L", (canvas_width, canvas_height), 0)
-        draw_context = ImageDraw.Draw(mask_image)
-        travel_fraction = t / max(climax_duration, 0.001)
-        fade_alpha = int(255 * max(0.0, 1.0 - travel_fraction))
-        for particle in particles:
-            radius_traveled = particle["speed"] * travel_fraction
-            particle_x = center_x + math.cos(particle["angle"]) * radius_traveled
-            particle_y = center_y + math.sin(particle["angle"]) * radius_traveled
-            half_size = particle["size"]
-            draw_context.ellipse(
-                [particle_x - half_size, particle_y - half_size,
-                 particle_x + half_size, particle_y + half_size],
-                fill=fade_alpha,
+            draw.rounded_rectangle(
+                [curr_x - bw // 2, curr_y, curr_x + bw // 2, curr_y + bh],
+                radius=15, fill=item["bg"] + (240,), outline=(255, 255, 255, 255), width=2,
             )
-        return np.array(mask_image).astype(float) / 255.0
+            text_w, text_h = _measure_mixed_text(draw, item["text"], font_btn, font_btn_emoji)
+            tx = curr_x - text_w // 2
+            ty = curr_y + (bh - text_h) // 2
+            _draw_mixed_text(draw, (tx, ty), item["text"], font_btn, font_btn_emoji, fill=(255, 255, 255, 255))
 
-    color_clip = VideoClip(make_color_frame, duration=climax_duration)
-    mask_clip = VideoClip(make_mask_frame, duration=climax_duration, is_mask=True)
-    particle_burst_clip = color_clip.with_mask(mask_clip).with_start(climax_start_time)
+        # 4. मुख्य हिंदी CTA बैनर (Bottom Card)
+        pulse = 1.0 + 0.04 * math.sin(t * 8)
+        bw, bh = int(w * 0.90), int(130 * pulse)
+        bx = (w - bw) // 2
+        by = int(h * 0.82)
 
-    return particle_burst_clip
+        draw.rounded_rectangle(
+            [bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=22, fill=(0, 0, 0, 180)
+        )
+        draw.rounded_rectangle(
+            [bx, by, bx + bw, by + bh], radius=22, fill=(210, 20, 30, 250),
+            outline=(255, 215, 0, 255), width=5,
+        )
 
+        text = "\U0001F514 लाइक और सब्सक्राइब जरूर करें!"
+        text_w, text_h = _measure_mixed_text(draw, text, font_large, font_large_emoji)
+        tx = bx + (bw - text_w) // 2
+        ty = by + (bh - text_h) // 2
+        _draw_mixed_text(draw, (tx, ty), text, font_large, font_large_emoji, fill=(255, 255, 255, 255))
 
-# --------------------------------------------------------------
-# 🔔 6. शुद्ध हिंदी "Subscribe" संदेश क्लिप
-# --------------------------------------------------------------
-def _build_subscribe_image_clip(climax_start_time, climax_duration, feather_height, canvas_width, canvas_height, font_scale):
-    """[काम]: 'चैनल को लाइक और सब्सक्राइब करें 🔔' का हिंदी टेक्स्ट रेंडर करना और पोजीशन सेट करना"""
-    subscribe_clip = _text_to_image_clip(
-        text=SUBSCRIBE_MESSAGE, output_filename="subscribe_message.png",
-        font_size=int(45 * font_scale), color=GOLD_COLOR,
-        climax_start_time=climax_start_time, climax_duration=climax_duration, canvas_width=canvas_width,
-    )
-    if subscribe_clip is None:
-        return None
-    
-    # पंख न होने पर भी टेक्स्ट को स्क्रीन के सही हिस्से पर रखना
-    safe_offset = (feather_height / 2) if feather_height > 0 else 40
-    vertical_gap = safe_offset + 20
-    y_fraction = 0.5 + (vertical_gap / canvas_height)
-    return subscribe_clip.with_position(lambda t: [0.5, y_fraction], relative=True)
+        return np.array(img)
 
-
-# --------------------------------------------------------------
-# 📰 7. यूज़र का आउट्रो मैसेज स्ट्रिप
-# --------------------------------------------------------------
-def _build_outro_note_image_clip(climax_start_time, climax_duration, feather_height, outro_text, canvas_width, canvas_height, font_scale):
-    """[काम]: यूज़र द्वारा दिए गए आउट्रो हिंदी मैसेज की न्यूज़-पट्टी नीचे दिखाना"""
-    if not outro_text or not outro_text.strip():
-        return None
-
-    outro_note_clip = _text_to_image_clip(
-        text=f"📰 {outro_text.strip()}", output_filename="outro_note.png",
-        font_size=int(35 * font_scale), color=WHITE_COLOR,
-        climax_start_time=climax_start_time, climax_duration=climax_duration, canvas_width=canvas_width,
-    )
-    if outro_note_clip is None:
-        return None
-
-    safe_offset = (feather_height / 2) if feather_height > 0 else 40
-    vertical_gap = safe_offset + 100
-    y_fraction = 0.5 + (vertical_gap / canvas_height)
-    return outro_note_clip.with_position(lambda t: [0.5, y_fraction], relative=True)
-
-
-# --------------------------------------------------------------
-# 🎬 8. मुख्य फ़ंक्शन — engine.py द्वारा कॉल किया जाने वाला मेन एंट्री पॉइंट
-# --------------------------------------------------------------
-def create_climax_layer(
-    video_duration: float,
-    outro_text: str,
-    aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-    climax_duration_override: float = None,
-    voiceover_mode: str = "hi-IN-SwaraNeural"
-) -> tuple:
-    """
-    [मुख्य फ़ंक्शन का काम]:
-    1. edge-tts की मदद से AI की शुद्ध हिंदी आवाज़ ("चैनल को लाइक और सब्सक्राइब करें") जनरेट करना।
-    2. पार्टिकल-ब्लास्ट, लहराते पंख और हिंदी टेक्स्ट की विज़ुअल लेयर्स तैयार करना।
-    3. engine.py के लिए विज़ुअल लेयर्स (climax_layers) और ऑडियो (outro_audio_clip) दोनों रिटर्न करना।
-    """
-    climax_duration = climax_duration_override if climax_duration_override else CLIMAX_DURATION_SECONDS
-    climax_start_time = max(0.0, video_duration - climax_duration)
-
-    layout_settings = _resolve_layout_settings(aspect_ratio)
-    canvas_width = layout_settings["canvas_width"]
-    canvas_height = layout_settings["canvas_height"]
-    font_scale = layout_settings["font_scale"]
-
-    # --- A) AI हिंदी आवाज़ (Edge-TTS) जनरेट करना ---
-    outro_audio_clip = None
-    spoken_text = "चैनल को लाइक और सब्सक्राइब करें।"
-    if outro_text and outro_text.strip():
-        spoken_text = f"{outro_text.strip()}। {spoken_text}"
-
-    try:
-        import edge_tts
-        outro_voice_file = os.path.join(tempfile.gettempdir(), "outro_tts_temp.mp3")
-
-        async def _generate_outro_voice():
-            tts_voice = voiceover_mode if voiceover_mode else "hi-IN-SwaraNeural"
-            communicate = edge_tts.Communicate(spoken_text, voice=tts_voice)
-            await communicate.save(outro_voice_file)
-
-        asyncio.run(_generate_outro_voice())
-
-        if os.path.exists(outro_voice_file):
-            outro_audio_clip = AudioFileClip(outro_voice_file).with_start(climax_start_time)
-    except Exception as e:
-        print(f"⚠️ [ऑटो-स्किप] आउट्रो AI आवाज़ जनरेट नहीं हो सकी: {e}")
-
-    # --- B) विज़ुअल लेयर्स तैयार करना ---
-    feather_clip, feather_height = _build_feather_clip(climax_start_time, climax_duration, canvas_width)
-
-    # मयूर पंख हो या न हो, पार्टिकल ब्लास्ट हमेशा बनेगा
-    particle_burst_clip = _build_particle_burst_clip(climax_start_time, climax_duration, canvas_width, canvas_height)
-
-    subscribe_image_clip = _build_subscribe_image_clip(
-        climax_start_time, climax_duration, feather_height, canvas_width, canvas_height, font_scale,
-    )
-    outro_note_image_clip = _build_outro_note_image_clip(
-        climax_start_time, climax_duration, feather_height, outro_text, canvas_width, canvas_height, font_scale,
-    )
-
-    climax_layers = [feather_clip, particle_burst_clip, subscribe_image_clip, outro_note_image_clip]
-    climax_layers = [clip for clip in climax_layers if clip is not None]
-
-    return climax_layers, outro_audio_clip
+    return VideoClip(make_frame, duration=duration).with_fps(fps)

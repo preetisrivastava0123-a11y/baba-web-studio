@@ -29,30 +29,74 @@ if 'sfx_events' not in st.session_state:
 with st.sidebar:
     st.header("⚙️ Step 0: Master Setup")
     
-    # Video Format Selection
+    # 1. Video Format Selection
     video_format = st.selectbox(
         "1. वीडियो फॉर्मेट (Format):",
         options=["9:16 Shorts (Default)", "16:9 Long Video"],
-        index=0
+        index=0,
+        key="s0_vformat"
     )
     
-    # Target Duration Settings
+    # 2. Duration Selection Logic
     st.subheader("2. ड्यूरेशन (Duration)")
-    if "Shorts" in video_format:
-        duration_mode = st.radio("Duration Type:", ["Standard (30s)", "Custom"], index=0)
-        target_duration = st.number_input("Target Sec (5-60s):", min_value=5, max_value=60, value=30) if duration_mode == "Custom" else 30
-    else:
-        duration_unit = st.radio("Duration Unit:", ["Minutes", "Seconds"])
-        target_duration = st.number_input("Target Duration:", min_value=1, max_value=120, value=5) * 60 if duration_unit == "Minutes" else st.number_input("Target Duration (Secs):", min_value=10, max_value=7200, value=300)
-
-    # Resolution Quality
-    video_quality = st.selectbox(
-        "3. वीडियो क्वालिटी (Quality):",
-        options=["1080p Full HD (Default)", "720p HD"],
-        index=0
+    
+    dur_option = st.selectbox(
+        "वीडियो की लंबाई चुनें:",
+        options=[
+            "⏱️ Standard Shorts (30 Sec)",
+            "⏳ 5 Minutes",
+            "⏳ 10 Minutes",
+            "⏳ 30 Minutes",
+            "✏️ Custom (Manual Input)"
+        ],
+        index=0,
+        key="s0_dur_option"
     )
+    
+    # Custom Input Logic (If Custom Selected)
+    if "Custom" in dur_option:
+        col_m, col_s = st.columns(2)
+        with col_m:
+            custom_min = st.number_input("Minutes:", min_value=0, max_value=120, value=0, key="s0_c_min")
+        with col_s:
+            custom_sec = st.number_input("Seconds:", min_value=0, max_value=59, value=30, key="s0_c_sec")
+        base_duration = (custom_min * 60) + custom_sec
+    elif "5 Min" in dur_option:
+        base_duration = 300
+    elif "10 Min" in dur_option:
+        base_duration = 600
+    elif "30 Min" in dur_option:
+        base_duration = 1800
+    else:
+        base_duration = 30  # Standard Shorts
+        
+    st.markdown("---")
+    
+    # 3. 🎆 10-Second Climax Logic (Default ON)
+    st.subheader("3. 🎆 क्लाइमैक्स सेटिंग (Climax)")
+    enable_climax = st.checkbox(
+        "10 Second Climax शामिल करें (Default Active)", 
+        value=True, 
+        key="s0_enable_climax"
+    )
+    
+    if enable_climax:
+        total_duration = base_duration + 10
+        st.info(f"💡 कुल वीडियो समय: **{base_duration}s (Main)** + **10s (Climax)** = **{total_duration}s**")
+    else:
+        total_duration = base_duration
+        st.warning(f"⚠️ क्लाइमैक्स हटा दिया गया है। कुल वीडियो समय: **{total_duration}s**")
+
     st.markdown("---")
 
+    # 4. Resolution Quality
+    st.subheader("4. वीडियो क्वालिटी")
+    video_quality = st.selectbox(
+        "वीडियो क्वालिटी (Quality):",
+        options=["1080p Full HD (Default)", "720p HD"],
+        index=0,
+        key="s0_vquality"
+    )
 
 # ==========================================
 # TRACK 1: MANDATORY VISUALS LAYER (IMAGES & VIDEOS)

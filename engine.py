@@ -56,249 +56,319 @@ def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1280, 
 # ------------------------------------------------------------------------------
 # 2) ADVANCED CLIMAX ENGINE: 10-SEC MULTI-STYLE FIREWORKS & FALLING BUTTONS
 # ------------------------------------------------------------------------------
+"""
+climax_outro_engine.py
+-----------------------
+MoviePy v2.x compatible "climax outro" overlay clip generator.
+
+Fixes vs. the original version:
+  1. Devanagari text no longer renders as boxes (🔲) — font loader now
+     tries proper Devanagari-capable fonts (Nirmala UI / Noto Sans
+     Devanagari / Mangal) across Windows / Linux / macOS paths, and
+     enables Pillow's RAQM text layout engine when available so
+     conjuncts + matras shape correctly instead of falling apart into
+     disconnected glyphs.
+  2. Emoji glyphs are handled separately from the Devanagari text so a
+     missing emoji font doesn't force the *whole* string onto a font
+     that can't render Devanagari (and vice-versa) — this is the usual
+     cause of the "square box" bug.
+  3. Fireworks + fountains now loop continuously and smoothly across
+     the full 10s duration instead of a handful of one-shot bursts.
+  4. Falling LIKE / SUBSCRIBE / SHARE badges use a smoother sway and
+     drop-shadow so they read cleanly on a 1080x1920 (9:16) frame.
+
+Drop `create_climax_outro_clip` into your existing compilation script —
+its signature and return type (a MoviePy VideoClip with .with_fps set)
+are unchanged, so it plugs straight into CompositeVideoClip.
+"""
+
+import os
+import re
+import math
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+from moviepy import VideoClip
+
+
+# ---------------------------------------------------------------------------
+# Emoji detection (used to split "text + emoji" into separately-rendered runs)
+# ---------------------------------------------------------------------------
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF"
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def _find_first_existing(paths):
+    for p in paths:
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def _load_font(size, prefer_emoji=False):
+    """
+    Load a font capable of rendering the target script.
+    prefer_emoji=True -> try to find a font with emoji glyphs first.
+    Otherwise -> try Devanagari-capable fonts first, falling back to a
+    generic sans font, then Pillow's built-in default as a last resort.
+    """
+    devanagari_candidates = [
+        "C:/Windows/Fonts/Nirmala.ttf",
+        "C:/Windows/Fonts/NirmalaB.ttf",
+        "C:/Windows/Fonts/mangal.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansDevanagari-Regular.otf",
+        "/System/Library/Fonts/Supplemental/Devanagari MT.ttf",
+        "/System/Library/Fonts/Supplemental/Kohinoor Devanagari.ttc",
+        "NotoSansDevanagari-Regular.ttf",
+    ]
+    emoji_candidates = [
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    ]
+    generic_candidates = [
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
+
+    ordered = (emoji_candidates + devanagari_candidates) if prefer_emoji else \
+              (devanagari_candidates + generic_candidates)
+
+    path = _find_first_existing(ordered)
+    if path is None:
+        return ImageFont.load_default()
+
+    # RAQM layout gives correct Devanagari shaping (conjuncts / matras);
+    # silently fall back if the Pillow build lacks libraqm support.
+    try:
+        return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+    except Exception:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            return ImageFont.load_default()
+
+
+def _draw_mixed_text(draw, xy, text, text_font, emoji_font, fill):
+    """
+    Draw a string that mixes Devanagari/Latin text and emoji by walking
+    the string in emoji / non-emoji runs and rendering each run with the
+    font best suited to it. Returns the total rendered width.
+    """
+    x, y = xy
+    total_w = 0
+    pos = 0
+    for m in _EMOJI_PATTERN.finditer(text):
+        if m.start() > pos:
+            chunk = text[pos:m.start()]
+            draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
+            bbox = draw.textbbox((0, 0), chunk, font=text_font)
+            total_w += bbox[2] - bbox[0]
+        emoji_chunk = m.group()
+        draw.text((x + total_w, y), emoji_chunk, font=emoji_font, fill=fill)
+        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
+        total_w += bbox[2] - bbox[0]
+        pos = m.end()
+    if pos < len(text):
+        chunk = text[pos:]
+        draw.text((x + total_w, y), chunk, font=text_font, fill=fill)
+        bbox = draw.textbbox((0, 0), chunk, font=text_font)
+        total_w += bbox[2] - bbox[0]
+    return total_w
+
+
+def _measure_mixed_text(draw, text, text_font, emoji_font):
+    """Width/height of a mixed Devanagari+emoji string without drawing it."""
+    w = 0
+    h = 0
+    pos = 0
+    for m in _EMOJI_PATTERN.finditer(text):
+        if m.start() > pos:
+            chunk = text[pos:m.start()]
+            bbox = draw.textbbox((0, 0), chunk, font=text_font)
+            w += bbox[2] - bbox[0]
+            h = max(h, bbox[3] - bbox[1])
+        emoji_chunk = m.group()
+        bbox = draw.textbbox((0, 0), emoji_chunk, font=emoji_font)
+        w += bbox[2] - bbox[0]
+        h = max(h, bbox[3] - bbox[1])
+        pos = m.end()
+    if pos < len(text):
+        chunk = text[pos:]
+        bbox = draw.textbbox((0, 0), chunk, font=text_font)
+        w += bbox[2] - bbox[0]
+        h = max(h, bbox[3] - bbox[1])
+    return w, h
+
+
+# ---------------------------------------------------------------------------
+# Main outro builder
+# ---------------------------------------------------------------------------
 def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
     w, h = target_size
     np.random.seed(101)
 
-    # 🎇 1. Multi-Color & Multi-Style Fireworks Setup
     colors = [
-        (255, 50, 150),   # मैजेंटा / पिंक
-        (0, 230, 255),    # स्काई ब्लू
-        (255, 215, 0),    # गोल्डन येलो
-        (50, 255, 100),   # नियॉन ग्रीन
-        (255, 100, 50),   # ऑरेंज / रेड
-        (200, 100, 255),  # पर्पल
-        (255, 255, 255)   # ब्राइट व्हाइट
+        (255, 50, 150),   # magenta / pink
+        (0, 230, 255),    # sky blue
+        (255, 215, 0),    # golden yellow
+        (50, 255, 100),   # neon green
+        (255, 100, 50),   # orange / red
+        (200, 100, 255),  # purple
+        (255, 255, 255),  # bright white
     ]
 
-    # अलग-अलग लोकेशन पर अलग-अलग समय पर ब्लास्ट होने वाले सेंटर्स
-    burst_configs = [
-        {'cx': int(w * 0.2), 'cy': int(h * 0.20), 'color': colors[0], 'delay': 0.0},
-        {'cx': int(w * 0.8), 'cy': int(h * 0.20), 'color': colors[1], 'delay': 0.5},
-        {'cx': int(w * 0.5), 'cy': int(h * 0.30), 'color': colors[2], 'delay': 1.0},
-        {'cx': int(w * 0.35), 'cy': int(h * 0.15), 'color': colors[3], 'delay': 1.8},
-        {'cx': int(w * 0.65), 'cy': int(h * 0.15), 'color': colors[4], 'delay': 2.3},
-        {'cx': int(w * 0.5), 'cy': int(h * 0.18), 'color': colors[5], 'delay': 3.0},
-    ]
+    # --- Multi-burst firework centers, spread across the whole duration so
+    #     the show stays continuous rather than firing only in the first
+    #     few seconds. Each center re-bursts on a loop (see cycle_t below).
+    n_centers = 8
+    burst_configs = []
+    for i in range(n_centers):
+        burst_configs.append({
+            "cx": int(w * np.random.uniform(0.15, 0.85)),
+            "cy": int(h * np.random.uniform(0.10, 0.40)),
+            "color": colors[i % len(colors)],
+            "delay": (duration / n_centers) * i * 0.5,
+            "period": np.random.uniform(1.6, 2.6),
+        })
 
     sparks = []
     for cfg in burst_configs:
         for _ in range(45):
             sparks.append({
-                'cx': cfg['cx'],
-                'cy': cfg['cy'],
-                'angle': np.random.uniform(0, 2 * math.pi),
-                'speed': np.random.uniform(200, 700),
-                'color': cfg['color'],
-                'delay': cfg['delay']
+                "cx": cfg["cx"],
+                "cy": cfg["cy"],
+                "angle": np.random.uniform(0, 2 * math.pi),
+                "speed": np.random.uniform(200, 700),
+                "color": cfg["color"],
+                "delay": cfg["delay"],
+                "period": cfg["period"],
             })
 
-    # 🎆 2. Anar / Fountain Sparks (नीचे से ऊपर छूटने वाले पटाखे)
+    # --- Bottom-to-top fountain / anar particles, looping every ~2s
     fountains = []
-    for _ in range(60):
+    for _ in range(70):
         fountains.append({
-            'x': np.random.uniform(w * 0.1, w * 0.9),
-            'speed_y': np.random.uniform(-900, -500),
-            'speed_x': np.random.uniform(-100, 100),
-            'color': colors[np.random.randint(0, len(colors))]
+            "x": np.random.uniform(w * 0.08, w * 0.92),
+            "speed_y": np.random.uniform(-950, -500),
+            "speed_x": np.random.uniform(-100, 100),
+            "color": colors[np.random.randint(0, len(colors))],
+            "period": np.random.uniform(1.8, 2.4),
+            "phase": np.random.uniform(0, 2.0),
         })
 
-    # 🎈 3. Falling Like / Subscribe / Bell Buttons Setup (गिरने वाले बटन)
+    # --- Falling LIKE / SUBSCRIBE / SHARE badges
     floating_items = [
-        {"text": "👍 LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 180, "phase": 0},
-        {"text": "🔔 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 220, "phase": 1.5},
-        {"text": "🔴 SUBSCRIBE", "bg": (255, 45, 85), "x": int(w * 0.62), "speed": 190, "phase": 0.8},
-        {"text": "↗️ SHARE", "bg": (52, 199, 89), "x": int(w * 0.85), "speed": 210, "phase": 2.1},
+        {"text": "\U0001F44D LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 170, "phase": 0.0},
+        {"text": "\U0001F514 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 205, "phase": 1.3},
+        {"text": "\U0001F534 SUBSCRIBE", "bg": (255, 45, 85), "x": int(w * 0.62), "speed": 185, "phase": 0.7},
+        {"text": "\u2197\uFE0F SHARE", "bg": (52, 199, 89), "x": int(w * 0.85), "speed": 200, "phase": 1.9},
     ]
 
-    # Fonts Loader
-    font_paths = [
-        "C:/Windows/Fonts/mangal.ttf",
-        "C:/Windows/Fonts/nirmala.ttf",
-        "C:/Windows/Fonts/arial.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "mangal.ttf"
-    ]
-    font_large, font_btn = None, None
-    for fp in font_paths:
-        try:
-            if os.path.exists(fp):
-                font_large = ImageFont.truetype(fp, 38)
-                font_btn = ImageFont.truetype(fp, 24)
-                break
-        except Exception:
-            continue
-
-    if font_large is None:
-        font_large = ImageFont.load_default()
-        font_btn = ImageFont.load_default()
+    font_large = _load_font(38, prefer_emoji=False)
+    font_large_emoji = _load_font(38, prefer_emoji=True)
+    font_btn = _load_font(24, prefer_emoji=False)
+    font_btn_emoji = _load_font(24, prefer_emoji=True)
 
     def make_frame(t):
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # -------------------------------------------------------------
-        # A) FIREWORKS TYPE 1: MULTI-BURST EXPLOSIONS (आतिशबाजी धमाके)
-        # -------------------------------------------------------------
+        # A) Multi-burst firework explosions, looping continuously
         for s in sparks:
-            rel_t = t - s['delay']
-            if rel_t > 0:
-                cycle_t = rel_t % 2.5  # हर 2.5 सेकंड में री-ब्लास्ट
-                dist = s['speed'] * cycle_t
-                px = int(s['cx'] + dist * math.cos(s['angle']))
-                py = int(s['cy'] + dist * math.sin(s['angle']) + 120 * (cycle_t ** 2)) # गुरुत्वाकर्षण (Gravity)
+            rel_t = t - s["delay"]
+            if rel_t <= 0:
+                continue
+            cycle_t = rel_t % s["period"]
+            dist = s["speed"] * cycle_t
+            px = int(s["cx"] + dist * math.cos(s["angle"]))
+            py = int(s["cy"] + dist * math.sin(s["angle"]) + 120 * (cycle_t ** 2))
+            tail_x = int(px - 25 * math.cos(s["angle"]))
+            tail_y = int(py - 25 * math.sin(s["angle"]))
+            if 0 <= px < w and 0 <= py < h:
+                alpha = max(0, int(255 * (1 - cycle_t / s["period"])))
+                draw.line([(tail_x, tail_y), (px, py)], fill=s["color"] + (alpha,), width=4)
+                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
 
-                tail_x = int(px - 25 * math.cos(s['angle']))
-                tail_y = int(py - 25 * math.sin(s['angle']))
-
-                if 0 <= px < w and 0 <= py < h:
-                    alpha = max(0, int(255 * (1 - cycle_t / 2.5)))
-                    draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (alpha,), width=4)
-                    draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
-
-        # -------------------------------------------------------------
-        # B) FIREWORKS TYPE 2: FOUNTAINS / ANAR (नीचे से ऊपर अनार)
-        # -------------------------------------------------------------
+        # B) Fountain / anar sparks, looping continuously
         for f in fountains:
-            ft = t % 2.0
-            fx = int(f['x'] + f['speed_x'] * ft)
-            fy = int(h * 0.85 + f['speed_y'] * ft + 350 * (ft ** 2))
+            ft = (t + f["phase"]) % f["period"]
+            fx = int(f["x"] + f["speed_x"] * ft)
+            fy = int(h * 0.88 + f["speed_y"] * ft + 350 * (ft ** 2))
             if 0 <= fx < w and 0 <= fy < h:
-                draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f['color'] + (220,))
+                alpha = max(0, int(220 * (1 - ft / f["period"])))
+                draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f["color"] + (alpha,))
 
-        # -------------------------------------------------------------
-        # C) FALLING BUTTONS (ऊपर से नीचे गिरते हुए बटन)
-        # -------------------------------------------------------------
+        # C) Falling LIKE / SUBSCRIBE / SHARE badges with soft horizontal sway
         for item in floating_items:
-            # Y पोजीशन की गणना
-            curr_y = int(((t + item['phase']) * item['speed']) % (h + 100)) - 50
-            curr_x = int(item['x'] + 20 * math.sin(t * 3 + item['phase'])) # हल्का झूलना (Swaying)
+            curr_y = int(((t + item["phase"]) * item["speed"]) % (h + 100)) - 50
+            curr_x = int(item["x"] + 20 * math.sin(t * 3 + item["phase"]))
 
-            bw, bh = 180, 50
-            # बटन कार्ड
-            draw.rounded_rectangle([curr_x - bw//2 + 3, curr_y + 3, curr_x + bw//2 + 3, curr_y + bh + 3], radius=15, fill=(0, 0, 0, 120))
-            draw.rounded_rectangle([curr_x - bw//2, curr_y, curr_x + bw//2, curr_y + bh], radius=15, fill=item['bg'] + (240,), outline=(255, 255, 255), width=2)
-            
-            # बटन टेक्स्ट
-            draw.text((curr_x - bw//3, curr_y + 12), item['text'], font=font_btn, fill=(255, 255, 255, 255))
+            bw, bh = 190, 50
+            # drop shadow
+            draw.rounded_rectangle(
+                [curr_x - bw // 2 + 3, curr_y + 3, curr_x + bw // 2 + 3, curr_y + bh + 3],
+                radius=15, fill=(0, 0, 0, 120),
+            )
+            # badge card
+            draw.rounded_rectangle(
+                [curr_x - bw // 2, curr_y, curr_x + bw // 2, curr_y + bh],
+                radius=15, fill=item["bg"] + (240,), outline=(255, 255, 255, 255), width=2,
+            )
+            text_w, text_h = _measure_mixed_text(draw, item["text"], font_btn, font_btn_emoji)
+            tx = curr_x - text_w // 2
+            ty = curr_y + (bh - text_h) // 2
+            _draw_mixed_text(draw, (tx, ty), item["text"], font_btn, font_btn_emoji, fill=(255, 255, 255, 255))
 
-        # -------------------------------------------------------------
-        # D) MAIN HINDI CTA CARD (मुख्य हिंदी टेक्स्ट कार्ड)
-        # -------------------------------------------------------------
+        # D) Main Hindi CTA card (bottom banner)
         pulse = 1.0 + 0.04 * math.sin(t * 8)
         bw, bh = int(w * 0.90), int(130 * pulse)
         bx = (w - bw) // 2
         by = int(h * 0.82)
 
-        # 3D शैडो और रेड-गोल्डन कार्ड
-        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=22, fill=(0, 0, 0, 180))
-        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=22, fill=(210, 20, 30, 250), outline=(255, 215, 0), width=5)
+        draw.rounded_rectangle(
+            [bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=22, fill=(0, 0, 0, 180)
+        )
+        draw.rounded_rectangle(
+            [bx, by, bx + bw, by + bh], radius=22, fill=(210, 20, 30, 250),
+            outline=(255, 215, 0, 255), width=5,
+        )
 
-        # शुद्ध हिंदी मैसेज
-        text = "🔔 लाइक और सब्सक्राइब जरूर करें!"
-        
-        try:
-            tb = draw.textbbox((0, 0), text, font=font_large)
-            tw, th = tb[2] - tb[0], tb[3] - tb[1]
-        except Exception:
-            tw, th = int(bw * 0.8), 40
-
-        tx = bx + (bw - tw) // 2
-        ty = by + (bh - th) // 2
-
-        draw.text((tx, ty), text, font=font_large, fill=(255, 255, 255, 255))
+        text = "\U0001F514 लाइक और सब्सक्राइब जरूर करें!"
+        text_w, text_h = _measure_mixed_text(draw, text, font_large, font_large_emoji)
+        tx = bx + (bw - text_w) // 2
+        ty = by + (bh - text_h) // 2
+        _draw_mixed_text(draw, (tx, ty), text, font_large, font_large_emoji, fill=(255, 255, 255, 255))
 
         return np.array(img)
 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
-# ------------------------------------------------------------------------------
-# 3) MASTER 7-TRACK COMPILATION ENGINE
-# ------------------------------------------------------------------------------
-def compile_cinematic_video(
-    video_format="📱 9:16 Shorts (Default)",
-    video_quality="🔘 1080p Full HD (Default) (क्रिस्प)",
-    visual_files=None,
-    video_timeline_slots=None,
-    audio_files=None,
-    music_timeline_slots=None,
-    master_music_vol=0.80,
-    sfx_events=None,
-    story_script="",
-    voiceover_path=None,
-    auto_ducking=True,
-    output_path="final_output.mp4"
-):
-    if visual_files is None: visual_files = []
-    if video_timeline_slots is None: video_timeline_slots = []
-    if audio_files is None: audio_files = []
-    if music_timeline_slots is None: music_timeline_slots = []
-    if sfx_events is None: sfx_events = []
 
-    # Resolution Setup
-    if "9:16" in video_format:
-        target_size = (720, 1280) if "720p" in video_quality else (1080, 1920)
-    else:
-        target_size = (1280, 720) if "720p" in video_quality else (1920, 1080)
-        
-    fps = 24
-    w, h = target_size
-
-    # --------------------------------------------------------------------------
-    # TRACK 1: VISUAL COMPOSITION ENGINE
-    # --------------------------------------------------------------------------
-    bg_clips = []
-    default_clip_dur = 10.0
-
-    for v_item in visual_files:
-        if not isinstance(v_item, dict):
-            continue
-        path = v_item.get("path", None)
-        if not is_valid_path(path):
-            continue
-            
-        is_img = v_item.get("is_image", True)
-        use_ken_burns = v_item.get("ken_burns", True)
-        
-        if is_img:
-            if use_ken_burns:
-                c = apply_ken_burns_effect(path, duration=default_clip_dur, fps=fps, target_size=target_size)
-            else:
-                img = Image.open(path).convert("RGB").resize(target_size)
-                c = VideoClip(lambda t: np.array(img), duration=default_clip_dur).with_fps(fps)
-        else:
-            c = VideoFileClip(path).without_audio()
-            c = c.subclipped(0, min(default_clip_dur, c.duration)).resized(new_size=target_size)
-            
-        bg_clips.append(c)
-
-    if not bg_clips:
-        bg_clips.append(ColorClip(size=target_size, color=(0, 0, 0), duration=10.0).with_fps(fps))
-
-    main_visual_track = concatenate_videoclips(bg_clips, method="compose")
-    total_duration = main_visual_track.duration
-
-    # Track 2 Layering (Overlay Videos)
-    video_layers = [main_visual_track]
-    for slot in video_timeline_slots:
-        if isinstance(slot, dict):
-            path = slot.get("path", None)
-            if is_valid_path(path):
-                st_t = min(slot.get("start", 0.0), total_duration - 1.0)
-                dur = min(slot.get("end", st_t + 4.0) - st_t, total_duration - st_t)
-                
-                ov_clip = VideoFileClip(path).subclipped(0, min(dur, 4.0))
-                ov_clip = ov_clip.resized(new_size=(int(w*0.8), int(h*0.8))).with_position("center").with_start(st_t)
-                video_layers.append(ov_clip)
-
-    # CLIMAX ENGINE OVERLAY
-    outro_dur = 4.0
-    if total_duration >= outro_dur:
-        climax_outro = create_climax_outro_clip(duration=outro_dur, target_size=target_size, fps=fps)
-        climax_outro = climax_outro.with_start(total_duration - outro_dur)
-        video_layers.append(climax_outro)
-
-    final_visual_video = CompositeVideoClip(video_layers, size=target_size)
+# ---------------------------------------------------------------------------
+# Quick manual sanity check (renders a couple of frames to PNG, no video
+# encoding needed) — safe to delete once wired into your pipeline.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    clip = create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24)
+    for sample_t in (0.0, 2.5, 5.0, 9.5):
+        frame = clip.get_frame(sample_t)
+        Image.fromarray(frame).save(f"/tmp/climax_preview_{sample_t:.1f}.png")
+    print("Preview frames written to /tmp/climax_preview_*.png")
 
     # --------------------------------------------------------------------------
     # TRACK 3, 4, 6, 7: AUDIO COMPOSITION ENGINE

@@ -444,7 +444,16 @@ with c_rnd2:
                     vis_data = process_uploaded_files(st.session_state["visual_files"])
                     aud_data = process_uploaded_files(st.session_state["audio_files"])
                     
-                    # 2. engine.py को पूरा डेटा भेजकर रेंडर करें
+                    # 2. Voiceover None-Safety Fix
+                    voiceover_file = st.session_state.get("voiceover_file", None)
+                    vo_path = None
+                    if voiceover_file is not None:
+                        temp_vo_dir = tempfile.mkdtemp()
+                        vo_path = os.path.join(temp_vo_dir, voiceover_file.name)
+                        with open(vo_path, "wb") as f:
+                            f.write(voiceover_file.getbuffer())
+                    
+                    # 3. Master Render Call
                     output_path = compile_cinematic_video(
                         video_format=video_format,
                         video_quality=video_quality,
@@ -455,13 +464,13 @@ with c_rnd2:
                         master_music_vol=st.session_state.get("master_vol_tr4", 0.8),
                         sfx_events=st.session_state.get("sfx_events", []),
                         story_script=st.session_state.get("story_script", ""),
+                        voiceover_path=vo_path,
                         output_path="final_master_video.mp4"
                     )
                     
                     st.success("🎉 मास्टर वीडियो सफलतापूर्वक तैयार हो गया है!")
-                    
-                    # 3. वीडियो प्लेयर और डाउनलोड बटन
                     st.video(output_path)
+                    
                     with open(output_path, "rb") as file:
                         st.download_button(
                             label="📥 मास्टर वीडियो डाउनलोड करें",
@@ -472,5 +481,3 @@ with c_rnd2:
                         )
                 except Exception as e:
                     st.error(f"❌ रेंडरिंग एरर: {str(e)}")
-
-st.markdown('</div>', unsafe_allow_html=True)

@@ -1,13 +1,11 @@
 # ==============================================================================
-# 🎬 BABA WEB STUDIO: STREAMLINED ENGINE (engine.py)
+# 🎬 BABA WEB STUDIO: ENGINE.PY (लूपिंग और सही ड्यूरेशन के साथ)
 # ==============================================================================
 import os
-import tempfile
-import asyncio
 import numpy as np
 from moviepy import (
-    VideoFileClip, AudioFileClip, ImageClip, TextClip, 
-    CompositeVideoClip, CompositeAudioClip, concatenate_videoclips
+    VideoFileClip, AudioFileClip, ImageClip, 
+    CompositeVideoClip, CompositeAudioClip, concatenate_videoclips, ColorClip
 )
 
 # climax.py से आउट्रो फ़ंक्शन आयात करना
@@ -19,10 +17,9 @@ def is_valid_path(path):
 
 
 def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1080, 1920)):
-    """[काम]: इमेज पर ज़ूम इन / केन बर्न्स इफ़ेक्ट देना"""
+    """[काम]: इमेज पर ज़ूम इन इफ़ेक्ट देना"""
     try:
         clip = ImageClip(image_path).with_duration(duration)
-        # रिसाइज़ और इफ़ेक्ट लॉजिक
         return clip.resized(target_size=target_size)
     except Exception as e:
         print(f"⚠️ इमेज लोड करने में त्रुटि {image_path}: {e}")
@@ -43,37 +40,23 @@ def render_video_engine(
     target_size=(1080, 1920),
     outro_text=""
 ):
-    """
-    [मुख्य रेंडर इंजन]: 
-    - विज़ुअल क्लिप्स को जोड़ता है।
-    - वॉइसओवर और बैकग्राउंड म्यूज़िक को सिंक्रनाइज़ करता है।
-    - अंत में climax.py से आउट्रो जोड़कर वीडियो कंपाइल करता है।
-    """
+    """[मुख्य रेंडर इंजन]: विजुअल, ऑडियो और क्लाइमैक्स आउट्रो को जोड़कर वीडियो बनाता है"""
     print("🚀 रेंडरिंग इंजन शुरू हो रहा है...")
-    clips_list = []
 
-    # 1. विज़ुअल क्लिप्स जोड़ना
+    # 1. विज़ुअल क्लिप्स को जोड़ना
+    clips_list = []
     if visual_clips:
         for vc in visual_clips:
             if vc is not None:
                 clips_list.append(vc)
 
-    # अगर कोई विज़ुअल नहीं है, तो एक ब्लैंक/डिफ़ॉल्ट क्लिप बना लें ताकि क्रैश न हो
     if not clips_list:
-        print("⚠️ कोई विज़ुअल क्लिप नहीं मिली, डमी क्लिप बनाई जा रही है...")
-        # एक छोटी रंगीन फ़्रेम या ब्लैक क्लिप जोड़ सकते हैं
+        # अगर कोई क्लिप न हो तो एक ब्लैक क्लिप बना लें
+        clips_list = [ColorClip(size=target_size, color=(0,0,0), duration=5.0).with_fps(fps)]
 
-    # मुख्य वीडियो कटघरा जोड़ना
-    if len(clips_list) > 1:
-        base_video = concatenate_videoclips(clips_list, method="compose")
-    elif len(clips_list) == 1:
-        base_video = clips_list[0]
-    else:
-        raise ValueError("रेंडर करने के लिए कोई वैध विज़ुअल क्लिप उपलब्ध नहीं है!")
+    base_video = concatenate_videoclips(clips_list, method="compose")
 
-    actual_video_duration = base_video.duration
-
-    # 2. Climax.py से आउट्रो लेयर जोड़ना (लगभग आख़िरी 5 से 10 सेकंड)
+    # 2. Climax.py से आउट्रो लेयर जोड़ना (आख़िरी 5.5 सेकंड)
     climax_duration = 5.5
     try:
         outro_clip = create_climax_outro_clip(
@@ -81,10 +64,9 @@ def render_video_engine(
             target_size=target_size, 
             fps=fps
         )
-        # बेस वीडियो के अंत में क्लाइमैक्स जोड़ना
         final_visual = concatenate_videoclips([base_video, outro_clip], method="compose")
     except Exception as e:
-        print(f"⚠️ आउट्रो जोड़ने में विफल, केवल बेस वीडियो रखा जा रहा है: {e}")
+        print(f"⚠️ आउट्रो जोड़ने में विफल: {e}")
         final_visual = base_video
 
     # 3. ऑडियो और वॉइसओवर संभालना
@@ -104,13 +86,13 @@ def render_video_engine(
                     m_clip = AudioFileClip(af["path"]).with_effects([lambda c: c.with_volume_scaled(master_music_vol)])
                     audio_tracks.append(m_clip)
                 except Exception as e:
-                    print(f"⚠️ म्यूज़िक फ़ाइल लोड नहीं हो सकी: {e}")
+                    print(f"⚠️ म्यूज़िक लोड नहीं हो सका: {e}")
 
     if audio_tracks:
         final_audio = CompositeAudioClip(audio_tracks)
         final_visual = final_visual.with_audio(final_audio)
 
-    # 4. फ़ाइल राइट करना (Export)
+    # 4. वीडियो को एक्सपोर्ट/सेव करना
     print(f"💾 वीडियो यहाँ सेव हो रही है: {output_path}")
     final_visual.write_videofile(
         output_path,
@@ -126,7 +108,7 @@ def render_video_engine(
 
 
 # ==============================================================================
-# app.py के साथ कम्पैटिबिलिटी रैपर (पुराने नाम से एरर न आए)
+# app.py कम्पैटिबिलिटी रैपर (लूपिंग लॉजिक के साथ)
 # ==============================================================================
 def compile_cinematic_video(
     video_format="9:16 (Vertical Short/Reel)",
@@ -141,11 +123,29 @@ def compile_cinematic_video(
     voiceover_path=None,
     output_path="final_master_video.mp4",
     auto_ducking=True,
-    total_duration=10.0,
+    total_duration=None,
     fps=24
 ):
-    """app.py के कॉल को सीधे render_video_engine पर डायवर्ट करता है"""
+    """यह फ़ंक्शन app.py से डेटा लेकर तय करता है कि वीडियो कितनी लंबी बनेगी और कम पड़ने पर लूप चलाता है"""
     
+    # 1. कुल समय (Target Duration) का हिसाब लगाना
+    target_duration = 10.0
+    
+    if voiceover_path and os.path.exists(voiceover_path):
+        try:
+            vo_temp = AudioFileClip(voiceover_path)
+            target_duration = max(target_duration, vo_temp.duration)
+            vo_temp.close()
+        except Exception:
+            pass
+
+    if total_duration and total_duration > target_duration:
+        target_duration = total_duration
+
+    climax_time = 5.5
+    visuals_target_duration = max(5.0, target_duration - climax_time)
+
+    # 2. स्क्रीन साइज़ तय करना
     if "16:9" in str(video_format):
         target_size = (1920, 1080)
     elif "1:1" in str(video_format):
@@ -153,22 +153,37 @@ def compile_cinematic_video(
     else:
         target_size = (1080, 1920)
 
-    visual_clips = []
+    # 3. विज़ुअल क्लिप्स तैयार करना और कम होने पर लूप चलाना (Looping Logic)
+    raw_clips = []
     if visual_files:
         for v in visual_files:
-            if isinstance(v, dict) and is_valid_path(v.get("path")):
-                clip = apply_ken_burns_effect(v.get("path"), duration=v.get("duration", 4.0), fps=fps, target_size=target_size)
+            path = v.get("path") if isinstance(v, dict) else v
+            if is_valid_path(path):
+                clip = apply_ken_burns_effect(path, duration=4.0, fps=fps, target_size=target_size)
                 if clip:
-                    visual_clips.append(clip)
-            elif isinstance(v, str) and is_valid_path(v):
-                clip = apply_ken_burns_effect(v, duration=4.0, fps=fps, target_size=target_size)
-                if clip:
-                    visual_clips.append(clip)
+                    raw_clips.append(clip)
 
+    visual_clips = []
+    if raw_clips:
+        current_total_len = sum(c.duration for c in raw_clips)
+        
+        # अगर इमेजेस कम हैं, तो उन्हें तब तक लूप करते रहो जब तक कुल समय पूरा न हो जाए
+        if current_total_len < visuals_target_duration:
+            while sum(c.duration for c in visual_clips) < visuals_target_duration:
+                for c in raw_clips:
+                    visual_clips.append(c)
+                    if sum(x.duration for x in visual_clips) >= visuals_target_duration:
+                        break
+        else:
+            visual_clips = raw_clips
+    else:
+        visual_clips = [ColorClip(size=target_size, color=(0,0,0), duration=visuals_target_duration).with_fps(fps)]
+
+    # 4. मुख्य इंजन को कॉल करना
     return render_video_engine(
         visual_clips=visual_clips,
         output_path=output_path,
-        total_duration=total_duration,
+        total_duration=target_duration,
         voiceover_path=voiceover_path,
         audio_files=audio_files,
         sfx_events=sfx_events,

@@ -17,9 +17,10 @@ def is_valid_path(path):
 
 
 def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1080, 1920)):
-    """[काम]: इमेज पर ज़ूम इन इफ़ेक्ट देना"""
+    """[काम]: इमेज को साफ़ तौर पर तयशुदा ड्यूरेशन के साथ क्लिप में बदलना"""
     try:
-        clip = ImageClip(image_path).with_duration(duration)
+        # यहाँ साफ़ तौर पर duration=4.0 सेट किया गया है ताकि हर इमेज 4 सेकंड चले
+        clip = ImageClip(image_path).with_duration(4.0)
         return clip.resized(target_size=target_size)
     except Exception as e:
         print(f"⚠️ इमेज लोड करने में त्रुटि {image_path}: {e}")

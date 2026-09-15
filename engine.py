@@ -1,9 +1,17 @@
-import os
-import math
-from moviepy.editor import (
-    ImageClip, VideoFileClip, AudioFileClip, CompositeVideoClip, 
-    CompositeAudioClip, TextClip, concatenate_videoclips, afx, vfx
-)
+# engine.py के सबसे ऊपर पुराने imports हटाकर यह लिखें:
+try:
+    from moviepy.editor import (
+        ImageClip, VideoFileClip, AudioFileClip, CompositeVideoClip, 
+        CompositeAudioClip, concatenate_videoclips, afx, vfx, TextClip
+    )
+except ImportError:
+    from moviepy.video.io.VideoFileClip import VideoFileClip
+    from moviepy.video.VideoClip import ImageClip, TextClip, CompositeVideoClip
+    from moviepy.audio.io.AudioFileClip import AudioFileClip
+    from moviepy.audio.AudioClip import CompositeAudioClip
+    from moviepy.video.compositing.concatenate import concatenate_videoclips
+    import moviepy.audio.fx.all as afx
+    import moviepy.video.fx.all as vfx
 
 # ==========================================
 # 1. VISUAL ENGINE (TRACK 1 & TRACK 2)

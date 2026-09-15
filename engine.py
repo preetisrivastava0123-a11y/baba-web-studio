@@ -20,16 +20,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import cv2
 
-from moviepy import (
-    AudioFileClip,
-    CompositeAudioClip,
-    CompositeVideoClip,
-    ImageClip,
-    VideoFileClip,
-    concatenate_audioclips,
-    concatenate_videoclips,
-    vfx,
-)
+from moviepy import AudioFileClip, CompositeAudioClip, CompositeVideoClip, ImageClip, VideoFileClip, concatenate_audioclips, concatenate_videoclips, vfx
 
 # --------------------------------------------------------------
 # बाह्य मॉड्यूल इम्पोर्ट (Fallback / Safety Hooks)

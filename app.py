@@ -1,5 +1,5 @@
 # ==============================================================
-# बाबा जनरेटिव वेब स्टूडियो — ४-ट्रैक नॉन-लीनियर एडिटर (Pro Edition v2)
+# बाबा जनरेटिव वेब स्टूडियो — 6-ट्रैक एडवांस्ड एडिटर (Pro Architecture)
 # ==============================================================
 import os
 import subprocess
@@ -7,10 +7,10 @@ import tempfile
 import streamlit as st
 
 # --------------------------------------------------------------
-# 1) पेज की बुनियादी सेटिंग
+# 1) पेज कॉन्फ़िगरेशन और डिफ़ॉल्ट सेटिंग्स
 # --------------------------------------------------------------
 st.set_page_config(
-    page_title="बाबा जनरेटिव वेब स्टूडियो",
+    page_title="बाबा जनरेटिव वेब स्टूडियो Pro",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -19,1007 +19,324 @@ st.set_page_config(
 from moviepy import VideoFileClip
 from engine import compile_cinematic_video
 
-# --------------------------------------------------------------
-# 1.1) PDF/DOCX-टेक्स्ट-एक्सट्रैक्शन लाइब्रेरी सुरक्षित तरीके से इम्पोर्ट करना
-# --------------------------------------------------------------
+# डॉक्यूमेंट एक्सट्रैक्शन सपोर्ट
 try:
     from pypdf import PdfReader
-    PDF_SUPPORT_AVAILABLE = True
+    PDF_SUPPORT = True
 except Exception:
-    PDF_SUPPORT_AVAILABLE = False
+    PDF_SUPPORT = False
 
 try:
     import docx as docx_lib
-    DOCX_SUPPORT_AVAILABLE = True
+    DOCX_SUPPORT = True
 except Exception:
-    DOCX_SUPPORT_AVAILABLE = False
+    DOCX_SUPPORT = False
 
-# --------------------------------------------------------------
-# 1.2) ग्लोबल साउंड-सर्च (Freesound API) — वैकल्पिक, key न हो तो चुप
-# --------------------------------------------------------------
 try:
     import requests
-    REQUESTS_AVAILABLE = True
+    REQUESTS_SUPPORT = True
 except Exception:
-    REQUESTS_AVAILABLE = False
+    REQUESTS_SUPPORT = False
 
 # --------------------------------------------------------------
-# 1.3) Playwright का Chromium ब्राउज़र इंस्टॉल करना — सिर्फ़ एक बार
+# 2) प्रीमियम प्रो-स्टूडियो UI (Neon Dark Theme & Track Aesthetics)
 # --------------------------------------------------------------
-@st.cache_resource
-def _ensure_playwright_chromium_installed():
-    try:
-        result = subprocess.run(
-            ["playwright", "install", "chromium"],
-            capture_output=True, text=True, timeout=180,
-        )
-        if result.returncode == 0:
-            return True, None
-        return False, (result.stderr or result.stdout or "अज्ञात त्रुटि")
-    except Exception as install_error:
-        return False, str(install_error)
-
-# --------------------------------------------------------------
-# 2) डार्क-थीम + टाइमलाइन-कार्ड स्टाइलिंग (पुराना केसरी-डार्क लुक बरकरार)
-# --------------------------------------------------------------
-def apply_dark_theme():
+def apply_pro_studio_theme():
     st.markdown(
         """
         <style>
         .stApp {
-            background: linear-gradient(160deg, #0d0d0d 0%, #1a1a2e 100%);
-            color: #f5f5f5;
+            background: #090a0f;
+            color: #e2e8f0;
         }
-        .main-title {
-            text-align: center; font-size: 42px; font-weight: 800;
-            background: -webkit-linear-gradient(45deg, #ffd700, #ff8c00);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            margin-bottom: 0px;
+        .pro-header {
+            text-align: center;
+            font-size: 38px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 5px;
         }
-        .sub-title { text-align: center; color: #b0b0b0; font-size: 16px; margin-bottom: 20px; }
-        .track-heading {
-            color: #ffd700; font-size: 24px; font-weight: 800;
-            margin-top: 10px; margin-bottom: 10px;
-            border-bottom: 2px solid rgba(255,215,0,0.3); padding-bottom: 6px;
+        .pro-sub {
+            text-align: center;
+            color: #94a3b8;
+            font-size: 15px;
+            margin-bottom: 25px;
         }
-        .section-heading { color: #ffd700; font-size: 18px; font-weight: 700; margin-top: 15px; margin-bottom: 8px; }
-        .timeline-card {
-            background: rgba(255,255,255,0.04);
-            border: 1px solid rgba(255,215,0,0.25);
-            border-radius: 12px; padding: 14px; margin-bottom: 14px;
+        .track-box {
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-left: 5px solid #00f2fe;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
         }
-        .order-badge {
-            background: linear-gradient(90deg, #ffd700, #ff8c00);
-            color: #0d0d0d; font-weight: 800; border-radius: 8px;
-            padding: 4px 10px; display: inline-block; margin-bottom: 6px; font-size: 13px;
+        .track-title {
+            color: #38bdf8;
+            font-size: 20px;
+            font-weight: 800;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
         }
-        .sfx-badge {
-            background: linear-gradient(90deg, #8e2de2, #4a00e0);
-            color: #fff; font-weight: 700; border-radius: 8px;
-            padding: 3px 9px; display: inline-block; font-size: 12px;
+        .slot-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
         }
-        .music-badge {
-            background: linear-gradient(90deg, #ff8c00, #ff416c);
-            color: #fff; font-weight: 700; border-radius: 8px;
-            padding: 3px 9px; display: inline-block; font-size: 12px;
+        .badge-sfx {
+            background: #7c3aed;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .badge-music {
+            background: #059669;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
         }
         div.stButton > button:first-child {
-            background: linear-gradient(90deg, #ff416c, #ff4b2b); color: white;
-            font-size: 18px; font-weight: 800; padding: 12px 0px; border-radius: 12px;
-            border: none; width: 100%; box-shadow: 0px 0px 20px rgba(255, 75, 43, 0.6); transition: 0.3s;
+            background: linear-gradient(90deg, #2563eb, #3b82f6);
+            color: white;
+            font-weight: 700;
+            border-radius: 8px;
+            border: none;
+            padding: 10px;
+            transition: all 0.3s;
         }
-        div.stButton > button:first-child:hover { transform: scale(1.02); box-shadow: 0px 0px 30px rgba(255, 75, 43, 0.9); }
-        div.stDownloadButton > button:first-child {
-            background: linear-gradient(90deg, #11998e, #38ef7d); color: #0d0d0d;
-            font-size: 20px; font-weight: 800; padding: 15px 0px; border-radius: 12px;
-            border: none; width: 100%; box-shadow: 0px 0px 20px rgba(56, 239, 125, 0.6); transition: 0.3s;
+        div.stButton > button:first-child:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
         }
-        div.stDownloadButton > button:first-child:hover { transform: scale(1.02); box-shadow: 0px 0px 30px rgba(56, 239, 125, 0.9); }
         </style>
         """,
         unsafe_allow_html=True
     )
 
-def render_header():
-    st.markdown('<div class="main-title">🎬 बाबा जनरेटिव वेब स्टूडियो</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">४-ट्रैक प्रो टाइमलाइन एडिटर — विज़ुअल + वीडियो-टाइमलाइन + म्यूज़िक + म्यूज़िक-टाइमलाइन + SFX</div>', unsafe_allow_html=True)
-    st.divider()
-
-# --------------------------------------------------------------
-# 2.1) विस्तृत यूज़र गाइड (एक्सपैंडर बॉक्स)
-# --------------------------------------------------------------
-def render_user_guide():
-    with st.expander("🦚 बाबा स्टूडियो यूज़र गाइड (User Guide)", expanded=False):
-        st.markdown(
-            """
-            **🎬 ट्रैक 1 — विज़ुअल ट्रैक (कच्चा माल गोदाम):** फोटो/वीडियो अपलोड करें — बस अपलोड
-            होते ही वे अपने-आप गोदाम में जमा हो जाती हैं, कोई अलग बटन दबाने की ज़रूरत नहीं। जिस क्रम
-            में फाइलें अपलोड होंगी, वीडियो में वही क्रम इस्तेमाल होगा। फोटो हमेशा ५ सेकंड चलेगी
-            (Ken Burns ज़ूम के साथ); वीडियो अपनी पूरी लंबाई में इस्तेमाल होगा — कोई Start/End बॉक्स नहीं।
-            
-            **🎞️ ट्रैक 2 — वीडियो क्लिप्स टाइमलाइन ट्रैक:** "➕ नया वीडियो क्लिप टाइमलाइन पर जोड़ें"
-            दबाकर एक नया स्वतंत्र स्लॉट खोलें। हर स्लॉट का अपना खुद का वीडियो-अपलोडर होता है, साथ में
-            उस क्लिप के प्रकट होने का समय (Start Second) और हटने का समय (End Second) — ताकि आप
-            एक साथ कई वीडियो-क्लिप्स को अलग-अलग सेकंड पर टाइमलाइन में सिंक कर सकें।
-            
-            **🎵 ट्रैक 3 — म्यूज़िक/भजन ट्रैक (म्यूज़िक माल गोदाम):** एक साथ जितने चाहें उतने भजन/संगीत
-            अपलोड करें — यह सिर्फ़ स्टोरेज है, कोई टाइमर या बटन नहीं।
-            
-            **🎼 ट्रैक 4 — म्यूज़िक क्लिप्स टाइमलाइन ट्रैक:** "➕ नया म्यूज़िक क्लिप टाइमलाइन पर जोड़ें"
-            दबाकर नया स्लॉट खोलें। हर स्लॉट में अपना स्वतंत्र म्यूज़िक-अपलोडर + Start Second +
-            End Second + क्रम-संख्या (ऑर्डर) होता है। नीचे एक ही मास्टर-वॉल्यूम स्लाइडर पूरे
-            संगीत को नियंत्रित करता है।
-            
-            **🔊 SFX ट्रैक:** अपनी ध्वनियाँ (शंख, डमरू, चिड़ियाँ) अपलोड करें, या ग्लोबल-सर्च
-            बॉक्स से मुफ़्त ध्वनि खोजें। फिर "+ SFX ध्वनि जोड़ें" से तय करें कि वह ध्वनि किस
-            Start Time से किस End Time तक और कितनी आवाज़ में बजेगी।
-            
-            **📄 कथा PDF/Word से निकालना:** कहानी बॉक्स के ऊपर PDF या DOCX अपलोड करें —
-            टेक्स्ट अपने-आप कहानी बॉक्स में भर जाएगा, और वही टेक्स्ट डिफ़ॉल्ट रूप से नीचे
-            "आउट्रो कमेंट" में भी सिंक हो जाएगा (चाहें तो बदल सकते हैं)।
-            
-            **⚡ ड्राफ्ट प्रीव्यू:** फाइनल Generate करने से पहले "क्विक ड्राफ्ट रेंडर" बटन से
-            एक जल्दी, कम-क्वालिटी वाला प्रीव्यू देख सकते हैं।
-            """
-        )
-
-# --------------------------------------------------------------
-# 3) session_state की शुरुआत — सब कुछ यहीं लॉक रहता है
-# --------------------------------------------------------------
-def _initialize_session_state():
-    default_values = {
-        "app_mode": "🎬 सामान्य स्टूडियो मोड (Normal Studio Mode)",
+# Session State Initialization
+def init_state():
+    defaults = {
         "story_script_text": "",
         "ticker_text_value": "",
-        "ticker_manually_edited": False,
-        "video_format_choice": "📱 9:16 Shorts (कहानी के अनुसार)",
-        "duration_choice_value": "5 मिनट",
-        "custom_duration_minutes": 10,
-        "quality_choice_value": "720p HD",
-        "subtitle_color_choice": "पीला (Gold)",
-        "subtitle_font_size": 65,
-        "voiceover_mode": "🕉️ बाबा एआई दिव्य आवाज़ (Edge-TTS)",
-        "last_pdf_name": None,
-        "raw_visuals": [],
-        "visual_uploader_key": 0,
-        "video_clips": [],
-        "video_clip_slot_counter": 0,
-        "music_files": [],
-        "music_storage_uploader_key": 0,
-        "music_clips_timeline": [],
-        "music_clip_slot_counter": 0,
-        "master_music_volume": 0.8,
+        "visual_clips": [],
+        "visual_key": 0,
+        "video_timeline": [],
+        "video_slot_count": 0,
+        "audio_pool": [],
+        "audio_pool_key": 0,
+        "music_timeline": [],
+        "music_slot_count": 0,
+        "master_music_vol": 0.8,
         "sfx_files": [],
         "sfx_events": [],
-        "sfx_uploader_key": 0,
-        "loop_raw_visuals": [],
-        "loop_visual_uploader_key": 0,
-        "loop_video_clips": [],
-        "loop_video_clip_slot_counter": 0,
-        "loop_ticker_text": "",
-        "loop_duration_choice_value": "5 मिनट",
-        "loop_custom_duration_minutes": 10,
-        "draft_video_path": None,
+        "sfx_key": 0,
+        "sub_font_size": 60,
+        "sub_color": "पीला (Gold)",
+        "video_format": "📱 9:16 Shorts",
+        "draft_path": None,
     }
-    for key, default_value in default_values.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+init_state()
+apply_pro_studio_theme()
+
+# Header Section
+st.markdown('<div class="pro-header">🎬 बाबा जनरेटिव स्टूडियो — 6-ट्रैक टाइमलाइन कंसोल</div>', unsafe_allow_html=True)
+st.markdown('<div class="pro-sub">मल्टी-ट्रैक लेयरिंग • विजुअल सिंक्रोनाइज़ेशन • एडवांस्ड SFX • स्क्रिप्ट ऑटो-इंजेशन</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------
-# 4) 🎬 ट्रैक 1: विज़ुअल ट्रैक (कच्चा माल गोदाम — Direct Storage)
+#  TRACK 1: VISUAL POOL (कच्चा माल गोदाम)
 # --------------------------------------------------------------
-def render_visual_track():
-    st.markdown('<div class="track-heading">🎬 ट्रैक 1: विज़ुअल ट्रैक (कच्चा माल गोदाम)</div>', unsafe_allow_html=True)
-    pending_files = st.file_uploader(
-        label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें — एक साथ कितनी भी फाइलें चुन सकते हैं",
-        type=["jpg", "jpeg", "png", "mp4", "mov"],
-        accept_multiple_files=True,
-        key=f"visual_uploader_{st.session_state['visual_uploader_key']}",
-    )
-    existing_names = {item["file"].name for item in st.session_state["raw_visuals"]}
-    newly_added_count = 0
-    for pending_file in (pending_files or []):
-        if pending_file.name not in existing_names:
-            is_image_file = pending_file.type and pending_file.type.startswith("image")
-            st.session_state["raw_visuals"].append({
-                "file": pending_file,
-                "is_image": is_image_file,
-                "start": 0.0,
-                "end": 5.0 if is_image_file else 0.0,
+st.markdown('<div class="track-box"><div class="track-title">📸 ट्रैक 1: विज़ुअल पूल (Images & Raw Footage)</div>', unsafe_allow_html=True)
+visual_uploads = st.file_uploader(
+    "इमेजेस (JPG/PNG) या बैकग्राउंड फुटेज अपलोड करें",
+    type=["jpg", "jpeg", "png", "mp4", "mov"],
+    accept_multiple_files=True,
+    key=f"visual_up_{st.session_state['visual_key']}"
+)
+
+if visual_uploads:
+    existing = {x["file"].name for x in st.session_state["visual_clips"]}
+    added = 0
+    for f in visual_uploads:
+        if f.name not in existing:
+            is_img = f.type.startswith("image") if f.type else True
+            st.session_state["visual_clips"].append({
+                "file": f, "is_image": is_img, "start": 0.0, "end": 5.0 if is_img else 0.0
             })
-            newly_added_count += 1
-    if newly_added_count > 0:
-        st.session_state["visual_uploader_key"] += 1
+            added += 1
+    if added > 0:
+        st.session_state["visual_key"] += 1
         st.rerun()
-    if not st.session_state["raw_visuals"]:
-        st.info("अभी तक गोदाम में कोई फोटो/वीडियो जमा नहीं हुआ।")
-        return []
-    st.caption(
-        f"🗄️ गोदाम में कुल {len(st.session_state['raw_visuals'])} फाइलें जमा हैं "
-        "(जिस क्रम में अपलोड हुईं, वही क्रम वीडियो में इस्तेमाल होगा)।"
-    )
-    preview_columns = st.columns(4)
-    for item_index, visual_item in enumerate(st.session_state["raw_visuals"]):
-        with preview_columns[item_index % 4]:
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            if visual_item["is_image"]:
-                st.image(visual_item["file"], use_container_width=True)
+
+if st.session_state["visual_clips"]:
+    cols = st.columns(6)
+    for idx, item in enumerate(st.session_state["visual_clips"]):
+        with cols[idx % 6]:
+            st.markdown('<div class="slot-card">', unsafe_allow_html=True)
+            if item["is_image"]:
+                st.image(item["file"], use_container_width=True)
             else:
-                st.markdown("🎞️ *(वीडियो)*")
-            st.caption(f"#{item_index + 1}")
-            if st.button("❌", key=f"remove_visual_{item_index}"):
-                st.session_state["raw_visuals"].pop(item_index)
+                st.write("🎞️ Video")
+            st.caption(f"#{idx + 1} {item['file'].name[:10]}")
+            if st.button("❌", key=f"del_vis_{idx}"):
+                st.session_state["visual_clips"].pop(idx)
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
-    return list(st.session_state["raw_visuals"])
+st.markdown('</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------
-# 5) 🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन ट्रैक
+# TRACK 2: VIDEO TIMELINE TRACK (समयबद्ध वीडियो स्लॉट्स)
 # --------------------------------------------------------------
-def render_video_clips_timeline_track():
-    st.markdown('<div class="track-heading">🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन ट्रैक</div>', unsafe_allow_html=True)
-    if st.button("➕ नया वीडियो क्लिप टाइमलाइन पर जोड़ें", key="add_video_clip_slot_button"):
-        new_slot_id = st.session_state["video_clip_slot_counter"]
-        st.session_state["video_clip_slot_counter"] += 1
-        st.session_state["video_clips"].append({
-            "slot_id": new_slot_id, "file": None, "start": 0.0, "end": 0.0,
-        })
-        st.rerun()
-    if not st.session_state["video_clips"]:
-        st.caption("ℹ️ अभी कोई वीडियो-क्लिप टाइमलाइन स्लॉट नहीं जोड़ा गया।")
-        return []
-    for display_index, slot in enumerate(st.session_state["video_clips"]):
-        slot_id = slot["slot_id"]
-        with st.container():
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="order-badge">🎞️ वीडियो क्लिप स्लॉट #{display_index + 1}</span>', unsafe_allow_html=True)
-            uploader_col, start_col, end_col, remove_col = st.columns([2.2, 1, 1, 0.6])
-            with uploader_col:
-                slot["file"] = st.file_uploader(
-                    "वीडियो क्लिप चुनें", type=["mp4", "mov"],
-                    key=f"vidclip_file_{slot_id}",
-                )
-            with start_col:
-                slot["start"] = st.number_input(
-                    "प्रकट होने का समय (Start Sec)", min_value=0.0, step=1.0,
-                    value=slot["start"], key=f"vidclip_start_{slot_id}",
-                )
-            with end_col:
-                slot["end"] = st.number_input(
-                    "हटने का समय (End Sec)", min_value=0.0, step=1.0,
-                    value=slot["end"], key=f"vidclip_end_{slot_id}",
-                )
-            with remove_col:
-                st.write("")
-                if st.button("❌", key=f"remove_vidclip_{slot_id}"):
-                    st.session_state["video_clips"] = [
-                        s for s in st.session_state["video_clips"] if s["slot_id"] != slot_id
-                    ]
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-    return list(st.session_state["video_clips"])
+st.markdown('<div class="track-box"><div class="track-title">🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन (Timed Layering)</div>', unsafe_allow_html=True)
+if st.button("➕ नया वीडियो टाइमलाइन स्लॉट जोड़ें", key="add_vid_slot"):
+    st.session_state["video_timeline"].append({
+        "slot_id": st.session_state["video_slot_count"],
+        "file": None, "start": 0.0, "end": 5.0
+    })
+    st.session_state["video_slot_count"] += 1
+    st.rerun()
 
-# --------------------------------------------------------------
-# 6) 🎵 ट्रैक 3: म्यूज़िक/भजन ट्रैक (म्यूज़िक माल गोदाम)
-# --------------------------------------------------------------
-def render_music_storage_track():
-    st.markdown('<div class="track-heading">🎵 ट्रैक 3: म्यूज़िक/भजन ट्रैक (म्यूज़िक माल गोदाम)</div>', unsafe_allow_html=True)
-    pending_music_files = st.file_uploader(
-        label="भजन / संगीत फाइलें अपलोड करें — एक साथ कितनी भी फाइलें चुन सकते हैं",
-        type=["mp3", "wav"],
-        accept_multiple_files=True,
-        key=f"music_storage_uploader_{st.session_state['music_storage_uploader_key']}",
-    )
-    existing_names = {f.name for f in st.session_state["music_files"]}
-    newly_added_count = 0
-    for pending_file in (pending_music_files or []):
-        if pending_file.name not in existing_names:
-            st.session_state["music_files"].append(pending_file)
-            newly_added_count += 1
-    if newly_added_count > 0:
-        st.session_state["music_storage_uploader_key"] += 1
-        st.rerun()
-    if not st.session_state["music_files"]:
-        st.info("अभी तक गोदाम में कोई भजन जमा नहीं हुआ।")
-        return []
-    st.caption(f"🗄️ गोदाम में कुल {len(st.session_state['music_files'])} भजन जमा हैं।")
-    preview_columns = st.columns(4)
-    for item_index, music_file in enumerate(st.session_state["music_files"]):
-        with preview_columns[item_index % 4]:
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="music-badge">🎶 {music_file.name[:20]}</span>', unsafe_allow_html=True)
-            if st.button("❌", key=f"remove_music_storage_{item_index}"):
-                st.session_state["music_files"].pop(item_index)
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-    return list(st.session_state["music_files"])
-
-# --------------------------------------------------------------
-# 7) 🎼 ट्रैक 4: म्यूज़िक क्लिप्स टाइमलाइन ट्रैक
-# --------------------------------------------------------------
-def render_music_clips_timeline_track():
-    st.markdown('<div class="track-heading">🎼 ट्रैक 4: म्यूज़िक क्लिप्स टाइमलाइन ट्रैक</div>', unsafe_allow_html=True)
-    if st.button("➕ नया म्यूज़िक क्लिप टाइमलाइन पर जोड़ें", key="add_music_clip_slot_button"):
-        new_slot_id = st.session_state["music_clip_slot_counter"]
-        st.session_state["music_clip_slot_counter"] += 1
-        st.session_state["music_clips_timeline"].append({
-            "slot_id": new_slot_id, "file": None, "start": 0.0, "end": 0.0,
-            "order": len(st.session_state["music_clips_timeline"]) + 1,
-        })
-        st.rerun()
-    if not st.session_state["music_clips_timeline"]:
-        st.caption("ℹ️ अभी कोई म्यूज़िक-क्लिप टाइमलाइन स्लॉट नहीं जोड़ा गया।")
-        st.markdown('<div class="section-heading">🎛️ मुख्य संगीत वॉल्यूम (Master Volume)</div>', unsafe_allow_html=True)
-        st.slider("मास्टर म्यूज़िक वॉल्यूम", min_value=0.0, max_value=1.0, key="master_music_volume")
-        return [], st.session_state["master_music_volume"]
-    total_slots = len(st.session_state["music_clips_timeline"])
-    for display_index, slot in enumerate(st.session_state["music_clips_timeline"]):
-        slot_id = slot["slot_id"]
-        safe_order = min(max(slot["order"], 1), total_slots)
-        with st.container():
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="music-badge">🎼 म्यूज़िक क्लिप स्लॉट #{display_index + 1}</span>', unsafe_allow_html=True)
-            uploader_col, start_col, end_col, order_col, remove_col = st.columns([2, 1, 1, 1, 0.6])
-            with uploader_col:
-                slot["file"] = st.file_uploader(
-                    "म्यूज़िक क्लिप चुनें", type=["mp3", "wav"],
-                    key=f"musicclip_file_{slot_id}",
-                )
-            with start_col:
-                slot["start"] = st.number_input(
-                    "Start Sec", min_value=0.0, step=1.0,
-                    value=slot["start"], key=f"musicclip_start_{slot_id}",
-                )
-            with end_col:
-                slot["end"] = st.number_input(
-                    "End Sec", min_value=0.0, step=1.0,
-                    value=slot["end"], key=f"musicclip_end_{slot_id}",
-                )
-            with order_col:
-                slot["order"] = st.selectbox(
-                    "क्रम", options=list(range(1, total_slots + 1)),
-                    index=safe_order - 1, key=f"musicclip_order_{slot_id}",
-                )
-            with remove_col:
-                st.write("")
-                if st.button("❌", key=f"remove_musicclip_{slot_id}"):
-                    st.session_state["music_clips_timeline"] = [
-                        s for s in st.session_state["music_clips_timeline"] if s["slot_id"] != slot_id
-                    ]
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-    st.markdown('<div class="section-heading">🎛️ मुख्य संगीत वॉल्यूम (Master Volume)</div>', unsafe_allow_html=True)
-    st.slider("मास्टर म्यूज़िक वॉल्यूम", min_value=0.0, max_value=1.0, key="master_music_volume")
-    sorted_clips = sorted(st.session_state["music_clips_timeline"], key=lambda c: c["order"])
-    return sorted_clips, st.session_state["master_music_volume"]
-
-# --------------------------------------------------------------
-# 8) 🔊 SFX ट्रैक
-# --------------------------------------------------------------
-def _search_freesound(query_text: str):
-    if not REQUESTS_AVAILABLE:
-        st.warning("⚠️ 'requests' लाइब्रेरी उपलब्ध नहीं है — ग्लोबल-सर्च काम नहीं करेगा।")
-        return []
-    api_key = st.secrets.get("FREESOUND_API_KEY", None) if hasattr(st, "secrets") else None
-    if not api_key:
-        st.warning("⚠️ ग्लोबल साउंड-सर्च के लिए Freesound API-key नहीं मिली। कृपया Streamlit Secrets में 'FREESOUND_API_KEY' जोड़ें।")
-        return []
-    try:
-        response = requests.get(
-            "https://freesound.org/apiv2/search/text/",
-            params={"query": query_text, "token": api_key, "fields": "id,name,previews"},
-            timeout=10,
-        )
-        response.raise_for_status()
-        return response.json().get("results", [])
-    except Exception as search_error:
-        st.warning(f"⚠️ साउंड-सर्च में समस्या आई: {search_error}")
-        return []
-
-def render_sfx_track():
-    st.markdown('<div class="track-heading">🔊 SFX ट्रैक (ध्वनि-प्रभाव लेयर)</div>', unsafe_allow_html=True)
-    pending_sfx_files = st.file_uploader(
-        label="कस्टम ध्वनियाँ अपलोड करें (शंख/डमरू/चिड़ियाँ आदि MP3/WAV)",
-        type=["mp3", "wav"],
-        accept_multiple_files=True,
-        key=f"sfx_uploader_{st.session_state['sfx_uploader_key']}",
-    )
-    if st.button("➕ SFX फाइल जोड़ें", key="add_sfx_file_button"):
-        existing_names = {f.name for f in st.session_state["sfx_files"]}
-        newly_added_count = sum(1 for f in (pending_sfx_files or []) if f.name not in existing_names)
-        st.session_state["sfx_files"].extend(
-            [f for f in (pending_sfx_files or []) if f.name not in existing_names]
-        )
-        if newly_added_count > 0:
-            st.session_state["sfx_uploader_key"] += 1
-            st.rerun()
-        else:
-            st.warning("⚠️ कोई नई ध्वनि-फाइल नहीं मिली।")
-
-    st.markdown('<div class="section-heading">🌐 मुफ़्त ध्वनि ग्लोबल-सर्च (Freesound)</div>', unsafe_allow_html=True)
-    search_col1, search_col2 = st.columns([3, 1])
-    with search_col1:
-        sfx_search_query = st.text_input("ध्वनि खोजें (जैसे: temple bell, conch shell)", key="sfx_search_query")
-    with search_col2:
+for idx, slot in enumerate(st.session_state["video_timeline"]):
+    sid = slot["slot_id"]
+    st.markdown('<div class="slot-card">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 0.5])
+    with c1:
+        slot["file"] = st.file_uploader(f"स्लॉट #{idx+1} वीडियो", type=["mp4", "mov"], key=f"vfile_{sid}")
+    with c2:
+        slot["start"] = st.number_input("प्रकट होने का समय (Sec)", min_value=0.0, value=slot["start"], key=f"vstart_{sid}")
+    with c3:
+        slot["end"] = st.number_input("हटने का समय (Sec)", min_value=0.0, value=slot["end"], key=f"vend_{sid}")
+    with c4:
         st.write("")
-        if st.button("🔍 खोजें", key="sfx_search_button"):
-            search_results = _search_freesound(sfx_search_query)
-            st.session_state["sfx_search_results"] = search_results
-
-    if st.session_state.get("sfx_search_results"):
-        st.caption(f"{len(st.session_state['sfx_search_results'])} ध्वनियाँ मिलीं (इंटीग्रेशन के लिए API-key ज़रूरी)।")
-        for sound_result in st.session_state["sfx_search_results"][:5]:
-            st.markdown(f"🔉 {sound_result.get('name', 'अज्ञात')}")
-
-    available_sfx_names = [f.name for f in st.session_state["sfx_files"]] or ["शंखनाद 🐚", "डमरू बीट्स 🥁", "चिड़ियों की चहचहाहट 🐦"]
-    st.divider()
-
-    for event_index, sfx_event in enumerate(st.session_state["sfx_events"]):
-        with st.container():
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="sfx-badge">🎯 {sfx_event["sfx_name"][:18]}</span>', unsafe_allow_html=True)
-            e_col1, e_col2, e_col3, e_col4 = st.columns([1, 1, 1.5, 0.7])
-            with e_col1:
-                st.markdown(f"**Start: {sfx_event['start']}s**")
-            with e_col2:
-                st.markdown(f"**End: {sfx_event['end']}s**")
-            with e_col3:
-                st.markdown(f"🔊 वॉल्यूम: {sfx_event['volume']}")
-            with e_col4:
-                if st.button("❌", key=f"remove_sfxevent_{event_index}"):
-                    st.session_state["sfx_events"].pop(event_index)
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("**➕ नया SFX-इवेंट जोड़ें**")
-    add_col1, add_col2, add_col3, add_col4, add_col5 = st.columns([2, 1, 1, 1.2, 0.8])
-    with add_col1:
-        chosen_sfx_name = st.selectbox("कौन सी ध्वनि?", options=available_sfx_names, key="new_sfx_name")
-    with add_col2:
-        new_sfx_start = st.number_input("Start Time", min_value=0.0, step=0.5, key="new_sfx_start")
-    with add_col3:
-        new_sfx_end = st.number_input("End Time", min_value=0.5, step=0.5, value=2.0, key="new_sfx_end")
-    with add_col4:
-        new_sfx_volume = st.slider("वॉल्यूम", min_value=0.0, max_value=1.0, value=0.7, step=0.05, key="new_sfx_volume")
-    with add_col5:
-        st.write("")
-        if st.button("➕", key="add_sfx_event_button"):
-            st.session_state["sfx_events"].append({
-                "sfx_name": chosen_sfx_name, "start": new_sfx_start,
-                "end": new_sfx_end, "volume": new_sfx_volume,
-            })
+        if st.button("❌", key=f"del_vslot_{sid}"):
+            st.session_state["video_timeline"] = [s for s in st.session_state["video_timeline"] if s["slot_id"] != sid]
             st.rerun()
-    return st.session_state["sfx_files"], st.session_state["sfx_events"]
+    st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------
-# 9) 🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE)
+# TRACK 3 & 4: AUDIO POOL & MUSIC TIMELINE TRACK
 # --------------------------------------------------------------
-def render_loop_visual_track():
-    st.markdown('<div class="track-heading">🎬 ट्रैक 1: विज़ुअल ट्रैक (कच्चा माल गोदाम)</div>', unsafe_allow_html=True)
-    pending_files = st.file_uploader(
-        label="फोटो (PNG/JPG) या वीडियो (MP4) अपलोड करें — एक साथ कितनी भी फाइलें चुन सकते हैं",
-        type=["jpg", "jpeg", "png", "mp4", "mov"],
-        accept_multiple_files=True,
-        key=f"loop_visual_uploader_{st.session_state['loop_visual_uploader_key']}",
-    )
-    existing_names = {item["file"].name for item in st.session_state["loop_raw_visuals"]}
-    newly_added_count = 0
-    for pending_file in (pending_files or []):
-        if pending_file.name not in existing_names:
-            is_image_file = pending_file.type and pending_file.type.startswith("image")
-            st.session_state["loop_raw_visuals"].append({
-                "file": pending_file,
-                "is_image": is_image_file,
-                "start": 0.0,
-                "end": 5.0 if is_image_file else 0.0,
-            })
-            newly_added_count += 1
-    if newly_added_count > 0:
-        st.session_state["loop_visual_uploader_key"] += 1
+st.markdown('<div class="track-box"><div class="track-title">🎵 ट्रैक 3 & 4: संगीत गोदाम एवं टाइमलाइन (Background Score)</div>', unsafe_allow_html=True)
+m_up = st.file_uploader("संगीत/भजन ऑडियो फाइल्स अपलोड करें", type=["mp3", "wav"], accept_multiple_files=True, key=f"aud_up_{st.session_state['audio_pool_key']}")
+if m_up:
+    existing_aud = {f.name for f in st.session_state["audio_pool"]}
+    for f in m_up:
+        if f.name not in existing_aud:
+            st.session_state["audio_pool"].append(f)
+    st.session_state["audio_pool_key"] += 1
+    st.rerun()
+
+st.slider("🎛️ मास्टर म्यूज़िक वॉल्यूम (Master Volume)", 0.0, 1.0, key="master_music_vol")
+
+if st.button("➕ नया म्यूज़िक टाइमलाइन स्लॉट जोड़ें", key="add_mus_slot"):
+    st.session_state["music_timeline"].append({
+        "slot_id": st.session_state["music_slot_count"],
+        "file": None, "start": 0.0, "end": 10.0, "order": len(st.session_state["music_timeline"]) + 1
+    })
+    st.session_state["music_slot_count"] += 1
+    st.rerun()
+
+for idx, slot in enumerate(st.session_state["music_timeline"]):
+    sid = slot["slot_id"]
+    st.markdown('<div class="slot-card">', unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns([3, 1.5, 1.5, 0.5])
+    with c1:
+        slot["file"] = st.file_uploader(f"म्यूज़िक क्लिप #{idx+1}", type=["mp3", "wav"], key=f"mfile_{sid}")
+    with c2:
+        slot["start"] = st.number_input("स्टार्ट (Sec)", min_value=0.0, value=slot["start"], key=f"mstart_{sid}")
+    with c3:
+        slot["end"] = st.number_input("एंड (Sec)", min_value=0.0, value=slot["end"], key=f"mend_{sid}")
+    with c4:
+        st.write("")
+        if st.button("❌", key=f"del_mslot_{sid}"):
+            st.session_state["music_timeline"] = [s for s in st.session_state["music_timeline"] if s["slot_id"] != sid]
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+st.markdown('</div>', unsafe_allow_html=True)
+
+# --------------------------------------------------------------
+# TRACK 5: SFX SYNCHRONIZATION TRACK
+# --------------------------------------------------------------
+st.markdown('<div class="track-box"><div class="track-title">🔊 ट्रैक 5: साउंड इफेक्ट्स (SFX Timing & Overlay)</div>', unsafe_allow_html=True)
+sfx_ups = st.file_uploader("कस्टम SFX ध्वनि अपलोड करें (शंख, डमरू आदि)", type=["mp3", "wav"], accept_multiple_files=True, key=f"sfx_up_{st.session_state['sfx_key']}")
+if sfx_ups:
+    ex_sfx = {f.name for f in st.session_state["sfx_files"]}
+    for f in sfx_ups:
+        if f.name not in ex_sfx:
+            st.session_state["sfx_files"].append(f)
+    st.session_state["sfx_key"] += 1
+    st.rerun()
+
+avail_sfx = [f.name for f in st.session_state["sfx_files"]] or ["मंदिर घंटी 🔔", "शंख ध्वनि 🐚", "डमरू बीट 🥁"]
+c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 0.5])
+with c1:
+    sfx_name = st.selectbox("ध्वनि चुनें", options=avail_sfx, key="new_sfx_n")
+with c2:
+    sfx_st = st.number_input("स्टार्ट टाइम", min_value=0.0, key="new_sfx_st")
+with c3:
+    sfx_et = st.number_input("एंड टाइम", min_value=0.5, value=2.0, key="new_sfx_et")
+with c4:
+    sfx_vol = st.slider("वॉल्यूम", 0.0, 1.0, 0.8, key="new_sfx_vl")
+with c5:
+    st.write("")
+    if st.button("➕", key="add_sfx_evt"):
+        st.session_state["sfx_events"].append({"sfx_name": sfx_name, "start": sfx_st, "end": sfx_et, "volume": sfx_vol})
         st.rerun()
-    if not st.session_state["loop_raw_visuals"]:
-        st.info("अभी तक गोदाम में कोई फोटो/वीडियो जमा नहीं हुआ।")
-        return []
-    st.caption(
-        f"🗄️ गोदाम में कुल {len(st.session_state['loop_raw_visuals'])} फाइलें जमा हैं "
-        "(इंजन इन्हें 'लाइव लूप' में बार-बार दोहराएगा जब तक पूरा ड्यूरेशन खत्म न हो)।"
-    )
-    preview_columns = st.columns(4)
-    for item_index, visual_item in enumerate(st.session_state["loop_raw_visuals"]):
-        with preview_columns[item_index % 4]:
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            if visual_item["is_image"]:
-                st.image(visual_item["file"], use_container_width=True)
-            else:
-                st.markdown("🎞️ *(वीडियो)*")
-            st.caption(f"#{item_index + 1}")
-            if st.button("❌", key=f"remove_loop_visual_{item_index}"):
-                st.session_state["loop_raw_visuals"].pop(item_index)
-                st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-    return list(st.session_state["loop_raw_visuals"])
 
-def render_loop_video_clips_timeline_track():
-    st.markdown('<div class="track-heading">🎞️ ट्रैक 2: वीडियो क्लिप्स टाइमलाइन ट्रैक</div>', unsafe_allow_html=True)
-    if st.button("➕ नया वीडियो क्लिप टाइमलाइन पर जोड़ें", key="add_loop_video_clip_slot_button"):
-        new_slot_id = st.session_state["loop_video_clip_slot_counter"]
-        st.session_state["loop_video_clip_slot_counter"] += 1
-        st.session_state["loop_video_clips"].append({
-            "slot_id": new_slot_id, "file": None, "start": 0.0, "end": 0.0,
-        })
-        st.rerun()
-    if not st.session_state["loop_video_clips"]:
-        st.caption("ℹ️ अभी कोई वीडियो-क्लिप टाइमलाइन स्लॉट नहीं जोड़ा गया।")
-        return []
-    for display_index, slot in enumerate(st.session_state["loop_video_clips"]):
-        slot_id = slot["slot_id"]
-        with st.container():
-            st.markdown('<div class="timeline-card">', unsafe_allow_html=True)
-            st.markdown(f'<span class="order-badge">🎞️ वीडियो क्लिप स्लॉट #{display_index + 1}</span>', unsafe_allow_html=True)
-            uploader_col, start_col, end_col, remove_col = st.columns([2.2, 1, 1, 0.6])
-            with uploader_col:
-                slot["file"] = st.file_uploader(
-                    "वीडियो क्लिप चुनें", type=["mp4", "mov"],
-                    key=f"loop_vidclip_file_{slot_id}",
-                )
-            with start_col:
-                slot["start"] = st.number_input(
-                    "प्रकट होने का समय (Start Sec)", min_value=0.0, step=1.0,
-                    value=slot["start"], key=f"loop_vidclip_start_{slot_id}",
-                )
-            with end_col:
-                slot["end"] = st.number_input(
-                    "हटने का समय (End Sec)", min_value=0.0, step=1.0,
-                    value=slot["end"], key=f"loop_vidclip_end_{slot_id}",
-                )
-            with remove_col:
-                st.write("")
-                if st.button("❌", key=f"remove_loop_vidclip_{slot_id}"):
-                    st.session_state["loop_video_clips"] = [
-                        s for s in st.session_state["loop_video_clips"] if s["slot_id"] != slot_id
-                    ]
-                    st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
-    return list(st.session_state["loop_video_clips"])
-
-def render_loop_ticker_section():
-    st.markdown('<div class="section-heading">📰 न्यूज़ पट्टी / आउट्रो कमेंट लूपर</div>', unsafe_allow_html=True)
-    st.text_input(
-        "यह टेक्स्ट फाइनल वीडियो में बार-बार स्क्रीन पर आता-जाता (Scrolling Timeline Loop) रहेगा",
-        key="loop_ticker_text",
-    )
-    return st.session_state["loop_ticker_text"]
-
-def render_loop_duration_section():
-    st.markdown('<div class="section-heading">⏱️ लाइव लूप ड्यूरेशन (केवल लॉन्ग वीडियो विकल्प)</div>', unsafe_allow_html=True)
-    st.radio(
-        "ड्यूरेशन चुनें", options=["5 मिनट", "30 मिनट", "1 घंटा", "कस्टम अवधि (Custom)"],
-        horizontal=True, key="loop_duration_choice_value", label_visibility="collapsed",
-    )
-    duration_map_minutes = {"5 मिनट": 5, "30 मिनट": 30, "1 घंटा": 60}
-    if st.session_state["loop_duration_choice_value"] == "कस्टम अवधि (Custom)":
-        st.number_input(
-            "कस्टम अवधि (मिनट में, 1-300)", min_value=1, max_value=300,
-            key="loop_custom_duration_minutes",
-        )
-        return st.session_state["loop_custom_duration_minutes"] * 60
-    return duration_map_minutes[st.session_state["loop_duration_choice_value"]] * 60
-
-def render_live_loop_studio_mode():
-    st.markdown('<div class="track-heading">🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE)</div>', unsafe_allow_html=True)
-    st.info(
-        "💡 इस मोड में इंजन एक 'while loop' चलाकर अपलोड की गई तस्वीरों/वीडियो-क्लिप्स को अलग-अलग "
-        "सिनेमैटिक स्टाइल में तब तक बार-बार दोहराएगा, जब तक आपका चुना हुआ पूरा ड्यूरेशन पूरा न हो जाए।"
-    )
-    loop_visual_clips = render_loop_visual_track()
-    st.divider()
-    loop_video_clips_timeline = render_loop_video_clips_timeline_track()
-    st.divider()
-    loop_ticker_text = render_loop_ticker_section()
-    st.divider()
-    loop_duration_seconds = render_loop_duration_section()
-    st.divider()
-    loop_inputs = {
-        "mode": "live_loop",
-        "visual_clips": loop_visual_clips,
-        "video_clips_timeline": loop_video_clips_timeline,
-        "music_files_storage": [],
-        "music_clips_timeline": [],
-        "master_music_volume": st.session_state["master_music_volume"],
-        "sfx_files": [],
-        "sfx_events": [],
-        "story_script": "",
-        "ticker_text": loop_ticker_text,
-        "aspect_ratio": "16:9",
-        "duration_seconds": loop_duration_seconds,
-        "quality": "720p",
-        "sub_color": "#FFD700",
-        "sub_size": 65,
-        "voiceover_mode": "ai_tts",
-        "custom_audio_path": None,
-    }
-
-    validation_ok = True
-    if not loop_visual_clips and not loop_video_clips_timeline:
-        st.warning("⚠️ कृपया कम से कम एक विज़ुअल (ट्रैक 1) या वीडियो-क्लिप (ट्रैक 2) जोड़ें।")
-        validation_ok = False
-    if not loop_duration_seconds:
-        st.warning("⚠️ कृपया ड्यूरेशन चुनें।")
-        validation_ok = False
-
-    generate_loop_clicked = st.button(
-        "🚀 GENERATE LIVE LOOP VIDEO (FINAL)", use_container_width=True, key="generate_loop_video_button",
-    )
-    if generate_loop_clicked:
-        if not validation_ok:
-            return
-        try:
-            with st.spinner("🔄 लाइव लूप वीडियो बन रहा है — कृपया प्रतीक्षा करें..."):
-                (
-                    resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx,
-                ) = _resolve_all_track_paths(
-                    loop_visual_clips, loop_video_clips_timeline, [], [], [], [],
-                )
-                output_dir = "generated_video"
-                os.makedirs(output_dir, exist_ok=True)
-                output_video_path = os.path.join(output_dir, "live_loop_output.mp4")
-                loop_kwargs = _build_common_kwargs(
-                    loop_inputs, resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx, output_video_path,
-                )
-                final_video_path = compile_cinematic_video(**loop_kwargs)
-                final_thumbnail_path = _generate_thumbnail_from_video(final_video_path)
-        except Exception as error:
-            st.error(f"❌ लाइव लूप वीडियो बनाते समय एक त्रुटि आई: {error}")
-            import traceback
-            with st.expander("🔍 पूरी तकनीकी जानकारी देखें"):
-                st.code(traceback.format_exc())
-            return
-
-        st.success("✅ आपका लाइव लूप वीडियो सफलतापूर्वक तैयार हो गया है!")
-        st.video(final_video_path)
-        with open(final_video_path, "rb") as video_file:
-            video_bytes = video_file.read()
-        with open(final_thumbnail_path, "rb") as thumbnail_file:
-            thumbnail_bytes = thumbnail_file.read()
-
-        st.download_button(
-            "📥 DOWNLOAD LIVE LOOP VIDEO & THUMBNAIL", data=video_bytes,
-            file_name="baba_live_loop_video.mp4", mime="video/mp4",
-            use_container_width=True, key="download_loop_video_button",
-        )
-        st.download_button(
-            "🖼️ डाउनलोड थंबनेल (Thumbnail JPG)", data=thumbnail_bytes,
-            file_name="baba_live_loop_thumbnail.jpg", mime="image/jpeg",
-            use_container_width=True, key="download_loop_thumbnail_button",
-        )
+for idx, evt in enumerate(st.session_state["sfx_events"]):
+    st.caption(f"🎯 SFX #{idx+1}: {evt['sfx_name']} | Time: {evt['start']}s - {evt['end']}s | Vol: {evt['volume']}")
+st.markdown('</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------
-# 10) कथा (PDF/DOCX) एक्सट्रैक्टर + आउट्रो-सिंक
+# TRACK 6: SCRIPT INGESTION & SUBTITLE FORMATTING
 # --------------------------------------------------------------
-def render_story_extractor_and_sync():
-    st.markdown('<div class="section-heading">📂 धार्मिक कथा / ग्रन्थ अपलोड करें (PDF या Word)</div>', unsafe_allow_html=True)
-    uploaded_story_file = st.file_uploader(
-        label="कथा/ग्रन्थ अपलोड करें (वैकल्पिक)",
-        type=["pdf", "docx"],
-        key="story_document_uploader",
-    )
-    if uploaded_story_file is not None and st.session_state.get("last_pdf_name") != uploaded_story_file.name:
-        extracted_text = ""
-        file_extension = os.path.splitext(uploaded_story_file.name)[1].lower()
-        if file_extension == ".pdf":
-            if PDF_SUPPORT_AVAILABLE:
-                try:
-                    pdf_reader = PdfReader(uploaded_story_file)
-                    extracted_text = "\n".join((page.extract_text() or "") for page in pdf_reader.pages).strip()
-                except Exception as pdf_error:
-                    st.warning(f"⚠️ PDF पढ़ने में समस्या: {pdf_error}")
-            else:
-                st.warning("⚠️ PDF-सपोर्ट के लिए requirements.txt में 'pypdf' जोड़ें।")
-        elif file_extension == ".docx":
-            if DOCX_SUPPORT_AVAILABLE:
-                try:
-                    word_document = docx_lib.Document(uploaded_story_file)
-                    extracted_text = "\n".join(paragraph.text for paragraph in word_document.paragraphs).strip()
-                except Exception as docx_error:
-                    st.warning(f"⚠️ Word फाइल पढ़ने में समस्या: {docx_error}")
-            else:
-                st.warning("⚠️ Word-सपोर्ट के लिए requirements.txt में 'python-docx' जोड़ें।")
+st.markdown('<div class="track-box"><div class="track-title">📄 ट्रैक 6: कथा ग्रन्थ इंजेशन एवं सबटाइटल स्टाइलिंग</div>', unsafe_allow_html=True)
+doc_file = st.file_uploader("PDF या DOCX कथा अपलोड करें", type=["pdf", "docx"], key="doc_ingest")
+if doc_file:
+    ext = os.path.splitext(doc_file.name)[1].lower()
+    text = ""
+    if ext == ".pdf" and PDF_SUPPORT:
+        reader = PdfReader(doc_file)
+        text = "\n".join([p.extract_text() or "" for p in reader.pages])
+    elif ext == ".docx" and DOCX_SUPPORT:
+        doc = docx_lib.Document(doc_file)
+        text = "\n".join([p.text for p in doc.paragraphs])
+    if text:
+        st.session_state["story_script_text"] = text
+        st.session_state["ticker_text_value"] = text[:150]
+        st.success("✅ दस्तावेज़ का टेक्स्ट सफलतापूर्वक इंजस्ट कर लिया गया है!")
 
-        if extracted_text:
-            st.session_state["story_script_text"] = extracted_text
-            st.session_state["last_pdf_name"] = uploaded_story_file.name
-            if not st.session_state["ticker_manually_edited"]:
-                st.session_state["ticker_text_value"] = extracted_text[:200]
-            st.success("✅ टेक्स्ट निकालकर कहानी बॉक्स (और आउट्रो) में भर दिया गया है।")
+st.text_area("कहानी / स्क्रिप्ट पाठ", height=140, key="story_script_text")
+st.text_input("न्यूज़ पट्टी / आउट्रो पाठ", key="ticker_text_value")
 
-    st.markdown('<div class="section-heading">📝 कहानी / स्क्रिप्ट लिखें</div>', unsafe_allow_html=True)
-    st.text_area(
-        "अपनी कहानी या स्क्रिप्ट यहाँ पेस्ट करें (या ऊपर से ऑटो-फिल करें)", height=180,
-        key="story_script_text",
-    )
-
-    st.markdown('<div class="section-heading">📰 न्यूज़ पट्टी / आउट्रो कमेंट</div>', unsafe_allow_html=True)
-    def _on_ticker_manual_edit():
-        st.session_state["ticker_manually_edited"] = True
-
-    st.text_input(
-        "वीडियो के क्लाइमेक्स में क्या दिखे? (डिफ़ॉल्ट रूप से कहानी से सिंक होता है)",
-        key="ticker_text_value", on_change=_on_ticker_manual_edit,
-    )
+col_f1, col_f2, col_f3 = st.columns(3)
+with col_f1:
+    st.selectbox("सबटाइटल रंग", ["पीला (Gold)", "सफ़ेद (White)"], key="sub_color")
+with col_f2:
+    st.slider("फॉन्ट साइज़", 40, 90, key="sub_font_size")
+with col_f3:
+    st.radio("वीडियो स्वरूप", ["📱 9:16 Shorts", "🖥️ 16:9 Long Video"], key="video_format", horizontal=True)
+st.markdown('</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------------------
-# 11) वॉइसओवर सेक्शन
+# ACTION BUTTONS & RENDER LOGIC
 # --------------------------------------------------------------
-def render_voiceover_section():
-    st.markdown('<div class="section-heading">🎙️ वॉइसओवर चुनें</div>', unsafe_allow_html=True)
-    st.radio(
-        "वॉइसओवर मोड",
-        options=["🕉️ बाबा एआई दिव्य आवाज़ (Edge-TTS)", "🎤 मेरी अपनी रिकॉर्ड की हुई आवाज़ (Custom Audio Upload)"],
-        key="voiceover_mode", label_visibility="collapsed",
-    )
-    custom_audio_file = None
-    if st.session_state["voiceover_mode"].startswith("🎤"):
-        custom_audio_file = st.file_uploader(
-            "अपनी रिकॉर्ड की हुई ऑडियो फाइल अपलोड करें (MP3/WAV)",
-            type=["mp3", "wav", "m4a"], key="custom_voice_uploader",
-        )
-        if custom_audio_file is None:
-            st.warning("⚠️ कृपया अपनी रिकॉर्डेड ऑडियो फाइल अपलोड करें।")
-    return st.session_state["voiceover_mode"], custom_audio_file
-
-# --------------------------------------------------------------
-# 12) फॉर्मेट + कस्टम-ड्यूरेशन + क्वालिटी + सबटाइटल-स्टाइल
-# --------------------------------------------------------------
-def render_format_and_quality_section():
-    settings_col1, settings_col2 = st.columns(2)
-    with settings_col1:
-        st.markdown('<div class="section-heading">🎞️ वीडियो फॉर्मेट</div>', unsafe_allow_html=True)
-        st.radio("फॉर्मेट", options=["📱 9:16 Shorts (कहानी के अनुसार)", "🖥️ 16:9 Long Video"],
-                  horizontal=True, key="video_format_choice", label_visibility="collapsed")
-        is_long_video = st.session_state["video_format_choice"].startswith("🖥️")
-        selected_duration_seconds = None
-        if is_long_video:
-            st.radio("ड्यूरेशन", options=["5 मिनट", "30 मिनट", "1 घंटा", "कस्टम (Custom)"],
-                      horizontal=True, key="duration_choice_value")
-            duration_map_minutes = {"5 मिनट": 5, "30 मिनट": 30, "1 घंटा": 60}
-            if st.session_state["duration_choice_value"] == "कस्टम (Custom)":
-                st.number_input("कस्टम ड्यूरेशन (मिनट में, 1-60)", min_value=1, max_value=60,
-                                 key="custom_duration_minutes")
-                selected_duration_seconds = st.session_state["custom_duration_minutes"] * 60
-            else:
-                selected_duration_seconds = duration_map_minutes[st.session_state["duration_choice_value"]] * 60
-
-    with settings_col2:
-        st.markdown('<div class="section-heading">🎨 सबटाइटल स्टाइल</div>', unsafe_allow_html=True)
-        st.selectbox("रंग", options=["पीला (Gold)", "सफ़ेद (White)"], key="subtitle_color_choice")
-        st.slider("फॉन्ट साइज़ (px)", min_value=50, max_value=90, key="subtitle_font_size")
-        st.markdown('<div class="section-heading">🎚️ वीडियो क्वालिटी</div>', unsafe_allow_html=True)
-        st.radio("क्वालिटी", options=["720p HD", "1080p Full HD"], horizontal=True,
-                  key="quality_choice_value", label_visibility="collapsed")
-
-    return is_long_video, selected_duration_seconds
-
-# --------------------------------------------------------------
-# 13) फाइलों को डिस्क पर सेव करना (हेल्पर्स)
-# --------------------------------------------------------------
-def _save_uploaded_file_to_temp(uploaded_file):
-    file_extension = os.path.splitext(uploaded_file.name)[1]
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
-    temp_file.write(uploaded_file.getvalue())
-    temp_file.close()
-    return temp_file.name
-
-def _resolve_all_track_paths(
-    visual_clips, video_clips_timeline, music_files_storage,
-    music_clips_timeline, sfx_files, sfx_events,
-):
-    resolved_visual_clips = [{
-        "path": _save_uploaded_file_to_temp(c["file"]), "is_image": c["is_image"],
-        "start": c["start"], "end": c["end"],
-    } for c in visual_clips]
-
-    resolved_video_clips_timeline = [{
-        "path": _save_uploaded_file_to_temp(c["file"]), "start": c["start"], "end": c["end"],
-    } for c in video_clips_timeline if c["file"] is not None]
-
-    resolved_music_files_pool = [_save_uploaded_file_to_temp(f) for f in music_files_storage]
-
-    resolved_music_clips_timeline = [{
-        "path": _save_uploaded_file_to_temp(c["file"]), "start": c["start"],
-        "end": c["end"], "order": c["order"],
-    } for c in music_clips_timeline if c["file"] is not None]
-
-    sfx_name_to_path = {f.name: _save_uploaded_file_to_temp(f) for f in sfx_files}
-    resolved_sfx_events = [{
-        "path": sfx_name_to_path.get(event["sfx_name"]),
-        "sfx_name": event["sfx_name"], "start": event["start"],
-        "end": event["end"], "volume": event["volume"],
-    } for event in sfx_events]
-
-    return (
-        resolved_visual_clips, resolved_video_clips_timeline,
-        resolved_music_files_pool, resolved_music_clips_timeline,
-        resolved_sfx_events,
-    )
-
-def _generate_thumbnail_from_video(video_path: str) -> str:
-    thumbnail_path = os.path.join(tempfile.gettempdir(), "cinematic_thumbnail.jpg")
-    with VideoFileClip(video_path) as video_clip:
-        video_clip.save_frame(thumbnail_path, t=video_clip.duration / 2)
-    return thumbnail_path
-
-def _build_common_kwargs(inputs, resolved_visual, resolved_video_timeline, resolved_music_pool, resolved_music_timeline, resolved_sfx, output_path):
-    return dict(
-        mode=inputs.get("mode", "standard"),
-        visual_clips=resolved_visual,
-        video_clips_timeline=resolved_video_timeline,
-        music_files_pool=resolved_music_pool,
-        music_clips_timeline=resolved_music_timeline,
-        master_music_volume=inputs["master_music_volume"],
-        sfx_events=resolved_sfx,
-        script_text=inputs["story_script"],
-        outro_text=inputs["ticker_text"],
-        output_video_path=output_path,
-        aspect_ratio=inputs["aspect_ratio"],
-        duration_seconds=inputs["duration_seconds"],
-        quality=inputs["quality"],
-        sub_color=inputs["sub_color"],
-        sub_size=inputs["sub_size"],
-        voiceover_mode=inputs["voiceover_mode"],
-        custom_audio_path=inputs["custom_audio_path"],
-        outro_voice_active=True,
-    )
-
-# --------------------------------------------------------------
-# 14) मुख्य फंक्शन
-# --------------------------------------------------------------
-def main():
-    _initialize_session_state()
-    apply_dark_theme()
-    render_header()
-    render_user_guide()
-
-    playwright_ok, playwright_error = _ensure_playwright_chromium_installed()
-    if playwright_error and not playwright_ok:
-        st.warning(f"⚠️ Playwright Chromium इंस्टॉल करते समय समस्या आई: {playwright_error}")
-
-    st.markdown('<div class="section-heading">🧭 स्टूडियो मोड चुनें</div>', unsafe_allow_html=True)
-    st.radio(
-        "मोड चुनें",
-        options=["🎬 सामान्य स्टूडियो मोड (Normal Studio Mode)", "🔄 एआई लाइव लूप स्टूडियो (LIVE LOOP / REPEAT MODE)"],
-        key="app_mode", horizontal=True, label_visibility="collapsed",
-    )
-    st.divider()
-
-    if st.session_state["app_mode"].startswith("🔄"):
-        render_live_loop_studio_mode()
-        return
-
-    st.info("💡 निर्देश: सभी ट्रैक्स (विज़ुअल/वीडियो-टाइमलाइन/म्यूज़िक/म्यूज़िक-टाइमलाइन/SFX) को नीचे अलग-अलग सजाएँ, फिर कहानी लिखकर वीडियो जनरेट करें।")
-
-    visual_clips = render_visual_track()
-    st.divider()
-    video_clips_timeline = render_video_clips_timeline_track()
-    st.divider()
-    music_files_storage = render_music_storage_track()
-    st.divider()
-    music_clips_timeline, master_music_volume = render_music_clips_timeline_track()
-    st.divider()
-    sfx_files, sfx_events = render_sfx_track()
-    st.divider()
-    render_story_extractor_and_sync()
-    st.divider()
-    voiceover_mode, custom_audio_file = render_voiceover_section()
-    st.divider()
-    is_long_video, selected_duration_seconds = render_format_and_quality_section()
-    st.divider()
-
-    subtitle_color_hex = "#FFD700" if st.session_state["subtitle_color_choice"].startswith("पीला") else "#FFFFFF"
-
-    inputs = {
-        "mode": "standard",
-        "visual_clips": visual_clips,
-        "video_clips_timeline": video_clips_timeline,
-        "music_files_storage": music_files_storage,
-        "music_clips_timeline": music_clips_timeline,
-        "master_music_volume": master_music_volume,
-        "sfx_files": sfx_files,
-        "sfx_events": sfx_events,
-        "story_script": st.session_state["story_script_text"],
-        "ticker_text": st.session_state["ticker_text_value"],
-        "aspect_ratio": "16:9" if is_long_video else "9:16",
-        "duration_seconds": selected_duration_seconds,
-        "quality": "1080p" if st.session_state["quality_choice_value"].startswith("1080p") else "720p",
-        "sub_color": subtitle_color_hex,
-        "sub_size": st.session_state["subtitle_font_size"],
-        "voiceover_mode": "custom" if voiceover_mode.startswith("🎤") else "ai_tts",
-        "custom_audio_path": None,
-    }
-
-    if custom_audio_file is not None:
-        inputs["custom_audio_path"] = _save_uploaded_file_to_temp(custom_audio_file)
-
-    validation_ok = True
-    if not visual_clips or not inputs["story_script"].strip():
-        st.warning("⚠️ कृपया कम से कम एक विज़ुअल-क्लिप जोड़ें (ट्रैक 1) और कहानी लिखें।")
-        validation_ok = False
-    if inputs["voiceover_mode"] == "custom" and inputs["custom_audio_path"] is None:
-        st.warning("⚠️ 'कस्टम आवाज़' मोड के लिए रिकॉर्डेड ऑडियो अपलोड करें।")
-        validation_ok = False
-
-    st.divider()
-
-    st.markdown('<div class="section-heading">📺 ड्राफ्ट प्लेयर (Quick Preview)</div>', unsafe_allow_html=True)
-    draft_clicked = st.button("⚡ क्विक ड्राफ्ट रेंडर (कम क्वालिटी, तेज़)", key="draft_render_button")
-    if draft_clicked and validation_ok:
-        try:
-            with st.spinner("⚡ जल्दी ड्राफ्ट बन रहा है..."):
-                (
-                    resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx,
-                ) = _resolve_all_track_paths(
-                    visual_clips, video_clips_timeline, music_files_storage,
-                    music_clips_timeline, sfx_files, sfx_events,
-                )
-                draft_output_path = os.path.join(tempfile.gettempdir(), "draft_preview.mp4")
-                draft_inputs = dict(inputs)
-                draft_inputs["quality"] = "720p"
-                draft_kwargs = _build_common_kwargs(
-                    draft_inputs, resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx, draft_output_path,
-                )
-                draft_video_path = compile_cinematic_video(**draft_kwargs)
-                st.session_state["draft_video_path"] = draft_video_path
-        except Exception as draft_error:
-            st.error(f"❌ ड्राफ्ट बनाते समय त्रुटि: {draft_error}")
-
-    if st.session_state["draft_video_path"] and os.path.exists(st.session_state["draft_video_path"]):
-        st.video(st.session_state["draft_video_path"])
-
-    st.divider()
-
-    generate_clicked = st.button("🚀 GENERATE CINEMATIC VIDEO (FINAL)", use_container_width=True)
-    if generate_clicked:
-        if not validation_ok:
-            return
-        try:
-            with st.spinner("🎥 आपका फाइनल सिनेमैटिक वीडियो बन रहा है..."):
-                (
-                    resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx,
-                ) = _resolve_all_track_paths(
-                    visual_clips, video_clips_timeline, music_files_storage,
-                    music_clips_timeline, sfx_files, sfx_events,
-                )
-                output_dir = "generated_video"
-                os.makedirs(output_dir, exist_ok=True)
-                output_video_path = os.path.join(output_dir, "final_cinematic_output.mp4")
-                final_kwargs = _build_common_kwargs(
-                    inputs, resolved_visual, resolved_video_timeline,
-                    resolved_music_pool, resolved_music_timeline, resolved_sfx, output_video_path,
-                )
-                final_video_path = compile_cinematic_video(**final_kwargs)
-                final_thumbnail_path = _generate_thumbnail_from_video(final_video_path)
-        except Exception as error:
-            st.error(f"❌ वीडियो बनाते समय एक त्रुटि आई: {error}")
-            import traceback
-            with st.expander("🔍 पूरी तकनीकी जानकारी देखें"):
-                st.code(traceback.format_exc())
-            return
-
-        st.success("✅ आपका सिनेमैटिक वीडियो सफलतापूर्वक तैयार हो गया है!")
-        st.video(final_video_path)
-        with open(final_video_path, "rb") as video_file:
-            video_bytes = video_file.read()
-        with open(final_thumbnail_path, "rb") as thumbnail_file:
-            thumbnail_bytes = thumbnail_file.read()
-
-        st.download_button("📥 DOWNLOAD YOUR CINEMATIC VIDEO & THUMBNAIL", data=video_bytes,
-                            file_name="baba_cinematic_video.mp4", mime="video/mp4", use_container_width=True)
-        st.download_button("🖼️ डाउनलोड थंबनेल (Thumbnail JPG)", data=thumbnail_bytes,
-                            file_name="baba_cinematic_thumbnail.jpg", mime="image/jpeg", use_container_width=True)
-
-if __name__ == "__main__":
-    main()
+st.divider()
+if st.button("🚀 GENERATE COMPLETE CINEMATIC VIDEO", use_container_width=True):
+    if not st.session_state["visual_clips"] and not st.session_state["story_script_text"].strip():
+        st.error("❌ कृपया कम से कम एक विजुअल अपलोड करें और स्क्रिप्ट दर्ज करें।")
+    else:
+        st.info("⚙️ वीडियो रेंडरिंग प्रक्रिया शुरू की जा रही है... (इंजन प्रोसेस)")

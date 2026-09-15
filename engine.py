@@ -410,3 +410,66 @@ if __name__ == "__main__":
 
 # app.py के साथ कनेक्ट करने के लिए (Alias)
 compile_cinematic_video = render_video_engine
+
+
+# ==============================================================================
+# 5) APP.PY COMPATIBILITY WRAPPER (सभी पैरामीटर्स को सपोर्ट करने के लिए)
+# ==============================================================================
+def compile_cinematic_video(
+    video_format="9:16 (Vertical Short/Reel)",
+    video_quality="1080p (Full HD)",
+    visual_files=None,
+    video_timeline_slots=None,
+    audio_files=None,
+    music_timeline_slots=None,
+    master_music_vol=0.8,
+    sfx_events=None,
+    story_script="",
+    voiceover_path=None,
+    output_path="final_master_video.mp4",
+    auto_ducking=True,
+    total_duration=10.0,
+    fps=24
+):
+    """
+    app.py के सभी पैरामीटर्स को सुरक्षित रूप से हैंडल करता है।
+    """
+    # 1. Target Size तय करना (Format के अनुसार)
+    if "16:9" in str(video_format):
+        target_size = (1920, 1080)
+    elif "1:1" in str(video_format):
+        target_size = (1080, 1080)
+    else:
+        target_size = (1080, 1920) # 9:16 Vertical Default
+
+    # 2. Visual Clips की लिस्ट तैयार करना
+    visual_clips = []
+    if visual_files:
+        for v in visual_files:
+            if isinstance(v, dict) and is_valid_path(v.get("path")):
+                # Ken Burns Effect लागू करना
+                clip = apply_ken_burns_effect(
+                    v.get("path"), 
+                    duration=v.get("duration", 4.0), 
+                    fps=fps, 
+                    target_size=target_size
+                )
+                visual_clips.append(clip)
+            elif isinstance(v, str) and is_valid_path(v):
+                clip = apply_ken_burns_effect(v, duration=4.0, fps=fps, target_size=target_size)
+                visual_clips.append(clip)
+
+    # 3. Main Engine को कॉल करना
+    return render_video_engine(
+        visual_clips=visual_clips,
+        output_path=output_path,
+        total_duration=total_duration,
+        voiceover_path=voiceover_path,
+        audio_files=audio_files,
+        sfx_events=sfx_events,
+        auto_ducking=auto_ducking,
+        master_music_vol=master_music_vol,
+        video_quality=video_quality,
+        fps=fps,
+        target_size=target_size
+    )

@@ -1,5 +1,5 @@
 # ==============================================================================
-# 📖 बाबा वेब स्टूडियो: COMPLETE MASTER ENGINE (engine.py)
+# 📖 बाबा वेब स्टूडियो: MASTER 7-TRACK ENGINE (engine.py)
 # ==============================================================================
 import os
 import math
@@ -22,6 +22,7 @@ from moviepy import (
 # 1) KEN BURNS MOTION EFFECT (MoviePy v2 Compatible)
 # ------------------------------------------------------------------------------
 def apply_ken_burns_effect(image_path, duration=5.0, fps=24, target_size=(1280, 720)):
+    """फोटो पर स्मूथ ज़ूम/Ken Burns इफ़ेक्ट लागू करता है।"""
     img = Image.open(image_path).convert("RGB")
     img = img.resize(target_size)
     img_np = np.array(img)
@@ -39,49 +40,53 @@ def apply_ken_burns_effect(image_path, duration=5.0, fps=24, target_size=(1280, 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
 # ------------------------------------------------------------------------------
-# 2) PYTHON CLIMAX ENGINE: OUTRO & FIREWORKS GENERATOR (NEW)
+# 2) CLIMAX ENGINE: 10-15 SECONDS RESERVED OUTRO & SPARKS GENERATOR
 # ------------------------------------------------------------------------------
-def create_climax_outro_clip(duration=4.0, target_size=(1280, 720), fps=24):
-    """अंतिम 4 सेकंड के लिए आतिशबाजी स्पार्क्स और LIKE & SUBSCRIBE 3D कार्ड बनाता है।"""
+def create_climax_outro_clip(duration=10.0, target_size=(1280, 720), fps=24):
+    """
+    अंतिम 10-15 सेकंड के लिए आतिशबाज़ी स्पार्क्स (Fireworks) और 
+    3D 'LIKE & SUBSCRIBE' एनिमेटेड बैज विथ गोल्ड ग्लो तैयार करता है।
+    """
     w, h = target_size
-    num_particles = 40
+    num_particles = 60
     np.random.seed(42)
 
-    # Particle initial states
+    # पार्टिकल इनिशियल स्टेट्स
     particles = [{
         'x': w // 2,
         'y': h // 2,
-        'vx': np.random.uniform(-300, 300),
-        'vy': np.random.uniform(-300, 100),
-        'color': (np.random.randint(200, 255), np.random.randint(150, 255), np.random.randint(0, 100))
+        'vx': np.random.uniform(-400, 400),
+        'vy': np.random.uniform(-400, 100),
+        'color': (np.random.randint(220, 255), np.random.randint(180, 255), np.random.randint(0, 120))
     } for _ in range(num_particles)]
 
     def make_frame(t):
-        img = Image.new("RGBA", (w, h), (0, 0, 0, 180))
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # 1. Firework Particle Animation
+        # 1. पार्टिकल आतिशबाज़ी (Particle Sparks)
+        cycle_t = t % 3.0  # हर 3 सेकंड पर आतिशबाज़ी का लूप
         for p in particles:
-            px = int(p['x'] + p['vx'] * t)
-            py = int(p['y'] + p['vy'] * t + 100 * (t ** 2)) # Gravity effect
+            px = int(p['x'] + p['vx'] * cycle_t)
+            py = int(p['y'] + p['vy'] * cycle_t + 120 * (cycle_t ** 2)) # Gravity effect
             if 0 <= px < w and 0 <= py < h:
-                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=p['color'])
+                draw.ellipse([px - 5, py - 5, px + 5, py + 5], fill=p['color'])
 
-        # 2. 3D Animated LIKE & SUBSCRIBE Badge
-        scale = 1.0 + 0.05 * math.sin(t * 8)
-        bw, bh = int(w * 0.6 * scale), int(100 * scale)
+        # 2. 3D Animated LIKE & SUBSCRIBE Badge with Gold Glow
+        scale = 1.0 + 0.06 * math.sin(t * 6)
+        bw, bh = int(w * 0.7 * scale), int(110 * scale)
         bx, by = (w - bw) // 2, (h - bh) // 2
 
-        # Card Glow & Shadow
-        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=20, fill=(0, 0, 0, 120))
-        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=20, fill=(220, 38, 38, 240), outline=(255, 215, 0), width=4)
+        # बैज शैडो और गोल्ड ग्लो
+        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=25, fill=(0, 0, 0, 140))
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=25, fill=(220, 38, 38, 245), outline=(255, 215, 0), width=5)
 
         try:
-            font = ImageFont.truetype("DejaVuSans-Bold.ttf", int(35 * scale))
+            font = ImageFont.truetype("DejaVuSans-Bold.ttf", int(38 * scale))
         except Exception:
             font = ImageFont.load_default()
 
-        text = "🔔 LIKE & SUBSCRIBE"
+        text = "🔔 LIKE & SUBSCRIBE FOR MORE!"
         tb = draw.textbbox((0, 0), text, font=font)
         tw, th = tb[2] - tb[0], tb[3] - tb[1]
         draw.text(((w - tw) // 2, (h - th) // 2), text, font=font, fill="white")
@@ -105,7 +110,8 @@ def compile_cinematic_video(
     story_script="",
     voiceover_path=None,
     auto_ducking=True,
-    target_duration=25.0, # EXACT 25 SECONDS FIX
+    per_image_duration=4.0,       # प्रति फोटो समय
+    climax_reserved_sec=10.0,     # क्लाइमैक्स के लिए रिज़र्व 10-15 सेकंड
     output_path="final_output.mp4"
 ):
     if visual_files is None: visual_files = []
@@ -124,46 +130,53 @@ def compile_cinematic_video(
     w, h = target_size
 
     # --------------------------------------------------------------------------
-    # TRACK 1 & 2: VISUAL COMPOSITION ENGINE (FIXED TO 25 SECONDS)
+    # TRACK 1 & 2: DYNAMIC VISUAL DURATION & CLIMAX CALCULATIONS
     # --------------------------------------------------------------------------
     bg_clips = []
-    each_dur = max(target_duration / max(len(visual_files), 1), 2.0)
-
     for v_item in visual_files:
         path = v_item.get("path")
         if not path or not os.path.exists(path):
             continue
             
+        dur = v_item.get("end", per_image_duration) - v_item.get("start", 0.0)
+        dur = max(dur, 2.0)
         is_img = v_item.get("is_image", True)
         use_ken_burns = v_item.get("ken_burns", True)
         
         if is_img:
             if use_ken_burns:
-                c = apply_ken_burns_effect(path, duration=each_dur, fps=fps, target_size=target_size)
+                c = apply_ken_burns_effect(path, duration=dur, fps=fps, target_size=target_size)
             else:
                 img = Image.open(path).convert("RGB").resize(target_size)
-                c = VideoClip(lambda t: np.array(img), duration=each_dur).with_fps(fps)
+                c = VideoClip(lambda t: np.array(img), duration=dur).with_fps(fps)
         else:
             c = VideoFileClip(path).without_audio()
-            c = c.subclipped(0, min(each_dur, c.duration)).resized(new_size=target_size)
+            c = c.subclipped(0, min(dur, c.duration)).resized(new_size=target_size)
             
         bg_clips.append(c)
 
     if not bg_clips:
-        bg_clips.append(ColorClip(size=target_size, color=(0,0,0), duration=target_duration))
+        bg_clips.append(ColorClip(size=target_size, color=(0,0,0), duration=15.0))
 
-    main_visual_track = concatenate_videoclips(bg_clips, method="compose")
-    
-    # 💥 STRICT FIX: EXACT 25 SECONDS DURATION
-    if main_visual_track.duration < target_duration:
-        loops = math.ceil(target_duration / main_visual_track.duration)
-        main_visual_track = concatenate_videoclips([main_visual_track] * loops)
-    
-    main_visual_track = main_visual_track.subclipped(0, target_duration)
-    total_duration = target_duration
+    main_visual_content = concatenate_videoclips(bg_clips, method="compose")
+    content_duration = main_visual_content.duration
+
+    # यूट्यूब नियम: अगर सामग्री बहुत छोटी है, तो लूप करके कम से कम 15s बनाएं
+    if content_duration < 15.0:
+        loops_needed = math.ceil(15.0 / content_duration)
+        main_visual_content = concatenate_videoclips([main_visual_content] * loops_needed)
+        content_duration = main_visual_content.duration
+
+    # कुल लंबाई = मुख्य विजुअल्स की लंबाई + 10 से 15 सेकंड का क्लाइमैक्स आउट्रो
+    total_duration = content_duration + climax_reserved_sec
+
+    # अंतिम विजुअल ट्रैक (मुख्य विजुअल्स को अंत तक फैलाना ताकि ब्लैक स्क्रीन न दिखे)
+    visual_extension_loops = math.ceil(total_duration / content_duration)
+    full_visual_track = concatenate_videoclips([main_visual_content] * visual_extension_loops).subclipped(0, total_duration)
+
+    video_layers = [full_visual_track]
 
     # Track 2 Layering (Timed Overlays)
-    video_layers = [main_visual_track]
     for slot in video_timeline_slots:
         path = slot.get("path")
         if path and os.path.exists(path):
@@ -174,15 +187,15 @@ def compile_cinematic_video(
             ov_clip = ov_clip.resized(new_size=(int(w*0.8), int(h*0.8))).with_position("center").with_start(st_t)
             video_layers.append(ov_clip)
 
-    # 💥 CLIMAX ENGINE OUTRO OVERLAY FIX (Last 4 Seconds)
-    climax_outro = create_climax_outro_clip(duration=4.0, target_size=target_size, fps=fps)
-    climax_outro = climax_outro.with_start(total_duration - 4.0)
+    # 💥 PYTHON CLIMAX ENGINE: अंतिम 10 से 15 सेकंड के लिए ओवरले
+    climax_outro = create_climax_outro_clip(duration=climax_reserved_sec, target_size=target_size, fps=fps)
+    climax_outro = climax_outro.with_start(total_duration - climax_reserved_sec)
     video_layers.append(climax_outro)
 
     final_visual_video = CompositeVideoClip(video_layers, size=target_size)
 
     # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (AUDIO FIXED)
+    # TRACK 3, 4, 6, 7: GUARANTEED AUDIO & MUSIC ENGINE
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -203,7 +216,7 @@ def compile_cinematic_video(
         audio_tracks.append(vo_clip)
         has_voiceover = True
 
-    # Main Music Layer (Track 3)
+    # Main Music Layer (Track 3) - लूप होकर पूरे वीडियो समय तक चलेगा
     bg_music_vol = 0.30 if (has_voiceover and auto_ducking) else master_music_vol
     for a_item in audio_files:
         a_path = a_item.get("path")
@@ -215,7 +228,7 @@ def compile_cinematic_video(
             elif "Instrument" in mode: mode_vol = bg_music_vol * 0.7
             else: mode_vol = bg_music_vol
                 
-            # Looping to full 25s duration
+            # ऑटो-लूपिंग पूरी वीडियो लंबाई (total_duration) के लिए
             if m_clip.duration < total_duration:
                 loops_needed = math.ceil(total_duration / m_clip.duration)
                 m_clip = concatenate_audioclips([m_clip] * loops_needed)
@@ -224,7 +237,7 @@ def compile_cinematic_video(
             m_clip = apply_volume_scale(m_clip, mode_vol)
             audio_tracks.append(m_clip)
 
-    # Audio Compilation
+    # Audio Layer Integration
     if audio_tracks:
         composite_audio = CompositeAudioClip(audio_tracks).subclipped(0, total_duration)
         final_visual_video = final_visual_video.with_audio(composite_audio)

@@ -2,11 +2,11 @@
 # 📖 BABA WEB STUDIO: PRODUCTION-READY MASTER ENGINE (engine.py)
 # ==============================================================================
 import os
+import re
 import math
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from climax_outro_engine import create_climax_outro_clip
-import cv2
 
 from moviepy import (
     VideoClip,
@@ -20,7 +20,7 @@ from moviepy import (
 )
 
 # ------------------------------------------------------------------------------
-# 0) PATH SAFETY HELPER (PREVENTS NoneType CRASHES GLOBALLY)
+# 0) PATH SAFETY HELPER
 # ------------------------------------------------------------------------------
 def is_valid_path(p):
     """None, empty strings, or non-existent file paths are safely caught."""
@@ -34,7 +34,7 @@ def is_valid_path(p):
 # ------------------------------------------------------------------------------
 # 1) KEN BURNS MOTION EFFECT (Track 1 Helper)
 # ------------------------------------------------------------------------------
-def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1280, 720)):
+def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1080, 1920)):
     if not is_valid_path(image_path):
         return ColorClip(size=target_size, color=(0, 0, 0), duration=duration).with_fps(fps)
 
@@ -55,47 +55,8 @@ def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1280, 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
 # ------------------------------------------------------------------------------
-# 2) ADVANCED CLIMAX ENGINE: 10-SEC MULTI-STYLE FIREWORKS & FALLING BUTTONS
+# 2) CLIMAX OUTRO UTILITIES & ENGINE
 # ------------------------------------------------------------------------------
-"""
-climax_outro_engine.py
------------------------
-MoviePy v2.x compatible "climax outro" overlay clip generator.
-
-Fixes vs. the original version:
-  1. Devanagari text no longer renders as boxes (🔲) — font loader now
-     tries proper Devanagari-capable fonts (Nirmala UI / Noto Sans
-     Devanagari / Mangal) across Windows / Linux / macOS paths, and
-     enables Pillow's RAQM text layout engine when available so
-     conjuncts + matras shape correctly instead of falling apart into
-     disconnected glyphs.
-  2. Emoji glyphs are handled separately from the Devanagari text so a
-     missing emoji font doesn't force the *whole* string onto a font
-     that can't render Devanagari (and vice-versa) — this is the usual
-     cause of the "square box" bug.
-  3. Fireworks + fountains now loop continuously and smoothly across
-     the full 10s duration instead of a handful of one-shot bursts.
-  4. Falling LIKE / SUBSCRIBE / SHARE badges use a smoother sway and
-     drop-shadow so they read cleanly on a 1080x1920 (9:16) frame.
-
-Drop `create_climax_outro_clip` into your existing compilation script —
-its signature and return type (a MoviePy VideoClip with .with_fps set)
-are unchanged, so it plugs straight into CompositeVideoClip.
-"""
-
-import os
-import re
-import math
-
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-
-from moviepy import VideoClip
-
-
-# ---------------------------------------------------------------------------
-# Emoji detection (used to split "text + emoji" into separately-rendered runs)
-# ---------------------------------------------------------------------------
 _EMOJI_PATTERN = re.compile(
     "["
     "\U0001F300-\U0001FAFF"
@@ -107,21 +68,13 @@ _EMOJI_PATTERN = re.compile(
     flags=re.UNICODE,
 )
 
-
 def _find_first_existing(paths):
     for p in paths:
         if p and os.path.exists(p):
             return p
     return None
 
-
 def _load_font(size, prefer_emoji=False):
-    """
-    Load a font capable of rendering the target script.
-    prefer_emoji=True -> try to find a font with emoji glyphs first.
-    Otherwise -> try Devanagari-capable fonts first, falling back to a
-    generic sans font, then Pillow's built-in default as a last resort.
-    """
     devanagari_candidates = [
         "C:/Windows/Fonts/Nirmala.ttf",
         "C:/Windows/Fonts/NirmalaB.ttf",
@@ -153,8 +106,6 @@ def _load_font(size, prefer_emoji=False):
     if path is None:
         return ImageFont.load_default()
 
-    # RAQM layout gives correct Devanagari shaping (conjuncts / matras);
-    # silently fall back if the Pillow build lacks libraqm support.
     try:
         return ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
     except Exception:
@@ -163,13 +114,7 @@ def _load_font(size, prefer_emoji=False):
         except Exception:
             return ImageFont.load_default()
 
-
 def _draw_mixed_text(draw, xy, text, text_font, emoji_font, fill):
-    """
-    Draw a string that mixes Devanagari/Latin text and emoji by walking
-    the string in emoji / non-emoji runs and rendering each run with the
-    font best suited to it. Returns the total rendered width.
-    """
     x, y = xy
     total_w = 0
     pos = 0
@@ -191,9 +136,7 @@ def _draw_mixed_text(draw, xy, text, text_font, emoji_font, fill):
         total_w += bbox[2] - bbox[0]
     return total_w
 
-
 def _measure_mixed_text(draw, text, text_font, emoji_font):
-    """Width/height of a mixed Devanagari+emoji string without drawing it."""
     w = 0
     h = 0
     pos = 0
@@ -215,27 +158,20 @@ def _measure_mixed_text(draw, text, text_font, emoji_font):
         h = max(h, bbox[3] - bbox[1])
     return w, h
 
-
-# ---------------------------------------------------------------------------
-# Main outro builder
-# ---------------------------------------------------------------------------
 def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
     w, h = target_size
     np.random.seed(101)
 
     colors = [
-        (255, 50, 150),   # magenta / pink
-        (0, 230, 255),    # sky blue
-        (255, 215, 0),    # golden yellow
-        (50, 255, 100),   # neon green
-        (255, 100, 50),   # orange / red
-        (200, 100, 255),  # purple
-        (255, 255, 255),  # bright white
+        (255, 50, 150),
+        (0, 230, 255),
+        (255, 215, 0),
+        (50, 255, 100),
+        (255, 100, 50),
+        (200, 100, 255),
+        (255, 255, 255),
     ]
 
-    # --- Multi-burst firework centers, spread across the whole duration so
-    #     the show stays continuous rather than firing only in the first
-    #     few seconds. Each center re-bursts on a loop (see cycle_t below).
     n_centers = 8
     burst_configs = []
     for i in range(n_centers):
@@ -260,7 +196,6 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
                 "period": cfg["period"],
             })
 
-    # --- Bottom-to-top fountain / anar particles, looping every ~2s
     fountains = []
     for _ in range(70):
         fountains.append({
@@ -272,7 +207,6 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
             "phase": np.random.uniform(0, 2.0),
         })
 
-    # --- Falling LIKE / SUBSCRIBE / SHARE badges
     floating_items = [
         {"text": "\U0001F44D LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 170, "phase": 0.0},
         {"text": "\U0001F514 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 205, "phase": 1.3},
@@ -289,7 +223,7 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # A) Multi-burst firework explosions, looping continuously
+        # A) Multi-burst firework explosions
         for s in sparks:
             rel_t = t - s["delay"]
             if rel_t <= 0:
@@ -305,7 +239,7 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
                 draw.line([(tail_x, tail_y), (px, py)], fill=s["color"] + (alpha,), width=4)
                 draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
 
-        # B) Fountain / anar sparks, looping continuously
+        # B) Fountain particles
         for f in fountains:
             ft = (t + f["phase"]) % f["period"]
             fx = int(f["x"] + f["speed_x"] * ft)
@@ -314,18 +248,16 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
                 alpha = max(0, int(220 * (1 - ft / f["period"])))
                 draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f["color"] + (alpha,))
 
-        # C) Falling LIKE / SUBSCRIBE / SHARE badges with soft horizontal sway
+        # C) Falling Badges
         for item in floating_items:
             curr_y = int(((t + item["phase"]) * item["speed"]) % (h + 100)) - 50
             curr_x = int(item["x"] + 20 * math.sin(t * 3 + item["phase"]))
 
             bw, bh = 190, 50
-            # drop shadow
             draw.rounded_rectangle(
                 [curr_x - bw // 2 + 3, curr_y + 3, curr_x + bw // 2 + 3, curr_y + bh + 3],
                 radius=15, fill=(0, 0, 0, 120),
             )
-            # badge card
             draw.rounded_rectangle(
                 [curr_x - bw // 2, curr_y, curr_x + bw // 2, curr_y + bh],
                 radius=15, fill=item["bg"] + (240,), outline=(255, 255, 255, 255), width=2,
@@ -335,7 +267,7 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
             ty = curr_y + (bh - text_h) // 2
             _draw_mixed_text(draw, (tx, ty), item["text"], font_btn, font_btn_emoji, fill=(255, 255, 255, 255))
 
-        # D) Main Hindi CTA card (bottom banner)
+        # D) Bottom Hindi CTA Card
         pulse = 1.0 + 0.04 * math.sin(t * 8)
         bw, bh = int(w * 0.90), int(130 * pulse)
         bx = (w - bw) // 2
@@ -359,34 +291,50 @@ def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
+# ------------------------------------------------------------------------------
+# 3) MAIN ENGINE FUNCTION
+# ------------------------------------------------------------------------------
+def apply_volume_scale(clip, scale):
+    if hasattr(clip, "volumex"):
+        return clip.volumex(scale)
+    elif hasattr(clip, "with_volume_scaling"):
+        return clip.with_volume_scaling(scale)
+    elif hasattr(clip, "transform"):
+        return clip.transform(lambda get_frame, t: get_frame(t) * scale)
+    return clip
 
-# ---------------------------------------------------------------------------
-# Quick manual sanity check (renders a couple of frames to PNG, no video
-# encoding needed) — safe to delete once wired into your pipeline.
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    clip = create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24)
-    for sample_t in (0.0, 2.5, 5.0, 9.5):
-        frame = clip.get_frame(sample_t)
-        Image.fromarray(frame).save(f"/tmp/climax_preview_{sample_t:.1f}.png")
-    print("Preview frames written to /tmp/climax_preview_*.png")
+def render_video_engine(
+    visual_clips,
+    output_path="output.mp4",
+    total_duration=10.0,
+    voiceover_path=None,
+    audio_files=None,
+    sfx_events=None,
+    auto_ducking=True,
+    master_music_vol=0.8,
+    video_quality="1080p",
+    fps=24,
+    target_size=(1080, 1920)
+):
+    if audio_files is None:
+        audio_files = []
+    if sfx_events is None:
+        sfx_events = []
 
-    # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION ENGINE
-    # --------------------------------------------------------------------------
+    # Visual track composition
+    if not visual_clips:
+        main_clip = ColorClip(size=target_size, color=(0, 0, 0), duration=total_duration).with_fps(fps)
+    else:
+        main_clip = concatenate_videoclips(visual_clips)
+
+    outro_overlay = create_climax_outro_clip(duration=total_duration, target_size=target_size, fps=fps)
+    final_visual_video = CompositeVideoClip([main_clip, outro_overlay]).with_duration(total_duration)
+
+    # Audio Composition Engine
     audio_tracks = []
-
-    def apply_volume_scale(clip, scale):
-        if hasattr(clip, "volumex"):
-            return clip.volumex(scale)
-        elif hasattr(clip, "with_volume_scaling"):
-            return clip.with_volume_scaling(scale)
-        elif hasattr(clip, "transform"):
-            return clip.transform(lambda get_frame, t: get_frame(t) * scale)
-        return clip
+    has_voiceover = False
 
     # Track 6: Voiceover Layer
-    has_voiceover = False
     if is_valid_path(voiceover_path):
         vo_clip = AudioFileClip(voiceover_path)
         vo_clip = vo_clip.subclipped(0, min(vo_clip.duration, total_duration)).with_start(0.0)
@@ -402,9 +350,12 @@ if __name__ == "__main__":
                 mode = a_item.get("mode", "🎵 Song (Default)")
                 m_clip = AudioFileClip(a_path)
                 
-                if "Background" in mode: mode_vol = bg_music_vol * 0.4
-                elif "Instrument" in mode: mode_vol = bg_music_vol * 0.7
-                else: mode_vol = bg_music_vol
+                if "Background" in mode:
+                    mode_vol = bg_music_vol * 0.4
+                elif "Instrument" in mode:
+                    mode_vol = bg_music_vol * 0.7
+                else:
+                    mode_vol = bg_music_vol
                     
                 if m_clip.duration < total_duration:
                     loops_needed = math.ceil(total_duration / m_clip.duration)
@@ -428,12 +379,12 @@ if __name__ == "__main__":
                 s_clip = apply_volume_scale(s_clip, vol)
                 audio_tracks.append(s_clip)
 
-    # Integrate Audio
+    # Integrate Audio with Video
     if audio_tracks:
         composite_audio = CompositeAudioClip(audio_tracks).subclipped(0, total_duration)
         final_visual_video = final_visual_video.with_audio(composite_audio)
 
-    # Export
+    # Export Configuration
     preset = "ultrafast" if "720p" in video_quality else "medium"
     
     final_visual_video.write_videofile(
@@ -446,3 +397,13 @@ if __name__ == "__main__":
     )
 
     return output_path
+
+# ------------------------------------------------------------------------------
+# 4) EXECUTION ENTRY POINT FOR PREVIEW
+# ------------------------------------------------------------------------------
+if __name__ == "__main__":
+    clip = create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24)
+    for sample_t in (0.0, 2.5, 5.0, 9.5):
+        frame = clip.get_frame(sample_t)
+        Image.fromarray(frame).save(f"/tmp/climax_preview_{sample_t:.1f}.png")
+    print("Preview frames written to /tmp/climax_preview_*.png")

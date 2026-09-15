@@ -1,13 +1,15 @@
-# ==========================================
-# CLIMAX ENGINE: SPECIAL ENGAGEMENT BOOSTER
-# ==========================================
-import os
-import numpy as np
-import cv2
-from moviepy.editor import (
-    VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, 
-    CompositeAudioClip, concatenate_videoclips, ColorClip
-)
+# climax.py के सबसे ऊपर पुराने imports हटाकर यह लिखें:
+try:
+    from moviepy.editor import (
+        VideoFileClip, AudioFileClip, TextClip, CompositeVideoClip, 
+        CompositeAudioClip, concatenate_videoclips, ColorClip
+    )
+except ImportError:
+    from moviepy.video.io.VideoFileClip import VideoFileClip
+    from moviepy.video.VideoClip import TextClip, CompositeVideoClip, ColorClip
+    from moviepy.audio.io.AudioFileClip import AudioFileClip
+    from moviepy.audio.AudioClip import CompositeAudioClip
+    from moviepy.video.compositing.concatenate import concatenate_videoclips
 
 
 # ==========================================

@@ -173,14 +173,92 @@ def compile_cinematic_video(
             ov_clip = ov_clip.resized(new_size=(int(w*0.8), int(h*0.8))).with_position("center").with_start(st_t)
             video_layers.append(ov_clip)
 
-    # 💥 CLIMAX ENGINE OVERLAY (अंतिम 4 सेकंड में हिंदी बैज + स्पार्क्स)
-    outro_dur = 4.0
-    if total_duration >= outro_dur:
-        climax_outro = create_climax_outro_clip(duration=outro_dur, target_size=target_size, fps=fps)
-        climax_outro = climax_outro.with_start(total_duration - outro_dur)
-        video_layers.append(climax_outro)
+   # ------------------------------------------------------------------------------
+# CLIMAX ENGINE: REAL FIREWORKS BLAST & DEVANAGARI HINDI CTA (BOTTOM OVERLAY)
+# ------------------------------------------------------------------------------
+def create_climax_outro_clip(duration=4.0, target_size=(1080, 1920), fps=24):
+    w, h = target_size
+    num_sparks = 80
+    np.random.seed(101)
 
-    final_visual_video = CompositeVideoClip(video_layers, size=target_size)
+    # 💥 आतिशबाजी ब्लास्ट पार्टिकल्स (विविध कोण और लंबी लकीरों के साथ)
+    sparks = [{
+        'x': w // 2,
+        'y': int(h * 0.4), # ऊपर की तरफ ब्लास्ट
+        'angle': np.random.uniform(0, 2 * math.pi),
+        'speed': np.random.uniform(300, 700),
+        'color': (np.random.randint(230, 255), np.random.randint(180, 255), np.random.randint(20, 100))
+    } for _ in range(num_sparks)]
+
+    def make_frame(t):
+        # पारदर्शी कैनवास
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 1. 🌟 Real Firework Blast (Spark Trails & Glowing Rings)
+        for s in sparks:
+            dist = s['speed'] * t
+            px = int(s['x'] + dist * math.cos(s['angle']))
+            py = int(s['y'] + dist * math.sin(s['angle']) + 150 * (t ** 2)) # Gravitational drop
+            
+            # पीछे की पूंछ (Tail) ताकि असली ब्लास्ट लगे
+            tail_x = int(px - 25 * math.cos(s['angle']))
+            tail_y = int(py - 25 * math.sin(s['angle']))
+            
+            if 0 <= px < w and 0 <= py < h:
+                draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (220,), width=4)
+                draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, 255))
+
+        # Expanding Shockwave Ring
+        ring_r = int(t * 600)
+        if ring_r < w:
+            draw.ellipse(
+                [w//2 - ring_r, int(h*0.4) - ring_r, w//2 + ring_r, int(h*0.4) + ring_r],
+                outline=(255, 215, 0, max(0, int(200 - t * 50))), width=6
+            )
+
+        # 2. 🎴 HINDI CTA BADGE (नीचे की तरफ ताकि चेहरा न ढके)
+        scale = 1.0 + 0.04 * math.sin(t * 10)
+        bw, bh = int(w * 0.85), int(120 * scale)
+        bx = (w - bw) // 2
+        by = int(h * 0.78) # स्क्रीन के 78% नीचे पोजीशन
+
+        # बैकग्राउंड शेडो और गोल्डन बॉर्डर
+        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=20, fill=(0, 0, 0, 160))
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=20, fill=(210, 30, 30, 245), outline=(255, 215, 0), width=5)
+
+        # 3. 🔤 Windows / Linux Font Fix for Hindi Devanagari
+        font_names = ["mangal.ttf", "nirmala.ttf", "arial.ttf", "DejaVuSans.ttf"]
+        font = None
+        font_size = int(38 * scale)
+
+        for fn in font_names:
+            try:
+                font = ImageFont.truetype(fn, font_size)
+                break
+            except Exception:
+                continue
+
+        if not font:
+            font = ImageFont.load_default()
+
+        # Text Render
+        text = "🔔 लाइक और सब्सक्राइब करें"
+        
+        try:
+            tb = draw.textbbox((0, 0), text, font=font)
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
+        except Exception:
+            tw, th = int(bw * 0.7), 40
+
+        tx = bx + (bw - tw) // 2
+        ty = by + (bh - th) // 2
+        
+        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+
+        return np.array(img)
+
+    return VideoClip(make_frame, duration=duration).with_fps(fps)
 
     # --------------------------------------------------------------------------
     # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE

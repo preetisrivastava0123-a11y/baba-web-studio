@@ -347,12 +347,15 @@ with r_col1:
         st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है... (`engine.py` को ट्रांसफर हो रहा है)")
         
         payload = {
-            "video_format": video_format,
-            "base_duration": total_duration,
-            "enable_climax": enable_climax,
-            "ticker_text": ticker_text,
-            "is_draft": True
-        }
+    "video_format": video_format,
+    "base_duration": total_duration,
+    "enable_climax": enable_climax,
+    "t1_files": track1_files if track1_files is not None else [], # <--- यह पक्का करें
+    "t1_def_dur": st.session_state.get("t1_def_dur", 5),
+    "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
+    "ticker_text": ticker_text,
+    "is_draft": True
+}
         
         import engine
         output_file = engine.master_render_pipeline(payload)

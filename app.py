@@ -370,16 +370,18 @@ with r_col2:
     if st.button("🎬 Final Video Render (1080p Full HD Output)", type="primary", use_container_width=True, key="btn_final_render"):
         st.info("🎉 1080p/720p मास्टर वीडियो रेंडर प्रोसेस शुरू हो गया है...")
         
-        payload = {
-            "video_format": video_format,
-            "base_duration": total_duration,
-            "enable_climax": enable_climax,
-            "t1_files": safe_files,  # <--- अब कभी None नहीं जाएगा
-            "t1_def_dur": st.session_state.get("t1_def_dur", 5),
-            "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
-            "ticker_text": ticker_text,
-            "is_draft": False
-        }
+        safe_files = track1_files if ('track1_files' in locals() and track1_files is not None) else []
+
+payload = {
+    "video_format": video_format,
+    "base_duration": total_duration,
+    "enable_climax": enable_climax,
+    "t1_files": safe_files,
+    "t1_def_dur": st.session_state.get("t1_def_dur", 5),
+    "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
+    "ticker_text": ticker_text,
+    "is_draft": True
+}
         
         import engine
         final_file = engine.master_render_pipeline(payload)

@@ -170,7 +170,7 @@ def compile_cinematic_video(
     final_visual_video = CompositeVideoClip(video_layers, size=target_size)
 
     # --------------------------------------------------------------------------
-    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE
+    # TRACK 3, 4, 6, 7: AUDIO COMPOSITION & MODES ENGINE (MOVIEPY v2 FIXED)
     # --------------------------------------------------------------------------
     audio_tracks = []
 
@@ -204,7 +204,8 @@ def compile_cinematic_video(
                 loops_needed = math.ceil(total_duration / m_clip.duration)
                 m_clip = concatenate_audioclips([m_clip] * loops_needed)
                 
-            m_clip = m_clip.subclipped(0, total_duration).multiply_volume(mode_vol)
+            # MoviePy v2 Volume Modifier Fix: with_volume_scaling
+            m_clip = m_clip.subclipped(0, total_duration).with_volume_scaling(mode_vol)
             audio_tracks.append(m_clip)
 
     # 3. Track 4: Music Clips Timeline
@@ -216,7 +217,7 @@ def compile_cinematic_video(
             dur = max(end_t - st_t, 0.5)
             
             m_clip = AudioFileClip(m_path)
-            m_clip = m_clip.subclipped(0, min(dur, m_clip.duration)).with_start(st_t).multiply_volume(master_music_vol)
+            m_clip = m_clip.subclipped(0, min(dur, m_clip.duration)).with_start(st_t).with_volume_scaling(master_music_vol)
             audio_tracks.append(m_clip)
 
     # 4. Track 7: SFX Events Timeline
@@ -228,15 +229,8 @@ def compile_cinematic_video(
             vol = sfx.get("volume", 0.8)
             
             s_clip = AudioFileClip(s_path)
-            s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t).multiply_volume(vol)
+            s_clip = s_clip.subclipped(0, min(end_t - st_t, s_clip.duration)).with_start(st_t).with_volume_scaling(vol)
             audio_tracks.append(s_clip)
-
-    # Audio Layer Integration
-    if audio_tracks:
-        composite_audio = CompositeAudioClip(audio_tracks)
-        if composite_audio.duration > total_duration:
-            composite_audio = composite_audio.subclipped(0, total_duration)
-        final_visual_video = final_visual_video.with_audio(composite_audio)
 
     # --------------------------------------------------------------------------
     # CLIMAX ENGINE & VIDEO EXPORT

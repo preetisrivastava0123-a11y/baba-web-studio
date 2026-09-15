@@ -18,44 +18,44 @@ except ImportError:
 # ==========================================
 import os
 import tempfile
+import numpy as np
 from moviepy.editor import ImageClip, VideoFileClip, ColorClip, concatenate_videoclips
 
-def process_visuals(t1_files, default_duration=5, is_shorts=True, ken_burns=True):
+def process_visuals(t1_files=None, default_duration=5, is_shorts=True, ken_burns=True):
     processed_clips = []
     target_size = (1080, 1920) if is_shorts else (1920, 1080)
     
-    # 1. सुरक्षा जाँच: अगर कोई फाइल अपलोड नहीं हुई है
+    # 1. Type Guard: अगर t1_files गलती से None या खाली भेजा गया हो
     if not t1_files:
         blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
         return concatenate_videoclips([blank_clip], method="compose")
 
-    # 2. अपलोड की गई फाइलों को प्रोसेस करें
+    # 2. फाइलों की प्रोसेसिंग
     for file in t1_files:
         temp_path = None
         
-        # अगर Streamlit का UploadedFile ऑब्जेक्ट है तो उसे Temp File में सेव करें
+        # अगर Streamlit UploadedFile ऑब्जेक्ट है तो उसे अस्थायी (Temp) फाइल में लिखें
         if hasattr(file, 'read'):
-            suffix = os.path.splitext(file.name)[1]
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-                tmp_file.write(file.read())
-                temp_path = tmp_file.name
+            ext = os.path.splitext(file.name)[1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(file.getvalue() if hasattr(file, 'getvalue') else file.read())
+                temp_path = tmp.name
         elif isinstance(file, str):
             temp_path = file
 
         if temp_path and os.path.exists(temp_path):
             try:
-                # इमेजेस के लिए logic
-                if temp_path.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                ext_lower = temp_path.lower()
+                if ext_lower.endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     clip = ImageClip(temp_path).set_duration(default_duration).resize(newsize=target_size)
                     processed_clips.append(clip)
-                # MP4 वीडियो क्लिप्स के लिए logic
-                elif temp_path.lower().endswith(('.mp4', '.mov', '.avi')):
+                elif ext_lower.endswith(('.mp4', '.mov', '.avi')):
                     clip = VideoFileClip(temp_path).resize(newsize=target_size)
                     processed_clips.append(clip)
             except Exception as e:
-                print(f"File loading error: {e}")
+                print(f"Error processing clip: {e}")
 
-    # 3. अगर कोई भी क्लिप लोड नहीं हो पाई तो फॉलबैक सोल्यूशन
+    # 3. सुरक्षा जांच: अगर कोई भी फाइल लोड नहीं हो पाई
     if not processed_clips:
         blank_clip = ColorClip(size=target_size, color=(30, 30, 30), duration=default_duration)
         processed_clips.append(blank_clip)

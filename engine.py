@@ -5,6 +5,7 @@ import os
 import math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from climax_outro_engine import create_climax_outro_clip
 import cv2
 
 from moviepy import (

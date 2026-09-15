@@ -20,15 +20,18 @@ from moviepy import (
 )
 
 # ------------------------------------------------------------------------------
-# 1) KEN BURNS MOTION & IMAGE PROCESSING (Track 1 Helper)
+# 1) KEN BURNS MOTION & IMAGE PROCESSING (Track 1 Helper - FIXED FOR MOVIEPY v2)
 # ------------------------------------------------------------------------------
+from moviepy import VideoClip
+
 def apply_ken_burns_effect(image_path, duration=5.0, fps=24, target_size=(1280, 720)):
-    """फोटो पर Smooth Zoom/Ken Burns इफ़ेक्ट लागू करता है।"""
+    """फोटो पर Smooth Zoom/Ken Burns इफ़ेक्ट लागू करता है (MoviePy v2 Compatible)।"""
     img = Image.open(image_path).convert("RGB")
     img = img.resize(target_size)
     img_np = np.array(img)
     
     def make_frame(t):
+        # 0.0 से लेकर duration तक ज़ूम स्केल गणना
         scale = 1.0 + 0.08 * (t / max(duration, 0.1))
         h, w, _ = img_np.shape
         new_h, new_w = int(h * scale), int(w * scale)
@@ -39,8 +42,9 @@ def apply_ken_burns_effect(image_path, duration=5.0, fps=24, target_size=(1280, 
         cropped = resized[start_y:start_y+h, start_x:start_x+w]
         return cropped
 
-    return ImageClip(make_frame, duration=duration).with_fps(fps)
-
+    # MoviePy v2.x में ImageClip की जगह VideoClip का सही उपयोग:
+    clip = VideoClip(make_frame, duration=duration)
+    return clip.with_fps(fps)
 # ------------------------------------------------------------------------------
 # 2) TEXT & CLIMAX OVERLAY BUILDER (Climax Engine Helper)
 # ------------------------------------------------------------------------------

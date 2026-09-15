@@ -1,7 +1,6 @@
 streamlit
-moviepy>=2.0.0
-opencv-python
-pillow
+pandas
+moviepy==1.0.3
+opencv-python-headless
 numpy
-edge-tts
-scipy
+imageio-ffmpeg

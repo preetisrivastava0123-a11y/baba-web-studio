@@ -106,7 +106,12 @@ with st.sidebar:
 # TRACK 1: MANDATORY VISUALS LAYER (IMAGES & VIDEOS)
 # ==========================================
 with st.expander("🖼️ Track 1: वीडियो क्रिएशन फोल्डर (Visuals Layer) — [MANDATORY]", expanded=False):
-    track1_files = st.file_uploader("Media Upload (JPG, PNG, MP4)", type=["jpg", "jpeg", "png", "mp4"], accept_multiple_files=True, key="t1_uploader")
+    track1_files = st.file_uploader(
+        "Media Upload (JPG, PNG, MP4)", 
+        type=["jpg", "jpeg", "png", "mp4"], 
+        accept_multiple_files=True, 
+        key="t1_uploader"
+    )
     
     if not track1_files:
         st.info("📂 कृपया वीडियो शुरू करने के लिए अपनी इमेज या वीडियो फाइलें यहाँ अपलोड करें।")
@@ -118,19 +123,23 @@ with st.expander("🖼️ Track 1: वीडियो क्रिएशन फ�
                 st.write(f"📁 **{file.name}**")
             with col2: 
                 st.number_input(f"Order #{i+1}", min_value=1, value=i+1, key=f"t1_ord_{i}")
-            if file.name.endswith(".mp4"):
-                with col3: st.number_input(f"Start Sec #{i+1}", min_value=0.0, value=0.0, key=f"t1_s_{i}")
-                with col4: st.number_input(f"End Sec #{i+1}", min_value=1.0, value=10.0, key=f"t1_e_{i}")
+            
+            if file.name.lower().endswith(".mp4"):
+                with col3: 
+                    st.number_input(f"Start Sec #{i+1}", min_value=0.0, value=0.0, key=f"t1_s_{i}")
+                with col4: 
+                    st.number_input(f"End Sec #{i+1}", min_value=1.0, value=10.0, key=f"t1_e_{i}")
             else:
-                with col3: st.write("Image")
-                with col4: st.write("-")
+                with col3: 
+                    st.write("Image")
+                with col4: 
+                    st.write("-")
         
         c_eff1, c_eff2 = st.columns(2)
         with c_eff1:
             st.number_input("प्रति इमेज डिफ़ॉल्ट ड्यूरेशन (Sec):", min_value=1, value=5, key="t1_def_dur")
         with c_eff2:
             st.checkbox("Ken Burns Effect (Zoom/Pan)", value=True, key="t1_ken_burns")
-
 
 # ==========================================
 # TRACK 2: VIDEO CLIPS TIMELINE (OPTIONAL)

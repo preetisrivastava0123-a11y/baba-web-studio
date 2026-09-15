@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import os  # <--- [Step 1.1: यह जोड़ें]
 
 # ==========================================
 # PAGE CONFIGURATION & TITLE
@@ -21,6 +22,8 @@ if 'music_clips' not in st.session_state:
     st.session_state.music_clips = []
 if 'sfx_events' not in st.session_state:
     st.session_state.sfx_events = []
+if 'preview_video_path' not in st.session_state:  # <--- [Step 1.2: यह जोड़ें]
+    st.session_state.preview_video_path = None
 
 
 # ==========================================

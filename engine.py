@@ -54,96 +54,159 @@ def apply_ken_burns_effect(image_path, duration=4.0, fps=24, target_size=(1280, 
     return VideoClip(make_frame, duration=duration).with_fps(fps)
 
 # ------------------------------------------------------------------------------
-# 2) CLIMAX ENGINE: MULTI-COLOR FIREWORKS & SAFE HINDI CTA (BOTTOM OVERLAY)
+# 2) ADVANCED CLIMAX ENGINE: 10-SEC MULTI-STYLE FIREWORKS & FALLING BUTTONS
 # ------------------------------------------------------------------------------
-def create_climax_outro_clip(duration=6.0, target_size=(1080, 1920), fps=24):
+def create_climax_outro_clip(duration=10.0, target_size=(1080, 1920), fps=24):
     w, h = target_size
-    num_bursts = 5  # 5 अलग-अलग जगहों पर रंग-बिरंगे धमाके
-    np.random.seed(42)
+    np.random.seed(101)
 
-    # कई रंगों और कई केंद्रों (Burst Centers) का सेटअप
-    burst_centers = [
-        (int(w * 0.2), int(h * 0.25), (255, 50, 150)),   # पिंक / मैजेंटा
-        (int(w * 0.8), int(h * 0.25), (0, 230, 255)),   # स्काई ब्लू
-        (int(w * 0.5), int(h * 0.35), (255, 215, 0)),   # गोल्डन येलो
-        (int(w * 0.35), int(h * 0.15), (50, 255, 100)),  # नियॉन ग्रीन
-        (int(w * 0.65), int(h * 0.15), (255, 100, 50))   # ऑरेंज / रेड
+    # 🎇 1. Multi-Color & Multi-Style Fireworks Setup
+    colors = [
+        (255, 50, 150),   # मैजेंटा / पिंक
+        (0, 230, 255),    # स्काई ब्लू
+        (255, 215, 0),    # गोल्डन येलो
+        (50, 255, 100),   # नियॉन ग्रीन
+        (255, 100, 50),   # ऑरेंज / रेड
+        (200, 100, 255),  # पर्पल
+        (255, 255, 255)   # ब्राइट व्हाइट
+    ]
+
+    # अलग-अलग लोकेशन पर अलग-अलग समय पर ब्लास्ट होने वाले सेंटर्स
+    burst_configs = [
+        {'cx': int(w * 0.2), 'cy': int(h * 0.20), 'color': colors[0], 'delay': 0.0},
+        {'cx': int(w * 0.8), 'cy': int(h * 0.20), 'color': colors[1], 'delay': 0.5},
+        {'cx': int(w * 0.5), 'cy': int(h * 0.30), 'color': colors[2], 'delay': 1.0},
+        {'cx': int(w * 0.35), 'cy': int(h * 0.15), 'color': colors[3], 'delay': 1.8},
+        {'cx': int(w * 0.65), 'cy': int(h * 0.15), 'color': colors[4], 'delay': 2.3},
+        {'cx': int(w * 0.5), 'cy': int(h * 0.18), 'color': colors[5], 'delay': 3.0},
     ]
 
     sparks = []
-    for cx, cy, color in burst_centers:
-        for _ in range(35):
+    for cfg in burst_configs:
+        for _ in range(45):
             sparks.append({
-                'cx': cx,
-                'cy': cy,
+                'cx': cfg['cx'],
+                'cy': cfg['cy'],
                 'angle': np.random.uniform(0, 2 * math.pi),
-                'speed': np.random.uniform(250, 650),
-                'color': color
+                'speed': np.random.uniform(200, 700),
+                'color': cfg['color'],
+                'delay': cfg['delay']
             })
+
+    # 🎆 2. Anar / Fountain Sparks (नीचे से ऊपर छूटने वाले पटाखे)
+    fountains = []
+    for _ in range(60):
+        fountains.append({
+            'x': np.random.uniform(w * 0.1, w * 0.9),
+            'speed_y': np.random.uniform(-900, -500),
+            'speed_x': np.random.uniform(-100, 100),
+            'color': colors[np.random.randint(0, len(colors))]
+        })
+
+    # 🎈 3. Falling Like / Subscribe / Bell Buttons Setup (गिरने वाले बटन)
+    floating_items = [
+        {"text": "👍 LIKE", "bg": (0, 122, 255), "x": int(w * 0.15), "speed": 180, "phase": 0},
+        {"text": "🔔 BELL", "bg": (255, 149, 0), "x": int(w * 0.38), "speed": 220, "phase": 1.5},
+        {"text": "🔴 SUBSCRIBE", "bg": (255, 45, 85), "x": int(w * 0.62), "speed": 190, "phase": 0.8},
+        {"text": "↗️ SHARE", "bg": (52, 199, 89), "x": int(w * 0.85), "speed": 210, "phase": 2.1},
+    ]
+
+    # Fonts Loader
+    font_paths = [
+        "C:/Windows/Fonts/mangal.ttf",
+        "C:/Windows/Fonts/nirmala.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "mangal.ttf"
+    ]
+    font_large, font_btn = None, None
+    for fp in font_paths:
+        try:
+            if os.path.exists(fp):
+                font_large = ImageFont.truetype(fp, 38)
+                font_btn = ImageFont.truetype(fp, 24)
+                break
+        except Exception:
+            continue
+
+    if font_large is None:
+        font_large = ImageFont.load_default()
+        font_btn = ImageFont.load_default()
 
     def make_frame(t):
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
 
-        # 1. 🎇 Multi-burst Colorful Fireworks Explosion (इमेज #2 जैसा लुक)
+        # -------------------------------------------------------------
+        # A) FIREWORKS TYPE 1: MULTI-BURST EXPLOSIONS (आतिशबाजी धमाके)
+        # -------------------------------------------------------------
         for s in sparks:
-            dist = s['speed'] * (t % 3.0)  # बार-बार ब्लास्ट लूप
-            px = int(s['cx'] + dist * math.cos(s['angle']))
-            py = int(s['cy'] + dist * math.sin(s['angle']) + 80 * ((t % 3.0) ** 2))
+            rel_t = t - s['delay']
+            if rel_t > 0:
+                cycle_t = rel_t % 2.5  # हर 2.5 सेकंड में री-ब्लास्ट
+                dist = s['speed'] * cycle_t
+                px = int(s['cx'] + dist * math.cos(s['angle']))
+                py = int(s['cy'] + dist * math.sin(s['angle']) + 120 * (cycle_t ** 2)) # गुरुत्वाकर्षण (Gravity)
 
-            tail_x = int(px - 20 * math.cos(s['angle']))
-            tail_y = int(py - 20 * math.sin(s['angle']))
+                tail_x = int(px - 25 * math.cos(s['angle']))
+                tail_y = int(py - 25 * math.sin(s['angle']))
 
-            if 0 <= px < w and 0 <= py < h:
-                draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (230,), width=4)
-                draw.ellipse([px - 3, py - 3, px + 3, py + 3], fill=(255, 255, 255, 255))
+                if 0 <= px < w and 0 <= py < h:
+                    alpha = max(0, int(255 * (1 - cycle_t / 2.5)))
+                    draw.line([(tail_x, tail_y), (px, py)], fill=s['color'] + (alpha,), width=4)
+                    draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=(255, 255, 255, alpha))
 
-        # 2. 🎴 HINDI CTA BADGE (नीचे की तरफ)
-        scale = 1.0 + 0.03 * math.sin(t * 8)
-        bw, bh = int(w * 0.88), int(120 * scale)
+        # -------------------------------------------------------------
+        # B) FIREWORKS TYPE 2: FOUNTAINS / ANAR (नीचे से ऊपर अनार)
+        # -------------------------------------------------------------
+        for f in fountains:
+            ft = t % 2.0
+            fx = int(f['x'] + f['speed_x'] * ft)
+            fy = int(h * 0.85 + f['speed_y'] * ft + 350 * (ft ** 2))
+            if 0 <= fx < w and 0 <= fy < h:
+                draw.ellipse([fx - 3, fy - 3, fx + 3, fy + 3], fill=f['color'] + (220,))
+
+        # -------------------------------------------------------------
+        # C) FALLING BUTTONS (ऊपर से नीचे गिरते हुए बटन)
+        # -------------------------------------------------------------
+        for item in floating_items:
+            # Y पोजीशन की गणना
+            curr_y = int(((t + item['phase']) * item['speed']) % (h + 100)) - 50
+            curr_x = int(item['x'] + 20 * math.sin(t * 3 + item['phase'])) # हल्का झूलना (Swaying)
+
+            bw, bh = 180, 50
+            # बटन कार्ड
+            draw.rounded_rectangle([curr_x - bw//2 + 3, curr_y + 3, curr_x + bw//2 + 3, curr_y + bh + 3], radius=15, fill=(0, 0, 0, 120))
+            draw.rounded_rectangle([curr_x - bw//2, curr_y, curr_x + bw//2, curr_y + bh], radius=15, fill=item['bg'] + (240,), outline=(255, 255, 255), width=2)
+            
+            # बटन टेक्स्ट
+            draw.text((curr_x - bw//3, curr_y + 12), item['text'], font=font_btn, fill=(255, 255, 255, 255))
+
+        # -------------------------------------------------------------
+        # D) MAIN HINDI CTA CARD (मुख्य हिंदी टेक्स्ट कार्ड)
+        # -------------------------------------------------------------
+        pulse = 1.0 + 0.04 * math.sin(t * 8)
+        bw, bh = int(w * 0.90), int(130 * pulse)
         bx = (w - bw) // 2
-        by = int(h * 0.80)
+        by = int(h * 0.82)
 
-        # कार्ड बैकग्राउंड
-        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=20, fill=(0, 0, 0, 160))
-        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=20, fill=(210, 30, 30, 245), outline=(255, 215, 0), width=5)
+        # 3D शैडो और रेड-गोल्डन कार्ड
+        draw.rounded_rectangle([bx + 4, by + 6, bx + bw + 4, by + bh + 6], radius=22, fill=(0, 0, 0, 180))
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=22, fill=(210, 20, 30, 250), outline=(255, 215, 0), width=5)
 
-        # 3. 🔤 देवनागरी फॉन्ट लोड करने का सुरक्षित तरीका
-        font_paths = [
-            "C:/Windows/Fonts/mangal.ttf",
-            "C:/Windows/Fonts/nirmala.ttf",
-            "C:/Windows/Fonts/arial.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "mangal.ttf",
-            "nirmala.ttf"
-        ]
-        font = None
-        font_size = int(36 * scale)
-
-        for fp in font_paths:
-            try:
-                if os.path.exists(fp):
-                    font = ImageFont.truetype(fp, font_size)
-                    break
-            except Exception:
-                continue
-
-        if font is None:
-            font = ImageFont.load_default()
-
-        # 🔥 शुद्ध हिंदी टेक्स्ट
-        text = "🔔 लाइक और सब्सक्राइब करें"
-
+        # शुद्ध हिंदी मैसेज
+        text = "🔔 लाइक और सब्सक्राइब जरूर करें!"
+        
         try:
-            tb = draw.textbbox((0, 0), text, font=font)
+            tb = draw.textbbox((0, 0), text, font=font_large)
             tw, th = tb[2] - tb[0], tb[3] - tb[1]
         except Exception:
-            tw, th = int(bw * 0.7), 35
+            tw, th = int(bw * 0.8), 40
 
         tx = bx + (bw - tw) // 2
         ty = by + (bh - th) // 2
 
-        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+        draw.text((tx, ty), text, font=font_large, fill=(255, 255, 255, 255))
 
         return np.array(img)
 
@@ -185,7 +248,7 @@ def compile_cinematic_video(
     # TRACK 1: VISUAL COMPOSITION ENGINE
     # --------------------------------------------------------------------------
     bg_clips = []
-    default_clip_dur = 6.0
+    default_clip_dur = 10.0
 
     for v_item in visual_files:
         if not isinstance(v_item, dict):

@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
-import os  # <--- [Step 1.1: यह जोड़ें]
+import os
 
 # ==========================================
-# PAGE CONFIGURATION & TITLE
+# PAGE CONFIGURATION & INITIALIZATION
 # ==========================================
 st.set_page_config(
     page_title="बाबा वेब स्टूडियो - Master Video Editor",
@@ -15,14 +15,14 @@ st.title("🎬 बाबा वेब स्टूडियो: मास्ट�
 st.caption("7-Track Interactive Visual Timeline Video Studio")
 st.markdown("---")
 
-# Session state initialization for dynamic timeline rows
+# Session State Initialization for Dynamic Timeline Rows and Video Preview
 if 'video_clips' not in st.session_state:
     st.session_state.video_clips = []
 if 'music_clips' not in st.session_state:
     st.session_state.music_clips = []
 if 'sfx_events' not in st.session_state:
     st.session_state.sfx_events = []
-if 'preview_video_path' not in st.session_state:  # <--- [Step 1.2: यह जोड़ें]
+if 'preview_video_path' not in st.session_state:
     st.session_state.preview_video_path = None
 
 
@@ -56,7 +56,7 @@ with st.sidebar:
         key="s0_dur_option"
     )
     
-    # Custom Input Logic (If Custom Selected)
+    # Custom Input Logic
     if "Custom" in dur_option:
         col_m, col_s = st.columns(2)
         with col_m:
@@ -75,7 +75,7 @@ with st.sidebar:
         
     st.markdown("---")
     
-    # 3. 🎆 10-Second Climax Logic (Default ON)
+    # 3. 10-Second Climax Logic (Default Active)
     st.subheader("3. 🎆 क्लाइमैक्स सेटिंग (Climax)")
     enable_climax = st.checkbox(
         "10 Second Climax शामिल करें (Default Active)", 
@@ -100,6 +100,7 @@ with st.sidebar:
         index=0,
         key="s0_vquality"
     )
+
 
 # ==========================================
 # TRACK 1: MANDATORY VISUALS LAYER (IMAGES & VIDEOS)
@@ -254,28 +255,26 @@ with st.expander("🔊 Track 6: SFX (साउंड इफ़ेक्ट्स
 st.markdown("---")
 st.header("⏱️ Track 7: टाइमिंग, लाइव प्रीव्यू एवं स्मार्ट इफ़ेक्ट्स बोर्ड")
 
-# 1. Canvas / Player
+# 1. Canvas / Video Preview Screen (CONNECTED)
 st.subheader("1. 🎥 लाइव वीडियो प्रीव्यू स्क्रीन (Live Preview Window)")
 p_col1, p_col2, p_col3 = st.columns([1, 3, 1])
 
 with p_col2:
-    st.markdown(
-        """
-        <div style="background-color: #f8f9fa; border: 2px solid #e0e0e0; border-radius: 12px; height: 260px; display: flex; align-items: center; justify-content: center; box-shadow: 0px 4px 10px rgba(0,0,0,0.05); margin-bottom: 10px;">
-            <div style="text-align: center; color: #555;">
-                <h3 style="margin: 0;">[ Visual Video Canvas Window ]</h3>
-                <p style="margin-top: 5px; font-size: 14px;">Real-time Multi-track Rendering Engine</p>
+    if st.session_state.preview_video_path and os.path.exists(st.session_state.preview_video_path):
+        st.video(st.session_state.preview_video_path)
+        st.success("✅ Fast Preview लोड हो गया है! नीचे से प्ले करके चेक करें।")
+    else:
+        st.markdown(
+            """
+            <div style="background-color: #1e1e1e; border: 2px dashed #555; border-radius: 12px; height: 280px; display: flex; align-items: center; justify-content: center; box-shadow: 0px 4px 10px rgba(0,0,0,0.3); margin-bottom: 10px;">
+                <div style="text-align: center; color: #aaa;">
+                    <h3 style="margin: 0;">🎬 [ Visual Video Canvas Window ]</h3>
+                    <p style="margin-top: 5px; font-size: 14px;">नीचे 'Quick Draft Render' दबाते ही आपका वीडियो यहाँ चालू हो जाएगा</p>
+                </div>
             </div>
-        </div>
-        """, 
-        unsafe_allow_html=True
-    )
-    
-    ctrl1, ctrl2, ctrl3, ctrl4 = st.columns([1, 1, 3, 1])
-    with ctrl1: st.write("⏱️ **00:00**")
-    with ctrl2: st.button("▶️ Play", key="play_btn")
-    with ctrl3: st.slider("Scrubber", min_value=0, max_value=60, value=0, label_visibility="collapsed", key="timeline_scrubber")
-    with ctrl4: st.write("⏱️ **00:35**")
+            """, 
+            unsafe_allow_html=True
+        )
 
 st.markdown("---")
 
@@ -291,15 +290,15 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# Text & Elements Track
+# Text Track
 with st.container():
     t_col1, t_col2 = st.columns([1, 5])
     with t_col1: st.button("🔤 Add Elements", key="t_btn", use_container_width=True)
-    with t_col2: st.markdown("<div style='background-color: #e3f2fd; padding: 12px; border-radius: 8px; border: 1px dashed #2196f3; color: #0d47a1;'><b>Text Track:</b> Subtitles (0s-30s) | News Ticker / Comment Note (Like & Subscribe)</div>", unsafe_allow_html=True)
+    with t_col2: st.markdown("<div style='background-color: #e3f2fd; padding: 12px; border-radius: 8px; border: 1px dashed #2196f3; color: #0d47a1;'><b>Text Track:</b> Subtitles | News Ticker (Like & Subscribe)</div>", unsafe_allow_html=True)
 
 st.write("")
 
-# Main Visuals Track
+# Visuals Track
 with st.container():
     v_col1, v_col2 = st.columns([1, 5])
     with v_col1: st.button("➕ Drag/Drop Media", key="v_btn", use_container_width=True)
@@ -336,8 +335,38 @@ r_col1, r_col2 = st.columns(2)
 
 with r_col1:
     if st.button("⚡ Quick Draft Render (360p Fast Preview)", use_container_width=True, key="btn_draft_render"):
-        st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है... (`engine.py` को पेलोड ट्रांसफर किया जा रहा है)")
+        st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है... (`engine.py` को ट्रांसफर हो रहा है)")
+        
+        payload = {
+            "video_format": video_format,
+            "base_duration": total_duration,
+            "enable_climax": enable_climax,
+            "ticker_text": ticker_text,
+            "is_draft": True
+        }
+        
+        import engine
+        output_file = engine.master_render_pipeline(payload)
+        
+        # Save output path & refresh page to display video in Preview Canvas
+        st.session_state.preview_video_path = output_file
+        st.rerun()
 
 with r_col2:
     if st.button("🎬 Final Video Render (1080p Full HD Output)", type="primary", use_container_width=True, key="btn_final_render"):
-        st.success("🎉 1080p/720p मास्टर वीडियो रेंडर प्रोसेस शुरू हो गया है! तैयार होने पर डाउनलोड लिंक दिखेगा।")
+        st.info("🎉 1080p/720p मास्टर वीडियो रेंडर प्रोसेस शुरू हो गया है...")
+        
+        payload = {
+            "video_format": video_format,
+            "base_duration": total_duration,
+            "enable_climax": enable_climax,
+            "ticker_text": ticker_text,
+            "is_draft": False
+        }
+        
+        import engine
+        final_file = engine.master_render_pipeline(payload)
+        
+        st.success("✅ वीडियो सफलता से रेंडर हो गया है!")
+        st.session_state.preview_video_path = final_file
+        st.rerun()

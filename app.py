@@ -253,6 +253,7 @@ st.divider()
 # TRACK 1 - MANDATORY VISUALS LAYER
 # --------------------------------------------------------------------------
 st.subheader("Track 1 — Visuals Layer (Mandatory)")
+st.info("नोट: यहाँ अपनी सभी इमेज (JPG/PNG) या वीडियो क्लिप्स (MP4) अपलोड करें। आप क्रम (Order) और वीडियो ट्रिम टाइम सेट कर सकते हैं।")
 
 uploaded_track1 = st.file_uploader(
     "Upload Images / Videos",
@@ -326,6 +327,7 @@ st.divider()
 # TRACK 2 - VOICEOVER / AUDIO
 # --------------------------------------------------------------------------
 with st.expander("Track 2 — Voiceover / Audio"):
+    st.info("नोट: अपनी वॉइसओवर ऑडियो फ़ाइल (MP3/WAV) अपलोड करें और वॉल्यूम एडजस्ट करें।")
     t2_file = st.file_uploader(
         "Upload Voiceover Audio", type=["mp3", "wav", "m4a"], key="t2_uploader"
     )
@@ -339,6 +341,7 @@ with st.expander("Track 2 — Voiceover / Audio"):
 # TRACK 3 - BACKGROUND MUSIC
 # --------------------------------------------------------------------------
 with st.expander("Track 3 — Background Music"):
+    st.info("नोट: बैकग्राउंड म्यूज़िक फ़ाइल अपलोड करें। 'Loop' ऑप्शन चालू रखने पर यह वीडियो के अंत तक बजेगा।")
     t3_file = st.file_uploader(
         "Upload BGM", type=["mp3", "wav", "m4a"], key="t3_uploader"
     )
@@ -358,6 +361,7 @@ with st.expander("Track 3 — Background Music"):
 # TRACK 4 - SOUND EFFECTS
 # --------------------------------------------------------------------------
 with st.expander("Track 4 — Sound Effects"):
+    st.info("नोट: साउंड इफेक्ट्स (जैसे Pop, Woosh) अपलोड करें और किस सेकेंड पर प्ले होना है (Trigger Time) सेट करें।")
     t4_files = st.file_uploader(
         "Upload SFX (multiple allowed)",
         type=["mp3", "wav"],
@@ -391,6 +395,7 @@ with st.expander("Track 4 — Sound Effects"):
 # TRACK 5 - SCRIPT / SUBTITLES
 # --------------------------------------------------------------------------
 with st.expander("Track 5 — Script / Subtitles"):
+    st.info("नोट: यहाँ सबटाइटल (.srt फ़ाइल या .txt) अपलोड करें और फॉन्ट का रंग चुनें।")
     t5_file = st.file_uploader(
         "Upload SRT or Text File", type=["srt", "txt"], key="t5_uploader"
     )
@@ -414,6 +419,7 @@ with st.expander("Track 5 — Script / Subtitles"):
 # TRACK 6 - OVERLAYS / WATERMARK
 # --------------------------------------------------------------------------
 with st.expander("Track 6 — Overlays / Watermark"):
+    st.info("नोट: अपना ट्रांसपेरेंट लोगो (PNG) अपलोड करें और स्क्रीन पर उसकी स्थिति (Position) चुनें।")
     t6_file = st.file_uploader(
         "Upload Logo / Watermark (PNG)", type=["png"], key="t6_uploader"
     )
@@ -432,6 +438,7 @@ with st.expander("Track 6 — Overlays / Watermark"):
 # TRACK 7 - OUTRO / TICKER
 # --------------------------------------------------------------------------
 with st.expander("Track 7 — Outro / Ticker"):
+    st.info("नोट: स्क्रीन के नीचे स्क्रॉल होने वाला टेक्स्ट लिखें।")
     st.session_state.ticker_text = st.text_input(
         "Bottom Scrolling Ticker Text",
         value=st.session_state.ticker_text,

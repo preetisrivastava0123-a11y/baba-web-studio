@@ -68,17 +68,31 @@ VIDEO_EXTS = (".mp4",)
 # SESSION STATE DEFAULTS
 # --------------------------------------------------------------------------
 DURATION_PRESETS = {
-    "5 Sec": 5,
-    "10 Sec": 10,
-    "30 Sec": 30,
-    "1 Min": 60,
+    "30 Sec (Shorts Default)": 30,
     "5 Min": 300,
+    "10 Min": 600,
+    "30 Min": 1800,
     "Custom": None,
+}
+
+# Font configuration for Devanagari-safe text rendering. Passed straight
+# into the payload so engine.py has a single source of truth instead of
+# hardcoding font paths itself.
+DEVANAGARI_FONT_CONFIG = {
+    "language": "hi",
+    "preferred_fonts": ["Nirmala.ttf", "Mangal.ttf", "NotoSansDevanagari-Regular.ttf"],
+    "windows_font_dir": "C:\\Windows\\Fonts",
+    "linux_font_candidates": [
+        "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
+        "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
+    ],
+    "render_method": "chromium_html",  # preferred: render text via headless Chromium (Playwright) to transparent PNG, then composite with MoviePy
+    "pil_raqm_required": True,         # if falling back to PIL, Pillow MUST be built with libraqm or Devanagari conjuncts/matras will break
 }
 
 DEFAULTS = {
     "ratio": "Shorts (9:16)",
-    "duration_preset": "30 Sec",
+    "duration_preset": "30 Sec (Shorts Default)",
     "custom_minutes": 0,
     "custom_seconds": 30,
     "video_duration": 30,         # computed total seconds, always kept in sync
@@ -449,6 +463,7 @@ def build_payload(is_draft: bool) -> dict:
         "enable_climax": bool(st.session_state.enable_climax),
         "climax_duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
         "climax_text": st.session_state.climax_text if st.session_state.enable_climax else "",
+        "font_config": DEVANAGARI_FONT_CONFIG,
         "track1": {
             "files": t1_files_list,          # never None
             "default_image_duration": int(st.session_state.t1_def_dur),

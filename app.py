@@ -1,388 +1,446 @@
-import streamlit as st
-import pandas as pd
+"""
+Baba Web Studio - 7-Track Video Editing Streamlit App
+Production-ready app.py
+
+Requires a sibling module `engine.py` exposing:
+    engine.master_render_pipeline(payload: dict) -> str  # returns output file path
+"""
+
 import os
+import shutil
+import tempfile
+import traceback
+from datetime import datetime
 
-# ==========================================
-# PAGE CONFIGURATION & INITIALIZATION
-# ==========================================
+import streamlit as st
+
+# --------------------------------------------------------------------------
+# PAGE CONFIG
+# --------------------------------------------------------------------------
 st.set_page_config(
-    page_title="बाबा वेब स्टूडियो - Master Video Editor",
+    page_title="Baba Web Studio",
     page_icon="🎬",
-    layout="wide"
+    layout="wide",
 )
 
-st.title("🎬 बाबा वेब स्टूडियो: मास्टर वीडियो एडिटर Dashboard")
-st.caption("7-Track Interactive Visual Timeline Video Studio")
-st.markdown("---")
+# --------------------------------------------------------------------------
+# CONSTANTS
+# --------------------------------------------------------------------------
+UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "baba_web_studio_uploads")
+OUTPUT_ROOT = os.path.join(tempfile.gettempdir(), "baba_web_studio_outputs")
+os.makedirs(UPLOAD_ROOT, exist_ok=True)
+os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
-# Session State Initialization for Dynamic Timeline Rows and Video Preview
-if 'video_clips' not in st.session_state:
-    st.session_state.video_clips = []
-if 'music_clips' not in st.session_state:
-    st.session_state.music_clips = []
-if 'sfx_events' not in st.session_state:
-    st.session_state.sfx_events = []
-if 'preview_video_path' not in st.session_state:
-    st.session_state.preview_video_path = None
+IMAGE_EXTS = (".jpg", ".jpeg", ".png")
+VIDEO_EXTS = (".mp4",)
 
+# --------------------------------------------------------------------------
+# SESSION STATE DEFAULTS
+# --------------------------------------------------------------------------
+DEFAULTS = {
+    "ratio": "Shorts (9:16)",
+    "video_duration": 30,
+    "track1_files": [],          # list[dict]: {name, path, type, order, start_sec, end_sec}
+    "t1_def_dur": 5,
+    "t1_ken_burns": True,
+    "track2_audio_path": None,
+    "track2_volume": 100,
+    "track3_bgm_path": None,
+    "track3_volume": 20,
+    "track3_loop": True,
+    "track4_sfx": [],            # list[dict]: {name, path, trigger_sec}
+    "track5_subtitle_path": None,
+    "track5_font_color": "#FFFFFF",
+    "track5_font_size": 40,
+    "track6_watermark_path": None,
+    "track6_position": "Bottom Right",
+    "ticker_text": "",
+    "is_rendering": False,
+    "last_output_path": None,
+}
 
-# ==========================================
-# STEP 0: MASTER SETUP BOX (SIDEBAR)
-# ==========================================
-with st.sidebar:
-    st.header("⚙️ Step 0: Master Setup")
-    
-    # 1. Video Format Selection
-    video_format = st.selectbox(
-        "1. वीडियो फॉर्मेट (Format):",
-        options=["9:16 Shorts (Default)", "16:9 Long Video"],
-        index=0,
-        key="s0_vformat"
-    )
-    
-    # 2. Duration Selection Logic
-    st.subheader("2. ड्यूरेशन (Duration)")
-    
-    dur_option = st.selectbox(
-        "वीडियो की लंबाई चुनें:",
-        options=[
-            "⏱️ Standard Shorts (30 Sec)",
-            "⏳ 5 Minutes",
-            "⏳ 10 Minutes",
-            "⏳ 30 Minutes",
-            "✏️ Custom (Manual Input)"
-        ],
-        index=0,
-        key="s0_dur_option"
-    )
-    
-    # Custom Input Logic
-    if "Custom" in dur_option:
-        col_m, col_s = st.columns(2)
-        with col_m:
-            custom_min = st.number_input("Minutes:", min_value=0, max_value=120, value=0, key="s0_c_min")
-        with col_s:
-            custom_sec = st.number_input("Seconds:", min_value=0, max_value=59, value=30, key="s0_c_sec")
-        base_duration = (custom_min * 60) + custom_sec
-    elif "5 Min" in dur_option:
-        base_duration = 300
-    elif "10 Min" in dur_option:
-        base_duration = 600
-    elif "30 Min" in dur_option:
-        base_duration = 1800
-    else:
-        base_duration = 30  # Standard Shorts
-        
-    st.markdown("---")
-    
-    # 3. 10-Second Climax Logic (Default Active)
-    st.subheader("3. 🎆 क्लाइमैक्स सेटिंग (Climax)")
-    enable_climax = st.checkbox(
-        "10 Second Climax शामिल करें (Default Active)", 
-        value=True, 
-        key="s0_enable_climax"
-    )
-    
-    if enable_climax:
-        total_duration = base_duration + 10
-        st.info(f"💡 कुल वीडियो समय: **{base_duration}s (Main)** + **10s (Climax)** = **{total_duration}s**")
-    else:
-        total_duration = base_duration
-        st.warning(f"⚠️ क्लाइमैक्स हटा दिया गया है। कुल वीडियो समय: **{total_duration}s**")
-
-    st.markdown("---")
-
-    # 4. Resolution Quality
-    st.subheader("4. वीडियो क्वालिटी")
-    video_quality = st.selectbox(
-        "वीडियो क्वालिटी (Quality):",
-        options=["1080p Full HD (Default)", "720p HD"],
-        index=0,
-        key="s0_vquality"
-    )
+for key, default_val in DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_val
 
 
-# ==========================================
-# TRACK 1: MANDATORY VISUALS LAYER (IMAGES & VIDEOS)
-# ==========================================
-with st.expander("🖼️ Track 1: वीडियो क्रिएशन फोल्डर (Visuals Layer) — [MANDATORY]", expanded=False):
-    track1_files = st.file_uploader(
-        "Media Upload (JPG, PNG, MP4)", 
-        type=["jpg", "jpeg", "png", "mp4"], 
-        accept_multiple_files=True, 
-        key="t1_uploader"
-    )
-    
-    if not track1_files:
-        st.info("📂 कृपया वीडियो शुरू करने के लिए अपनी इमेज या वीडियो फाइलें यहाँ अपलोड करें।")
-    else:
-        st.subheader("📋 सीक्वेंसिंग व री-ऑर्डर टेबल")
-        for i, file in enumerate(track1_files):
-            col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
-            with col1: 
-                st.write(f"📁 **{file.name}**")
-            with col2: 
-                st.number_input(f"Order #{i+1}", min_value=1, value=i+1, key=f"t1_ord_{i}")
-            
-            if file.name.lower().endswith(".mp4"):
-                with col3: 
-                    st.number_input(f"Start Sec #{i+1}", min_value=0.0, value=0.0, key=f"t1_s_{i}")
-                with col4: 
-                    st.number_input(f"End Sec #{i+1}", min_value=1.0, value=10.0, key=f"t1_e_{i}")
-            else:
-                with col3: 
-                    st.write("Image")
-                with col4: 
-                    st.write("-")
-        
-        c_eff1, c_eff2 = st.columns(2)
-        with c_eff1:
-            st.number_input("प्रति इमेज डिफ़ॉल्ट ड्यूरेशन (Sec):", min_value=1, value=5, key="t1_def_dur")
-        with c_eff2:
-            st.checkbox("Ken Burns Effect (Zoom/Pan)", value=True, key="t1_ken_burns")
-
-# ==========================================
-# TRACK 2: VIDEO CLIPS TIMELINE (OPTIONAL)
-# ==========================================
-with st.expander("🎬 Track 2: वीडियो क्लिप्स टाइमलाइन — [OPTIONAL / SKIPPABLE]", expanded=False):
-    st.markdown("**निर्देश:** मुख्य कथा के बीच मीम्स, इंट्रो या साइड क्लिप्स जोड़ें।")
-    
-    if st.button("➕ नया वीडियो क्लिप जोड़ें", key="add_t2"):
-        st.session_state.video_clips.append({"id": len(st.session_state.video_clips) + 1})
-        
-    if not st.session_state.video_clips:
-        st.info("ℹ️ अभी कोई वीडियो-क्लिप स्लॉट नहीं जोड़ा गया।")
-    else:
-        for idx, _ in enumerate(st.session_state.video_clips):
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-            with c1: st.file_uploader(f"Upload Clip #{idx+1}", type=["mp4"], key=f"t2_f_{idx}")
-            with c2: st.number_input(f"Order #{idx+1}", min_value=1, value=idx+1, key=f"t2_o_{idx}")
-            with c3: st.number_input(f"Start #{idx+1}", min_value=0.0, value=0.0, key=f"t2_s_{idx}")
-            with c4: st.number_input(f"End #{idx+1}", min_value=1.0, value=5.0, key=f"t2_e_{idx}")
+# --------------------------------------------------------------------------
+# HELPERS
+# --------------------------------------------------------------------------
+def save_uploaded_file(uploaded_file, subfolder: str) -> str:
+    """Persist an in-memory UploadedFile to disk and return its path."""
+    target_dir = os.path.join(UPLOAD_ROOT, subfolder)
+    os.makedirs(target_dir, exist_ok=True)
+    safe_name = f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{uploaded_file.name}"
+    target_path = os.path.join(target_dir, safe_name)
+    with open(target_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return target_path
 
 
-# ==========================================
-# TRACK 3: MAIN AUDIO / MUSIC LAYER (MANDATORY)
-# ==========================================
-with st.expander("🎵 Track 3: मुख्य ऑडियो/म्यूज़िक लेयर — [MANDATORY]", expanded=False):
-    t3_audio = st.file_uploader("Upload Main Audio (MP3/WAV)", type=["mp3", "wav"], key="t3_audio")
-    
-    col1, col2 = st.columns(2)
-    with col1: 
-        st.selectbox("3 विशेष म्यूज़िक मोड्स:", ["🎵 Song (Default)", "🎻 Instrumental", "🍃 Background Music"], key="t3_mode")
-    with col2: 
-        st.slider("Master Music Volume", 0.0, 1.0, 0.8, key="t3_vol")
+def clear_uploads():
+    """Wipe the temp upload dir (called on full reset)."""
+    shutil.rmtree(UPLOAD_ROOT, ignore_errors=True)
+    os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
 
-# ==========================================
-# TRACK 4: MUSIC CLIPS TIMELINE (OPTIONAL)
-# ==========================================
-with st.expander("🎼 Track 4: म्यूज़िक क्लिप्स टाइमलाइन — [OPTIONAL / SKIPPABLE]", expanded=False):
-    st.markdown("**निर्देश:** Track 2 की साइड क्लिप्स के लिए अलग से ऑडियो प्रबंधित करें।")
-    
-    if st.button("➕ नया म्यूज़िक क्लिप जोड़ें", key="add_t4"):
-        st.session_state.music_clips.append({"id": len(st.session_state.music_clips) + 1})
-        
-    if not st.session_state.music_clips:
-        st.info("ℹ️ अभी कोई म्यूज़िक-क्लिप स्लॉट नहीं जोड़ा गया।")
-    else:
-        for idx, _ in enumerate(st.session_state.music_clips):
-            c1, c2, c3 = st.columns([3, 2, 2])
-            with c1: st.file_uploader(f"Audio #{idx+1}", type=["mp3", "wav"], key=f"t4_f_{idx}")
-            with c2: st.number_input(f"Start Sec #{idx+1}", min_value=0.0, value=0.0, key=f"t4_s_{idx}")
-            with c3: st.number_input(f"End Sec #{idx+1}", min_value=1.0, value=5.0, key=f"t4_e_{idx}")
-
-
-# ==========================================
-# TRACK 5: SCRIPT, DOCS, VOICE & TICKER STRIP
-# ==========================================
-with st.expander("📜 Track 5: कहानी/मंत्र, डॉक्यूमेंट, वॉयसओवर एवं न्यूज़ पट्टी — [OPTIONAL / SKIPPABLE]", expanded=False):
-    col_t5_1, col_t5_2 = st.columns(2)
-    
-    with col_t5_1:
-        st.subheader("1. 📖 कहानी / मंत्र / डॉक्यूमेंट इनपुट")
-        input_type = st.radio("इनपुट का प्रकार चुनें:", ["डायरेक्ट टेक्स्ट / मंत्र दर्ज करें", "📄 डॉक्यूमेंट फाइल अपलोड करें (PDF, DOCX, TXT)"], horizontal=True, key="t5_in_type")
-        
-        if "डायरेक्ट" in input_type:
-            script_text = st.text_area("यहाँ अपनी कहानी, श्लोक या मंत्र दर्ज करें:", height=120, placeholder="उदाहरण: 🕉️ नमो भगवते वासुदेवाय...", key="t5_script_txt")
-        else:
-            doc_file = st.file_uploader("कहानी/मंत्र की PDF, DOCX या TXT फाइल अपलोड करें:", type=["pdf", "docx", "doc", "txt"], key="t5_doc_file")
-            if doc_file:
-                st.success(f"✅ डॉक्यूमेंट '{doc_file.name}' अपलोड हो गया!")
-        
-        st.markdown("---")
-        st.subheader("2. 🎙️ वॉयसओवर चयन")
-        voice_type = st.radio("वॉयसओवर स्रोत:", ["बाबा एआई दिव्य आवाज़ (Edge-TTS)", "अपनी रिकॉर्ड की हुई आवाज़ (MP3/WAV Upload)"], key="t5_voice_src")
-        
-        if "अपनी रिकॉर्ड" in voice_type:
-            uploaded_voice = st.file_uploader("अपनी आवाज़ फाइल अपलोड करें:", type=["mp3", "wav"], key="t5_voice_up")
-            
-        auto_ducking = st.checkbox("Auto-Ducking On (वॉयस शुरू होने पर BGM धीमा करें)", value=True, key="t5_ducking")
-
-    with col_t5_2:
-        st.subheader("3. 📺 बॉटम न्यूज़ पट्टी (Ticker Strip / Comment Notes)")
-        st.caption("यह पट्टी पूरे वीडियो में चलेगी और Climax समय 'Like & Subscribe' का कमेंट नोट दिखाएगी।")
-        
-        ticker_text = st.text_input(
-            "पट्टी पर लिखा जाने वाला संदेश / कमेंट नोट:", 
-            value="🔔 बाबा वेब स्टूडियो को सब्सक्राइब करें | वीडियो को Like और Share करना न भूलें!",
-            key="t5_ticker_input"
-        )
-        
-        st.markdown("---")
-        st.subheader("4. 🎨 सबटाइटल स्टाइलिंग")
-        sub_col1, sub_col2 = st.columns(2)
-        with sub_col1:
-            subtitle_color = st.color_picker("Subtitle Color", "#FFD700", key="t5_sub_clr")
-        with sub_col2:
-            subtitle_size = st.selectbox("Font Size:", ["50px", "65px (Default)", "90px"], index=1, key="t5_sub_sz")
-
-
-# ==========================================
-# TRACK 6: SFX (SOUND EFFECTS) TIMELINE
-# ==========================================
-with st.expander("🔊 Track 6: SFX (साउंड इफ़ेक्ट्स) टाइमलाइन — [OPTIONAL / SKIPPABLE]", expanded=False):
-    st.markdown("**निर्देश:** दृश्य के अनुसार शंख, डमरू, घंटी, बारिश या हवा की आवाज़ जोड़ें।")
-    
-    if st.button("➕ नया SFX जोड़ें", key="add_t6"):
-        st.session_state.sfx_events.append({"id": len(st.session_state.sfx_events) + 1})
-        
-    if not st.session_state.sfx_events:
-        st.info("ℹ️ अभी कोई SFX नहीं जोड़ा गया।")
-    else:
-        for idx, _ in enumerate(st.session_state.sfx_events):
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
-            with c1: st.selectbox(f"Sound #{idx+1}", ["🕉️ शंख नाद", "🕉️ डमरू", "🌧️ बारिश", "💨 तेज़ हवा", "💥 काँच टूटना"], key=f"t6_preset_{idx}")
-            with c2: st.number_input(f"Start Sec #{idx+1}", min_value=0.0, value=0.0, key=f"t6_str_{idx}")
-            with c3: st.number_input(f"End Sec #{idx+1}", min_value=0.5, value=3.0, key=f"t6_end_{idx}")
-            with c4: st.slider(f"Vol #{idx+1}", 0.0, 1.0, 0.9, key=f"t6_v_{idx}")
-
-
-# ==========================================
-# TRACK 7: VISUAL PREVIEW & TIMELINE INTERACTIVE BOARD
-# ==========================================
-st.markdown("---")
-st.header("⏱️ Track 7: टाइमिंग, लाइव प्रीव्यू एवं स्मार्ट इफ़ेक्ट्स बोर्ड")
-
-# 1. Canvas / Video Preview Screen (CONNECTED)
-st.subheader("1. 🎥 लाइव वीडियो प्रीव्यू स्क्रीन (Live Preview Window)")
-p_col1, p_col2, p_col3 = st.columns([1, 3, 1])
-
-with p_col2:
-    if st.session_state.preview_video_path and os.path.exists(st.session_state.preview_video_path):
-        st.video(st.session_state.preview_video_path)
-        st.success("✅ Fast Preview लोड हो गया है! नीचे से प्ले करके चेक करें।")
-    else:
-        st.markdown(
-            """
-            <div style="background-color: #1e1e1e; border: 2px dashed #555; border-radius: 12px; height: 280px; display: flex; align-items: center; justify-content: center; box-shadow: 0px 4px 10px rgba(0,0,0,0.3); margin-bottom: 10px;">
-                <div style="text-align: center; color: #aaa;">
-                    <h3 style="margin: 0;">🎬 [ Visual Video Canvas Window ]</h3>
-                    <p style="margin-top: 5px; font-size: 14px;">नीचे 'Quick Draft Render' दबाते ही आपका वीडियो यहाँ चालू हो जाएगा</p>
-                </div>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-
-st.markdown("---")
-
-# 2. Visual Tracks (Canva Style Layout)
-st.subheader("2. 🎛️ मल्टी-ट्रैक टाइमलाइन (Visual Interactive Tracks)")
-
-st.markdown(
+def sync_track1_files(uploaded_files):
     """
-    <div style="background-color: #e9ecef; padding: 5px 15px; border-radius: 6px; display: flex; justify-content: space-between; font-family: monospace; font-weight: bold; color: #495057; margin-bottom: 15px;">
-        <span>0s</span><span>|</span><span>10s</span><span>|</span><span>20s</span><span>|</span><span>30s</span><span>|</span><span>40s</span><span>|</span><span>50s</span><span>|</span><span>60s</span>
-    </div>
-    """,
-    unsafe_allow_html=True
+    Reconcile newly uploaded files with existing track1_files state,
+    preserving per-file sequence/trim settings already entered by the user.
+    """
+    if not uploaded_files:
+        return
+
+    existing_names = {f["name"] for f in st.session_state.track1_files}
+    next_order = len(st.session_state.track1_files) + 1
+
+    for uf in uploaded_files:
+        if uf.name in existing_names:
+            continue  # already tracked, don't duplicate or reset its settings
+        ext = os.path.splitext(uf.name)[1].lower()
+        saved_path = save_uploaded_file(uf, "track1")
+        file_type = "video" if ext in VIDEO_EXTS else "image"
+        st.session_state.track1_files.append(
+            {
+                "name": uf.name,
+                "path": saved_path,
+                "type": file_type,
+                "order": next_order,
+                "start_sec": 0.0,
+                "end_sec": 5.0,
+            }
+        )
+        next_order += 1
+
+
+# --------------------------------------------------------------------------
+# HEADER
+# --------------------------------------------------------------------------
+st.title("🎬 Baba Web Studio")
+st.caption("7-Track Video Editor")
+
+header_col1, header_col2 = st.columns(2)
+with header_col1:
+    st.session_state.ratio = st.selectbox(
+        "Video Ratio",
+        options=["Shorts (9:16)", "Long (16:9)"],
+        index=["Shorts (9:16)", "Long (16:9)"].index(st.session_state.ratio),
+    )
+with header_col2:
+    st.session_state.video_duration = st.number_input(
+        "Target Duration (sec)",
+        min_value=1,
+        value=int(st.session_state.video_duration),
+        step=1,
+    )
+
+st.divider()
+
+# --------------------------------------------------------------------------
+# TRACK 1 - MANDATORY VISUALS LAYER
+# --------------------------------------------------------------------------
+st.subheader("Track 1 — Visuals Layer (Mandatory)")
+
+uploaded_track1 = st.file_uploader(
+    "Upload Images / Videos",
+    type=["jpg", "jpeg", "png", "mp4"],
+    accept_multiple_files=True,
+    key="t1_uploader",
 )
+sync_track1_files(uploaded_track1)
 
-# Text Track
-with st.container():
-    t_col1, t_col2 = st.columns([1, 5])
-    with t_col1: st.button("🔤 Add Elements", key="t_btn", use_container_width=True)
-    with t_col2: st.markdown("<div style='background-color: #e3f2fd; padding: 12px; border-radius: 8px; border: 1px dashed #2196f3; color: #0d47a1;'><b>Text Track:</b> Subtitles | News Ticker (Like & Subscribe)</div>", unsafe_allow_html=True)
+t1_col1, t1_col2 = st.columns(2)
+with t1_col1:
+    st.session_state.t1_def_dur = st.number_input(
+        "Default Image Duration (sec)",
+        min_value=1,
+        value=int(st.session_state.t1_def_dur),
+        step=1,
+        key="t1_def_dur_input",
+    )
+with t1_col2:
+    st.session_state.t1_ken_burns = st.toggle(
+        "Ken Burns Effect (Images)",
+        value=st.session_state.t1_ken_burns,
+        key="t1_ken_burns_toggle",
+    )
 
-st.write("")
+if st.session_state.track1_files:
+    st.markdown("**Sequence & Trim**")
+    for idx, item in enumerate(st.session_state.track1_files):
+        cols = st.columns([3, 1, 1, 1, 1])
+        cols[0].write(f"{item['name']}  `({item['type']})`")
+        item["order"] = cols[1].number_input(
+            "Order",
+            min_value=1,
+            value=int(item["order"]),
+            step=1,
+            key=f"t1_order_{idx}",
+            label_visibility="collapsed",
+        )
+        if item["type"] == "video":
+            item["start_sec"] = cols[2].number_input(
+                "Start Sec",
+                min_value=0.0,
+                value=float(item["start_sec"]),
+                step=0.5,
+                key=f"t1_start_{idx}",
+                label_visibility="collapsed",
+            )
+            item["end_sec"] = cols[3].number_input(
+                "End Sec",
+                min_value=0.0,
+                value=float(item["end_sec"]),
+                step=0.5,
+                key=f"t1_end_{idx}",
+                label_visibility="collapsed",
+            )
+        else:
+            cols[2].write("—")
+            cols[3].write("—")
+        if cols[4].button("Remove", key=f"t1_remove_{idx}"):
+            st.session_state.track1_files.pop(idx)
+            st.rerun()
 
-# Visuals Track
-with st.container():
-    v_col1, v_col2 = st.columns([1, 5])
-    with v_col1: st.button("➕ Drag/Drop Media", key="v_btn", use_container_width=True)
-    with v_col2: st.markdown("<div style='background-color: #f1f8e9; padding: 18px; border-radius: 8px; border: 1px dashed #7cb342; color: #33691e;'>🖼️ <b>Main Visuals Track:</b> [Track 1 Files] + [Track 2 Clips] Blocks</div>", unsafe_allow_html=True)
+    # keep list sorted by user-defined order for payload construction
+    st.session_state.track1_files.sort(key=lambda f: f["order"])
+else:
+    st.info("Track 1 mein kam se kam ek file upload karna zaroori hai.")
 
-st.write("")
+st.divider()
 
-# Audio Track
-with st.container():
-    a_col1, a_col2 = st.columns([1, 5])
-    with a_col1: st.button("🎵 Add Audio/SFX", key="a_btn", use_container_width=True)
-    with a_col2: st.markdown("<div style='background-color: #fce4ec; padding: 12px; border-radius: 8px; border: 1px dashed #ec407a; color: #880e4f;'>🎶 <b>Audio Track:</b> Background Music | Voiceover | SFX Sync Events</div>", unsafe_allow_html=True)
+# --------------------------------------------------------------------------
+# TRACK 2 - VOICEOVER / AUDIO
+# --------------------------------------------------------------------------
+with st.expander("Track 2 — Voiceover / Audio"):
+    t2_file = st.file_uploader(
+        "Upload Voiceover Audio", type=["mp3", "wav", "m4a"], key="t2_uploader"
+    )
+    if t2_file is not None:
+        st.session_state.track2_audio_path = save_uploaded_file(t2_file, "track2")
+    st.session_state.track2_volume = st.slider(
+        "Voiceover Volume (%)", 0, 100, int(st.session_state.track2_volume), key="t2_vol"
+    )
 
-st.markdown("---")
+# --------------------------------------------------------------------------
+# TRACK 3 - BACKGROUND MUSIC
+# --------------------------------------------------------------------------
+with st.expander("Track 3 — Background Music"):
+    t3_file = st.file_uploader(
+        "Upload BGM", type=["mp3", "wav", "m4a"], key="t3_uploader"
+    )
+    if t3_file is not None:
+        st.session_state.track3_bgm_path = save_uploaded_file(t3_file, "track3")
+    t3_col1, t3_col2 = st.columns(2)
+    with t3_col1:
+        st.session_state.track3_volume = st.slider(
+            "BGM Volume (%)", 0, 100, int(st.session_state.track3_volume), key="t3_vol"
+        )
+    with t3_col2:
+        st.session_state.track3_loop = st.checkbox(
+            "Loop BGM", value=st.session_state.track3_loop, key="t3_loop"
+        )
 
-# 3. Smart Effects Selection
-st.subheader("3. 🪄 इफ़ेक्ट्स मोड (Effects Configuration)")
-fx_selection = st.radio("स्मार्ट इफ़ेक्ट मोड चुनें:", ["🤖 ऑटो-मैजिक इफ़ेक्ट्स (Default)", "🎛️ कस्टम मैन्युअल इफ़ेक्ट्स"], horizontal=True, key="t7_fx_sel")
+# --------------------------------------------------------------------------
+# TRACK 4 - SOUND EFFECTS
+# --------------------------------------------------------------------------
+with st.expander("Track 4 — Sound Effects"):
+    t4_files = st.file_uploader(
+        "Upload SFX (multiple allowed)",
+        type=["mp3", "wav"],
+        accept_multiple_files=True,
+        key="t4_uploader",
+    )
+    if t4_files:
+        existing_sfx_names = {s["name"] for s in st.session_state.track4_sfx}
+        for sf in t4_files:
+            if sf.name not in existing_sfx_names:
+                st.session_state.track4_sfx.append(
+                    {"name": sf.name, "path": save_uploaded_file(sf, "track4"), "trigger_sec": 0.0}
+                )
 
-if "मैन्युअल" in fx_selection:
-    col_f1, col_f2, col_f3 = st.columns(3)
-    with col_f1: st.selectbox("Motion Effect:", ["Zoom In", "Zoom Out", "Pan Left"], key="t7_m_fx")
-    with col_f2: st.selectbox("Scene Transition:", ["Cross Dissolve", "Fade Black", "Glow Flash"], key="t7_t_fx")
-    with col_f3: st.selectbox("Special Overlays:", ["None", "Glass Shatter", "Light Flare"], key="t7_o_fx")
+    for idx, sfx in enumerate(st.session_state.track4_sfx):
+        cols = st.columns([3, 2, 1])
+        cols[0].write(sfx["name"])
+        sfx["trigger_sec"] = cols[1].number_input(
+            "Trigger at (sec)",
+            min_value=0.0,
+            value=float(sfx["trigger_sec"]),
+            step=0.5,
+            key=f"t4_trigger_{idx}",
+            label_visibility="collapsed",
+        )
+        if cols[2].button("Remove", key=f"t4_remove_{idx}"):
+            st.session_state.track4_sfx.pop(idx)
+            st.rerun()
 
+# --------------------------------------------------------------------------
+# TRACK 5 - SCRIPT / SUBTITLES
+# --------------------------------------------------------------------------
+with st.expander("Track 5 — Script / Subtitles"):
+    t5_file = st.file_uploader(
+        "Upload SRT or Text File", type=["srt", "txt"], key="t5_uploader"
+    )
+    if t5_file is not None:
+        st.session_state.track5_subtitle_path = save_uploaded_file(t5_file, "track5")
+    t5_col1, t5_col2 = st.columns(2)
+    with t5_col1:
+        st.session_state.track5_font_color = st.color_picker(
+            "Font Color", value=st.session_state.track5_font_color, key="t5_color"
+        )
+    with t5_col2:
+        st.session_state.track5_font_size = st.number_input(
+            "Font Size",
+            min_value=10,
+            value=int(st.session_state.track5_font_size),
+            step=2,
+            key="t5_size",
+        )
 
-# ==========================================
-# RENDER TRIGGER BUTTONS (OUTPUT ZONE)
-# ==========================================
-st.markdown("---")
-st.header("🚀 वीडियो रेंडरिंग ऑप्शंस")
+# --------------------------------------------------------------------------
+# TRACK 6 - OVERLAYS / WATERMARK
+# --------------------------------------------------------------------------
+with st.expander("Track 6 — Overlays / Watermark"):
+    t6_file = st.file_uploader(
+        "Upload Logo / Watermark (PNG)", type=["png"], key="t6_uploader"
+    )
+    if t6_file is not None:
+        st.session_state.track6_watermark_path = save_uploaded_file(t6_file, "track6")
+    st.session_state.track6_position = st.selectbox(
+        "Position",
+        options=["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Center"],
+        index=["Top Left", "Top Right", "Bottom Left", "Bottom Right", "Center"].index(
+            st.session_state.track6_position
+        ),
+        key="t6_position_select",
+    )
 
-r_col1, r_col2 = st.columns(2)
+# --------------------------------------------------------------------------
+# TRACK 7 - OUTRO / TICKER
+# --------------------------------------------------------------------------
+with st.expander("Track 7 — Outro / Ticker"):
+    st.session_state.ticker_text = st.text_input(
+        "Bottom Scrolling Ticker Text",
+        value=st.session_state.ticker_text,
+        key="t7_ticker_input",
+    )
 
-safe_files = track1_files if ('track1_files' in locals() and track1_files is not None) else []
+st.divider()
 
-with r_col1:
-    if st.button("⚡ Quick Draft Render (360p Fast Preview)", use_container_width=True, key="btn_draft_render"):
-        st.info("⏳ 360p क्विक ड्राफ्ट रेंडर शुरू हो रहा है...")
-        
-        payload = {
-            "video_format": video_format,
-            "base_duration": total_duration,
-            "enable_climax": enable_climax,
-            "t1_files": safe_files,
-            "t1_def_dur": st.session_state.get("t1_def_dur", 5),
-            "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
-            "ticker_text": ticker_text,
-            "is_draft": True
+# --------------------------------------------------------------------------
+# PAYLOAD CONSTRUCTION
+# --------------------------------------------------------------------------
+def build_payload(is_draft: bool) -> dict:
+    t1_files_list = [
+        {
+            "path": f["path"],
+            "type": f["type"],
+            "order": int(f["order"]),
+            "start_sec": float(f["start_sec"]),
+            "end_sec": float(f["end_sec"]),
         }
-        
-        import engine
-        output_file = engine.master_render_pipeline(payload)
-        
-        st.session_state.preview_video_path = output_file
-        st.rerun()
+        for f in sorted(st.session_state.track1_files, key=lambda x: x["order"])
+    ] if st.session_state.track1_files else []
 
-with r_col2:
-    if st.button("🎬 Final Video Render (1080p Full HD Output)", type="primary", use_container_width=True, key="btn_final_render"):
-        st.info("🎉 1080p/720p मास्टर वीडियो रेंडर प्रोसेस शुरू हो गया है...")
-        
-        payload = {
-            "video_format": video_format,
-            "base_duration": total_duration,
-            "enable_climax": enable_climax,
-            "t1_files": safe_files,
-            "t1_def_dur": st.session_state.get("t1_def_dur", 5),
-            "t1_ken_burns": st.session_state.get("t1_ken_burns", True),
-            "ticker_text": ticker_text,
-            "is_draft": False
-        }
-        
-        import engine
-        final_file = engine.master_render_pipeline(payload)
-        
-        st.success("✅ वीडियो सफलता से रेंडर हो गया है!")
-        st.session_state.preview_video_path = final_file
-        st.rerun()
+    payload = {
+        "ratio": st.session_state.ratio,
+        "duration": int(st.session_state.video_duration),
+        "is_draft": bool(is_draft),
+        "track1": {
+            "files": t1_files_list,          # never None
+            "default_image_duration": int(st.session_state.t1_def_dur),
+            "ken_burns": bool(st.session_state.t1_ken_burns),
+        },
+        "track2": {
+            "audio_path": st.session_state.track2_audio_path,
+            "volume": int(st.session_state.track2_volume),
+        },
+        "track3": {
+            "bgm_path": st.session_state.track3_bgm_path,
+            "volume": int(st.session_state.track3_volume),
+            "loop": bool(st.session_state.track3_loop),
+        },
+        "track4": {
+            "sfx": [
+                {"path": s["path"], "trigger_sec": float(s["trigger_sec"])}
+                for s in st.session_state.track4_sfx
+            ] if st.session_state.track4_sfx else [],
+        },
+        "track5": {
+            "subtitle_path": st.session_state.track5_subtitle_path,
+            "font_color": st.session_state.track5_font_color,
+            "font_size": int(st.session_state.track5_font_size),
+        },
+        "track6": {
+            "watermark_path": st.session_state.track6_watermark_path,
+            "position": st.session_state.track6_position,
+        },
+        "track7": {
+            "ticker_text": st.session_state.ticker_text or "",
+        },
+    }
+    return payload
+
+
+def run_render(is_draft: bool):
+    if not st.session_state.track1_files:
+        st.error("Render se pehle Track 1 mein kam se kam ek image ya video upload karein.")
+        return
+
+    payload = build_payload(is_draft)
+    st.session_state.is_rendering = True
+
+    try:
+        with st.spinner(
+            "Quick Draft render ho raha hai..." if is_draft else "Final 1080p render ho raha hai... isme kuch samay lag sakta hai."
+        ):
+            import importlib
+            import engine  # noqa: F401  (dynamic import, sibling module)
+            importlib.reload(engine)
+            output_file = engine.master_render_pipeline(payload)
+
+        if output_file and os.path.exists(output_file):
+            st.session_state.last_output_path = output_file
+            st.success("Render complete!")
+        else:
+            st.error("Engine ne valid output file path return nahi kiya.")
+
+    except ModuleNotFoundError:
+        st.error(
+            "`engine.py` nahi mila. Isse `app.py` ke same folder mein rakhein aur "
+            "`master_render_pipeline(payload)` function define karein."
+        )
+    except Exception as e:
+        st.error(f"Render fail hua: {e}")
+        with st.expander("Error Details"):
+            st.code(traceback.format_exc())
+    finally:
+        st.session_state.is_rendering = False
+
+
+# --------------------------------------------------------------------------
+# EXECUTION BUTTONS
+# --------------------------------------------------------------------------
+btn_col1, btn_col2 = st.columns(2)
+with btn_col1:
+    if st.button("⚡ Quick Draft Render (360p)", use_container_width=True, disabled=st.session_state.is_rendering):
+        run_render(is_draft=True)
+with btn_col2:
+    if st.button("🎬 Final Video Render (1080p)", use_container_width=True, type="primary", disabled=st.session_state.is_rendering):
+        run_render(is_draft=False)
+
+# --------------------------------------------------------------------------
+# OUTPUT PLAYER + DOWNLOAD
+# --------------------------------------------------------------------------
+if st.session_state.last_output_path and os.path.exists(st.session_state.last_output_path):
+    st.divider()
+    st.subheader("Output")
+    st.video(st.session_state.last_output_path)
+    with open(st.session_state.last_output_path, "rb") as f:
+        st.download_button(
+            "⬇️ Download Video",
+            data=f,
+            file_name=os.path.basename(st.session_state.last_output_path),
+            mime="video/mp4",
+        )

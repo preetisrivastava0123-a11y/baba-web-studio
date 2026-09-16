@@ -38,8 +38,10 @@ VIDEO_EXTS = (".mp4",)
 # SESSION STATE DEFAULTS
 # --------------------------------------------------------------------------
 DEFAULTS = {
-    "ratio": "Shorts (9:16)",
+    "ratio": "Long (16:9)",
     "video_duration": 30,
+    "enable_climax": True,
+    "climax_duration": 10,
     "track1_files": [],          # list[dict]: {name, path, type, order, start_sec, end_sec}
     "t1_def_dur": 5,
     "t1_ken_burns": True,
@@ -54,7 +56,7 @@ DEFAULTS = {
     "track5_font_size": 40,
     "track6_watermark_path": None,
     "track6_position": "Bottom Right",
-    "ticker_text": "",
+    "ticker_text": "Baba Web Studio - Call Us For Professional Video Creation!",
     "is_rendering": False,
     "last_output_path": None,
 }
@@ -120,12 +122,12 @@ def sync_track1_files(uploaded_files):
 st.title("🎬 Baba Web Studio")
 st.caption("7-Track Video Editor")
 
-header_col1, header_col2 = st.columns(2)
+header_col1, header_col2, header_col3 = st.columns(3)
 with header_col1:
     st.session_state.ratio = st.selectbox(
         "Video Ratio",
-        options=["Shorts (9:16)", "Long (16:9)"],
-        index=["Shorts (9:16)", "Long (16:9)"].index(st.session_state.ratio),
+        options=["Long (16:9)", "Shorts (9:16)"],
+        index=["Long (16:9)", "Shorts (9:16)"].index(st.session_state.ratio),
     )
 with header_col2:
     st.session_state.video_duration = st.number_input(
@@ -133,6 +135,21 @@ with header_col2:
         min_value=1,
         value=int(st.session_state.video_duration),
         step=1,
+    )
+with header_col3:
+    st.session_state.enable_climax = st.checkbox(
+        "Append Climax / Outro Card",
+        value=st.session_state.enable_climax,
+        key="climax_toggle",
+    )
+
+if st.session_state.enable_climax:
+    st.session_state.climax_duration = st.number_input(
+        "Climax Card Duration (sec)",
+        min_value=1,
+        value=int(st.session_state.climax_duration),
+        step=1,
+        key="climax_duration_input",
     )
 
 st.divider()
@@ -345,8 +362,11 @@ def build_payload(is_draft: bool) -> dict:
 
     payload = {
         "ratio": st.session_state.ratio,
+        "is_shorts": st.session_state.ratio == "Shorts (9:16)",
         "duration": int(st.session_state.video_duration),
         "is_draft": bool(is_draft),
+        "enable_climax": bool(st.session_state.enable_climax),
+        "climax_duration": int(st.session_state.climax_duration),
         "track1": {
             "files": t1_files_list,          # never None
             "default_image_duration": int(st.session_state.t1_def_dur),

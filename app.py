@@ -4,6 +4,36 @@ Production-ready app.py
 
 Requires a sibling module `engine.py` exposing:
     engine.master_render_pipeline(payload: dict) -> str  # returns output file path
+
+--------------------------------------------------------------------------
+DEVANAGARI / HINDI TEXT RENDERING — IMPORTANT NOTE FOR `engine.py`
+--------------------------------------------------------------------------
+This app collects Hindi/Devanagari text (climax_text, ticker_text, subtitles)
+as plain Python strings. Streamlit itself handles UTF-8 natively, so no
+special handling is needed on the UI side. The risk is entirely on the
+RENDER side (MoviePy / PIL), where Devanagari commonly breaks:
+
+  - PIL's default ImageFont/ImageDraw text renderer does NOT shape
+    conjuncts/matras correctly unless compiled with RAQM support
+    (libraqm). Without RAQM, Hindi text renders as disconnected or
+    broken glyph boxes (e.g. "क्ष", "ज्ञ", "स्तु" get mangled).
+  - Windows' bundled fonts: use "Nirmala.ttf" (C:\\Windows\\Fonts\\Nirmala.ttf)
+    or "Mangal.ttf" as the font file — NOT a generic sans-serif font,
+    which usually has no Devanagari glyphs at all (renders as empty boxes).
+  - RECOMMENDED FIX (most reliable): render all text (subtitles, ticker,
+    climax card) as HTML/CSS via headless Chromium (Playwright) to a PNG
+    with a transparent background, then composite that PNG onto the video
+    frame with MoviePy. Chromium's text shaping engine handles Devanagari
+    correctly out of the box, unlike PIL+RAQM on Windows.
+  - If PIL must be used directly, ensure Pillow is installed with RAQM
+    (`pip install pillow --break-system-packages` on a build with
+    libraqm/harfbuzz present) and always pass `language="hi"` to
+    ImageFont.getbbox / draw.text where supported.
+
+`engine.py` should implement ONE of the two strategies above for every
+Hindi string field in the payload (`track7.ticker_text`, `climax_text`,
+and any Devanagari subtitle content from `track5.subtitle_path`).
+--------------------------------------------------------------------------
 """
 
 import os
@@ -37,11 +67,24 @@ VIDEO_EXTS = (".mp4",)
 # --------------------------------------------------------------------------
 # SESSION STATE DEFAULTS
 # --------------------------------------------------------------------------
+DURATION_PRESETS = {
+    "5 Sec": 5,
+    "10 Sec": 10,
+    "30 Sec": 30,
+    "1 Min": 60,
+    "5 Min": 300,
+    "Custom": None,
+}
+
 DEFAULTS = {
-    "ratio": "Long (16:9)",
-    "video_duration": 30,
+    "ratio": "Shorts (9:16)",
+    "duration_preset": "30 Sec",
+    "custom_minutes": 0,
+    "custom_seconds": 30,
+    "video_duration": 30,         # computed total seconds, always kept in sync
     "enable_climax": True,
     "climax_duration": 10,
+    "climax_text": "धन्यवाद! लाइक और सब्सक्राइब करें",
     "track1_files": [],          # list[dict]: {name, path, type, order, start_sec, end_sec}
     "t1_def_dur": 5,
     "t1_ken_burns": True,
@@ -56,7 +99,7 @@ DEFAULTS = {
     "track5_font_size": 40,
     "track6_watermark_path": None,
     "track6_position": "Bottom Right",
-    "ticker_text": "Baba Web Studio - Call Us For Professional Video Creation!",
+    "ticker_text": "बाबा वेब स्टूडियो — प्रोफेशनल वीडियो एडिटिंग के लिए संपर्क करें",
     "is_rendering": False,
     "last_output_path": None,
 }
@@ -122,34 +165,72 @@ def sync_track1_files(uploaded_files):
 st.title("🎬 Baba Web Studio")
 st.caption("7-Track Video Editor")
 
-header_col1, header_col2, header_col3 = st.columns(3)
+header_col1, header_col2 = st.columns(2)
 with header_col1:
     st.session_state.ratio = st.selectbox(
         "Video Ratio",
-        options=["Long (16:9)", "Shorts (9:16)"],
-        index=["Long (16:9)", "Shorts (9:16)"].index(st.session_state.ratio),
+        options=["Shorts (9:16)", "Long (16:9)"],
+        index=["Shorts (9:16)", "Long (16:9)"].index(st.session_state.ratio),
     )
+
 with header_col2:
-    st.session_state.video_duration = st.number_input(
-        "Target Duration (sec)",
-        min_value=1,
-        value=int(st.session_state.video_duration),
-        step=1,
+    st.session_state.duration_preset = st.selectbox(
+        "Target Duration",
+        options=list(DURATION_PRESETS.keys()),
+        index=list(DURATION_PRESETS.keys()).index(st.session_state.duration_preset),
+        key="duration_preset_select",
     )
-with header_col3:
+
+if st.session_state.duration_preset == "Custom":
+    custom_col1, custom_col2 = st.columns(2)
+    with custom_col1:
+        st.session_state.custom_minutes = st.number_input(
+            "Minutes",
+            min_value=0,
+            value=int(st.session_state.custom_minutes),
+            step=1,
+            key="custom_minutes_input",
+        )
+    with custom_col2:
+        st.session_state.custom_seconds = st.number_input(
+            "Seconds",
+            min_value=0,
+            max_value=59,
+            value=int(st.session_state.custom_seconds),
+            step=1,
+            key="custom_seconds_input",
+        )
+    st.session_state.video_duration = (
+        int(st.session_state.custom_minutes) * 60 + int(st.session_state.custom_seconds)
+    )
+else:
+    st.session_state.video_duration = DURATION_PRESETS[st.session_state.duration_preset]
+
+st.caption(f"Total target duration: **{st.session_state.video_duration} sec**")
+
+st.markdown("**Climax / Outro Settings**")
+climax_col1, climax_col2 = st.columns([1, 2])
+with climax_col1:
     st.session_state.enable_climax = st.checkbox(
         "Append Climax / Outro Card",
         value=st.session_state.enable_climax,
         key="climax_toggle",
     )
+with climax_col2:
+    if st.session_state.enable_climax:
+        st.session_state.climax_duration = st.number_input(
+            "Climax Card Duration (sec)",
+            min_value=1,
+            value=int(st.session_state.climax_duration),
+            step=1,
+            key="climax_duration_input",
+        )
 
 if st.session_state.enable_climax:
-    st.session_state.climax_duration = st.number_input(
-        "Climax Card Duration (sec)",
-        min_value=1,
-        value=int(st.session_state.climax_duration),
-        step=1,
-        key="climax_duration_input",
+    st.session_state.climax_text = st.text_input(
+        "Climax Text",
+        value=st.session_state.climax_text,
+        key="climax_text_input",
     )
 
 st.divider()
@@ -366,7 +447,8 @@ def build_payload(is_draft: bool) -> dict:
         "duration": int(st.session_state.video_duration),
         "is_draft": bool(is_draft),
         "enable_climax": bool(st.session_state.enable_climax),
-        "climax_duration": int(st.session_state.climax_duration),
+        "climax_duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
+        "climax_text": st.session_state.climax_text if st.session_state.enable_climax else "",
         "track1": {
             "files": t1_files_list,          # never None
             "default_image_duration": int(st.session_state.t1_def_dur),

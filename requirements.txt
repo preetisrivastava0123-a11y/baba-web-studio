@@ -4,3 +4,5 @@ moviepy==1.0.3
 opencv-python-headless
 numpy
 imageio-ffmpeg
+edge-tts
+pillow

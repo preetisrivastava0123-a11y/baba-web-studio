@@ -104,16 +104,26 @@ DEFAULTS = {
     "t1_ken_burns": True,
     "track2_audio_path": None,
     "track2_volume": 100,
+    "track2_start_delay": 0.0,
     "track3_bgm_path": None,
     "track3_volume": 20,
     "track3_loop": True,
-    "track4_sfx": [],            # list[dict]: {name, path, trigger_sec}
+    "track3_trim_start": 0.0,
+    "track3_trim_end": 0.0,
+    "track3_fade_in": 0.0,
+    "track3_fade_out": 0.0,
+    "track3_ducking": True,
+    "track4_sfx": [],            # list[dict]: {name, path, trigger_sec, volume}
     "track5_subtitle_path": None,
     "track5_font_color": "#FFFFFF",
     "track5_font_size": 40,
     "track6_watermark_path": None,
     "track6_position": "Bottom Right",
+    "track6_size": 20,
+    "track6_opacity": 100,
     "ticker_text": "बाबा वेब स्टूडियो — प्रोफेशनल वीडियो एडिटिंग के लिए संपर्क करें",
+    "ticker_speed": "Medium",
+    "ticker_bg_color": "#000000",
     "is_rendering": False,
     "last_output_path": None,
 }
@@ -327,26 +337,37 @@ st.divider()
 # TRACK 2 - VOICEOVER / AUDIO
 # --------------------------------------------------------------------------
 with st.expander("Track 2 — Voiceover / Audio"):
-    st.info("नोट: अपनी वॉइसओवर ऑडियो फ़ाइल (MP3/WAV) अपलोड करें और वॉल्यूम एडजस्ट करें।")
+    st.info("नोट: अपनी वॉइसओवर ऑडियो फ़ाइल अपलोड करें, वॉल्यूम और स्टार्ट टाइम सेट करें।")
     t2_file = st.file_uploader(
         "Upload Voiceover Audio", type=["mp3", "wav", "m4a"], key="t2_uploader"
     )
     if t2_file is not None:
         st.session_state.track2_audio_path = save_uploaded_file(t2_file, "track2")
-    st.session_state.track2_volume = st.slider(
-        "Voiceover Volume (%)", 0, 100, int(st.session_state.track2_volume), key="t2_vol"
-    )
+    t2_col1, t2_col2 = st.columns(2)
+    with t2_col1:
+        st.session_state.track2_volume = st.slider(
+            "Voiceover Volume (%)", 0, 200, int(st.session_state.track2_volume), key="t2_vol"
+        )
+    with t2_col2:
+        st.session_state.track2_start_delay = st.number_input(
+            "Audio Start Delay (sec)",
+            min_value=0.0,
+            value=float(st.session_state.track2_start_delay),
+            step=0.5,
+            key="t2_start_delay",
+        )
 
 # --------------------------------------------------------------------------
 # TRACK 3 - BACKGROUND MUSIC
 # --------------------------------------------------------------------------
 with st.expander("Track 3 — Background Music"):
-    st.info("नोट: बैकग्राउंड म्यूज़िक फ़ाइल अपलोड करें। 'Loop' ऑप्शन चालू रखने पर यह वीडियो के अंत तक बजेगा।")
+    st.info("नोट: बैकग्राउंड म्यूज़िक फ़ाइल अपलोड करें, वॉल्यूम, लूप, ऑडियो ट्रिम और फ़ेड इफेक्ट सेट करें।")
     t3_file = st.file_uploader(
         "Upload BGM", type=["mp3", "wav", "m4a"], key="t3_uploader"
     )
     if t3_file is not None:
         st.session_state.track3_bgm_path = save_uploaded_file(t3_file, "track3")
+
     t3_col1, t3_col2 = st.columns(2)
     with t3_col1:
         st.session_state.track3_volume = st.slider(
@@ -357,11 +378,55 @@ with st.expander("Track 3 — Background Music"):
             "Loop BGM", value=st.session_state.track3_loop, key="t3_loop"
         )
 
+    st.markdown("**BGM Trim**")
+    t3_col3, t3_col4 = st.columns(2)
+    with t3_col3:
+        st.session_state.track3_trim_start = st.number_input(
+            "Start Time (sec)",
+            min_value=0.0,
+            value=float(st.session_state.track3_trim_start),
+            step=0.5,
+            key="t3_trim_start",
+        )
+    with t3_col4:
+        st.session_state.track3_trim_end = st.number_input(
+            "End Time (sec, 0 = till end)",
+            min_value=0.0,
+            value=float(st.session_state.track3_trim_end),
+            step=0.5,
+            key="t3_trim_end",
+        )
+
+    st.markdown("**Fade Effects**")
+    t3_col5, t3_col6 = st.columns(2)
+    with t3_col5:
+        st.session_state.track3_fade_in = st.number_input(
+            "Fade In (sec)",
+            min_value=0.0,
+            value=float(st.session_state.track3_fade_in),
+            step=0.5,
+            key="t3_fade_in",
+        )
+    with t3_col6:
+        st.session_state.track3_fade_out = st.number_input(
+            "Fade Out (sec)",
+            min_value=0.0,
+            value=float(st.session_state.track3_fade_out),
+            step=0.5,
+            key="t3_fade_out",
+        )
+
+    st.session_state.track3_ducking = st.checkbox(
+        "Audio Ducking (Voiceover chalte waqt BGM volume auto-kam ho)",
+        value=st.session_state.track3_ducking,
+        key="t3_ducking",
+    )
+
 # --------------------------------------------------------------------------
 # TRACK 4 - SOUND EFFECTS
 # --------------------------------------------------------------------------
 with st.expander("Track 4 — Sound Effects"):
-    st.info("नोट: साउंड इफेक्ट्स (जैसे Pop, Woosh) अपलोड करें और किस सेकेंड पर प्ले होना है (Trigger Time) सेट करें।")
+    st.info("नोट: साउंड इफेक्ट्स अपलोड करें और ट्रिगर टाइम सेट करें।")
     t4_files = st.file_uploader(
         "Upload SFX (multiple allowed)",
         type=["mp3", "wav"],
@@ -373,11 +438,16 @@ with st.expander("Track 4 — Sound Effects"):
         for sf in t4_files:
             if sf.name not in existing_sfx_names:
                 st.session_state.track4_sfx.append(
-                    {"name": sf.name, "path": save_uploaded_file(sf, "track4"), "trigger_sec": 0.0}
+                    {
+                        "name": sf.name,
+                        "path": save_uploaded_file(sf, "track4"),
+                        "trigger_sec": 0.0,
+                        "volume": 100,
+                    }
                 )
 
     for idx, sfx in enumerate(st.session_state.track4_sfx):
-        cols = st.columns([3, 2, 1])
+        cols = st.columns([3, 2, 2, 1])
         cols[0].write(sfx["name"])
         sfx["trigger_sec"] = cols[1].number_input(
             "Trigger at (sec)",
@@ -387,7 +457,14 @@ with st.expander("Track 4 — Sound Effects"):
             key=f"t4_trigger_{idx}",
             label_visibility="collapsed",
         )
-        if cols[2].button("Remove", key=f"t4_remove_{idx}"):
+        sfx["volume"] = cols[2].slider(
+            "Volume (%)",
+            0, 200,
+            int(sfx.get("volume", 100)),
+            key=f"t4_volume_{idx}",
+            label_visibility="collapsed",
+        )
+        if cols[3].button("Remove", key=f"t4_remove_{idx}"):
             st.session_state.track4_sfx.pop(idx)
             st.rerun()
 
@@ -395,7 +472,7 @@ with st.expander("Track 4 — Sound Effects"):
 # TRACK 5 - SCRIPT / SUBTITLES
 # --------------------------------------------------------------------------
 with st.expander("Track 5 — Script / Subtitles"):
-    st.info("नोट: यहाँ सबटाइटल (.srt फ़ाइल या .txt) अपलोड करें और फॉन्ट का रंग चुनें।")
+    st.info("नोट: सबटाइटल फ़ाइल (.srt/.txt) अपलोड करें और फॉन्ट स्टाइल चुनें।")
     t5_file = st.file_uploader(
         "Upload SRT or Text File", type=["srt", "txt"], key="t5_uploader"
     )
@@ -419,7 +496,7 @@ with st.expander("Track 5 — Script / Subtitles"):
 # TRACK 6 - OVERLAYS / WATERMARK
 # --------------------------------------------------------------------------
 with st.expander("Track 6 — Overlays / Watermark"):
-    st.info("नोट: अपना ट्रांसपेरेंट लोगो (PNG) अपलोड करें और स्क्रीन पर उसकी स्थिति (Position) चुनें।")
+    st.info("नोट: अपना लोगो (PNG) अपलोड करें और उसकी स्थिति चुनें।")
     t6_file = st.file_uploader(
         "Upload Logo / Watermark (PNG)", type=["png"], key="t6_uploader"
     )
@@ -433,17 +510,46 @@ with st.expander("Track 6 — Overlays / Watermark"):
         ),
         key="t6_position_select",
     )
+    t6_col1, t6_col2 = st.columns(2)
+    with t6_col1:
+        st.session_state.track6_size = st.slider(
+            "Logo Size (% of frame width)",
+            5, 100,
+            int(st.session_state.track6_size),
+            key="t6_size",
+        )
+    with t6_col2:
+        st.session_state.track6_opacity = st.slider(
+            "Logo Opacity (%)",
+            0, 100,
+            int(st.session_state.track6_opacity),
+            key="t6_opacity",
+        )
 
 # --------------------------------------------------------------------------
 # TRACK 7 - OUTRO / TICKER
 # --------------------------------------------------------------------------
 with st.expander("Track 7 — Outro / Ticker"):
-    st.info("नोट: स्क्रीन के नीचे स्क्रॉल होने वाला टेक्स्ट लिखें।")
+    st.info("नोट: नीचे स्क्रॉल होने वाला टेक्स्ट लिखें।")
     st.session_state.ticker_text = st.text_input(
         "Bottom Scrolling Ticker Text",
         value=st.session_state.ticker_text,
         key="t7_ticker_input",
     )
+    t7_col1, t7_col2 = st.columns(2)
+    with t7_col1:
+        st.session_state.ticker_speed = st.selectbox(
+            "Ticker Speed",
+            options=["Slow", "Medium", "Fast"],
+            index=["Slow", "Medium", "Fast"].index(st.session_state.ticker_speed),
+            key="t7_speed",
+        )
+    with t7_col2:
+        st.session_state.ticker_bg_color = st.color_picker(
+            "Ticker Background Color",
+            value=st.session_state.ticker_bg_color,
+            key="t7_bg_color",
+        )
 
 st.divider()
 
@@ -479,15 +585,25 @@ def build_payload(is_draft: bool) -> dict:
         "track2": {
             "audio_path": st.session_state.track2_audio_path,
             "volume": int(st.session_state.track2_volume),
+            "start_delay": float(st.session_state.track2_start_delay),
         },
         "track3": {
             "bgm_path": st.session_state.track3_bgm_path,
             "volume": int(st.session_state.track3_volume),
             "loop": bool(st.session_state.track3_loop),
+            "trim_start": float(st.session_state.track3_trim_start),
+            "trim_end": float(st.session_state.track3_trim_end),
+            "fade_in": float(st.session_state.track3_fade_in),
+            "fade_out": float(st.session_state.track3_fade_out),
+            "ducking": bool(st.session_state.track3_ducking),
         },
         "track4": {
             "sfx": [
-                {"path": s["path"], "trigger_sec": float(s["trigger_sec"])}
+                {
+                    "path": s["path"],
+                    "trigger_sec": float(s["trigger_sec"]),
+                    "volume": int(s.get("volume", 100)),
+                }
                 for s in st.session_state.track4_sfx
             ] if st.session_state.track4_sfx else [],
         },
@@ -499,9 +615,13 @@ def build_payload(is_draft: bool) -> dict:
         "track6": {
             "watermark_path": st.session_state.track6_watermark_path,
             "position": st.session_state.track6_position,
+            "size_pct": int(st.session_state.track6_size),
+            "opacity_pct": int(st.session_state.track6_opacity),
         },
         "track7": {
             "ticker_text": st.session_state.ticker_text or "",
+            "ticker_speed": st.session_state.ticker_speed,
+            "ticker_bg_color": st.session_state.ticker_bg_color,
         },
     }
     return payload

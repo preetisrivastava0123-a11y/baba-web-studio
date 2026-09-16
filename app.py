@@ -726,7 +726,7 @@ def run_render(is_draft: bool):
 
     try:
         with st.spinner(
-            "Quick Draft render ho raha hai..." if is_draft else "Final render ho raha hai... isme kuch samay lag sakta hai."
+            "Quick Draft render ho raha hai..." if is_draft else "वीडियो तैयार हो रहा है, कृपया प्रतीक्षा करें..."
         ):
             import importlib
             import engine  # noqa: F401  (dynamic import, sibling module)

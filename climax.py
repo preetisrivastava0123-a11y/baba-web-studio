@@ -72,7 +72,7 @@ SUBSCRIBE_RED_HI = (255, 62, 62)
 SUBSCRIBE_TEXT = (255, 255, 255)
 BELL_COLOR = (255, 255, 255)
 
-DEFAULT_CTA_TEXT = "वीडियो देखने के लिए धन्यवाद!\nचैनल को लाइक और सब्सक्राइब करें।\nकमेंट में 'हर हर महादेव' जरूर लिखें!"
+cta_text="वीडियो देखने के लिए धन्यवाद!\nचैनल को लाइक और सब्सक्राइब करें।\nकमेंट में 'हर हर महादेव' जरूर लिखें!"
 
 # divine hue cycle: gold -> neon blue -> fiery orange -> violet  (HSV degrees)
 DIVINE_HUES = [45.0, 196.0, 22.0, 280.0, 45.0]

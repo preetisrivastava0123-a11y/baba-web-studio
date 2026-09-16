@@ -43,6 +43,7 @@ Deps: numpy, opencv-python, Pillow, moviepy==1.0.3
 """
 
 import os
+import sys
 import math
 import wave
 import atexit
@@ -278,6 +279,39 @@ def build_shiva_particles(n_particles, w, h, fig_h, center_xy, rng):
                 center=(float(cx), float(cy)), scale=scale)
 
 
+def build_mandala_particles(n_particles, w, h, radius, center_xy, rng):
+    """
+    Particle homes for the motif mode: concentric lotus/mandala rings that sit
+    ENTIRELY OUTSIDE the motif radius, so the drone layer frames the artwork
+    instead of covering its face. Rose curves r = R(1 + a*cos(k*theta)).
+    """
+    cx, cy = center_xy
+    rings = [
+        (1.06, 0.00, 0,  0.20),   # (radius factor, petal amp, petal count, share)
+        (1.26, 0.13, 12, 0.28),
+        (1.55, 0.19, 8,  0.30),
+        (1.86, 0.09, 24, 0.22),
+    ]
+    homes, outline = [], []
+    for rf, amp, k, share in rings:
+        cnt = max(8, int(n_particles * share))
+        th = np.linspace(0, 2 * math.pi, cnt, endpoint=False)
+        th = th + rng.uniform(0, 2 * math.pi)
+        rr = radius * rf * (1.0 + amp * np.cos(k * th)) if k else np.full(cnt, radius * rf)
+        jitter = rng.normal(0, radius * 0.012, cnt)
+        homes.append(np.stack([cx + np.cos(th) * (rr + jitter),
+                               cy + np.sin(th) * (rr + jitter) * 0.94], 1))
+        outline.append(np.ones(cnt, bool))
+
+    home = np.concatenate(homes, 0).astype(np.float32)
+    return dict(home=home,
+                is_outline=np.concatenate(outline),
+                hood_center=(float(cx), float(cy)),
+                hood_radius=float(radius),
+                center=(float(cx), float(cy)),
+                scale=radius / max(1.0, HOOD_RADIUS_DESIGN))
+
+
 def build_formation(field, w, h, rng):
     """Dispersed start positions + swirl parameters for the convergence."""
     n = len(field["home"])
@@ -398,11 +432,11 @@ class _AuraField(object):
 # ==========================================================================
 # 3. FIRE / SPARK / FIREWORK FIELDS
 # ==========================================================================
-def _build_snake_fire(n, hood_center, hood_radius, rng):
+def _build_snake_fire(n, hood_center, hood_radius, rng, r_lo=0.55, r_hi=1.0):
     """High-velocity fire sparks streaming out of the hood toward the viewer."""
     return dict(
         ang=rng.uniform(-0.65, math.pi + 0.65, n).astype(np.float32),
-        r0=(hood_radius * rng.uniform(0.55, 1.0, n)).astype(np.float32),
+        r0=(hood_radius * rng.uniform(r_lo, r_hi, n)).astype(np.float32),
         acc=rng.uniform(260, 780, n).astype(np.float32),
         vy=rng.uniform(-40, 130, n).astype(np.float32),
         life=rng.uniform(0.55, 1.5, n).astype(np.float32),
@@ -699,12 +733,18 @@ def _make_subscribe_tile(btn_w, btn_h):
     r = btn_h * 0.22
 
     _rounded_rect(d, [x0, y0, x1, y1], r, SUBSCRIBE_RED + (255,))
-    # metallic sheen: bright top band, dark lower band
-    _rounded_rect(d, [x0 + btn_h * 0.06, y0 + btn_h * 0.07,
-                      x1 - btn_h * 0.06, y0 + btn_h * 0.44], r * 0.7,
+
+    # Metallic sheen. ImageDraw REPLACES the destination pixel, alpha included -
+    # drawing a translucent band straight onto the button punches a hole through
+    # it. Draw the translucent bands on their own layer and alpha_composite.
+    sheen = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(sheen)
+    _rounded_rect(sd, [x0 + btn_h * 0.06, y0 + btn_h * 0.07,
+                       x1 - btn_h * 0.06, y0 + btn_h * 0.44], r * 0.7,
                   SUBSCRIBE_RED_HI + (95,))
-    _rounded_rect(d, [x0 + btn_h * 0.06, y0 + btn_h * 0.66,
-                      x1 - btn_h * 0.06, y1 - btn_h * 0.07], r * 0.7, (120, 0, 6, 70))
+    _rounded_rect(sd, [x0 + btn_h * 0.06, y0 + btn_h * 0.66,
+                       x1 - btn_h * 0.06, y1 - btn_h * 0.07], r * 0.7, (120, 0, 6, 70))
+    img.alpha_composite(sheen)
 
     bell_size = int(btn_h * 0.56)
     bell = _make_bell_icon(bell_size)
@@ -735,6 +775,88 @@ def _make_subscribe_tile(btn_w, btn_h):
     res[..., :3] = np.clip(out_rgb / safe[..., None], 0, 255).astype(np.uint8)
     res[..., 3] = np.clip(out_a * 255, 0, 255).astype(np.uint8)
     return res
+
+
+def resolve_asset(path):
+    """
+    Resolve an asset name against the caller's cwd and this module's folder,
+    so a bare "shiva_motif.png" works whether engine.py is launched from the
+    project root or from anywhere else. Returns None when nothing is found.
+    """
+    if not path:
+        return None
+    cands = [path,
+             os.path.join(os.getcwd(), path),
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), path)]
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _make_mini_subscribe_tile(width, tint=(255, 255, 255)):
+    """Tiny metallic SUBSCRIBE pill for the background rain."""
+    w_ = max(14, int(width))
+    h_ = max(6, int(w_ * 0.34))
+    ss = 4                                        # supersample, then area-downsample
+    img = Image.new("RGBA", (w_ * ss, h_ * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    w_, h_ = w_ * ss, h_ * ss
+    r = h_ * 0.34
+    _rounded_rect(d, [0, 0, w_ - 1, h_ - 1], r, SUBSCRIBE_RED + (255,))
+    # translucent parts go on their own layer (see _make_subscribe_tile)
+    over = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    od = ImageDraw.Draw(over)
+    _rounded_rect(od, [1, 1, w_ - 2, h_ * 0.46], r * 0.8, SUBSCRIBE_RED_HI + (130,))
+    # a white bar standing in for the wordmark (real text is illegible this small)
+    _rounded_rect(od, [w_ * 0.16, h_ * 0.34, w_ * 0.84, h_ * 0.66], h_ * 0.16,
+                  tint + (235,))
+    img.alpha_composite(over)
+    return cv2.resize(np.array(img, np.uint8), (w_ // ss, h_ // ss),
+                      interpolation=cv2.INTER_AREA)
+
+
+def _make_mini_bell_tile(size, tint=(255, 236, 178)):
+    """
+    Tiny metallic bell for the background rain. Drawn 4x oversize and
+    area-downsampled - at rain scale a direct rasterisation collapses the
+    dome and lip into an unreadable triangle.
+    """
+    s_ = max(8, int(size))
+    big = _make_bell_icon(s_ * 4)
+    arr = np.array(big, np.uint8)
+    arr = cv2.resize(arr, (s_, s_), interpolation=cv2.INTER_AREA)
+    out = arr.copy()
+    out[..., 0] = tint[0]
+    out[..., 1] = tint[1]
+    out[..., 2] = tint[2]
+    return out
+
+
+def _build_subscribe_rain(n, w, h, short, rng, is_draft=False):
+    """Continuous downward-floating subscribe buttons + bells behind the scene."""
+    base = max(20, int(short * 0.078))
+    tiles = []
+    for k in (0.62, 0.85, 1.12):
+        tiles.append(_make_mini_subscribe_tile(base * k))
+    for k, tint in ((0.44, (255, 236, 178)),      # gold
+                    (0.60, (226, 238, 255)),      # chrome
+                    (0.80, (255, 236, 178))):
+        tiles.append(_make_mini_bell_tile(base * k, tint))
+    kind = rng.integers(0, len(tiles), n)
+    span = h + max(t.shape[0] for t in tiles) * 2
+    return dict(
+        tiles=tiles,
+        kind=kind,
+        x0=rng.uniform(-0.04 * w, 1.04 * w, n).astype(np.float32),
+        y0=rng.uniform(0, span, n).astype(np.float32),
+        speed=rng.uniform(h * 0.035, h * 0.115, n).astype(np.float32),
+        amp=rng.uniform(4, 26, n).astype(np.float32),
+        frq=rng.uniform(0.35, 1.25, n).astype(np.float32),
+        phase=rng.uniform(0, 2 * math.pi, n).astype(np.float32),
+        gain=rng.uniform(0.30, 0.66, n).astype(np.float32),
+        span=float(span),
+    )
 
 
 def _load_rgba(path, target_w):
@@ -768,7 +890,7 @@ def _blend_tile_over_accum(acc_rgb, acc_a, tile, x, y):
     acc_a[dy0:dy0 + ch, dx0:dx0 + cw] = sa + acc_a[dy0:dy0 + ch, dx0:dx0 + cw] * inv
 
 
-def _paste_over_frame(frame, tile, x, y):
+def _paste_over_frame(frame, tile, x, y, gain=1.0):
     H, W = frame.shape[:2]
     th, tw = tile.shape[:2]
     x0, y0 = int(x), int(y)
@@ -778,7 +900,7 @@ def _paste_over_frame(frame, tile, x, y):
     if cw <= 0 or ch <= 0:
         return
     src = tile[sy0:sy0 + ch, sx0:sx0 + cw].astype(np.float32)
-    sa = (src[..., 3] / 255.0)[..., None]
+    sa = (src[..., 3] / 255.0)[..., None] * float(gain)
     region = frame[dy0:dy0 + ch, dx0:dx0 + cw]
     frame[dy0:dy0 + ch, dx0:dx0 + cw] = src[..., :3] * sa + region * (1.0 - sa)
 
@@ -837,7 +959,77 @@ def _formation_swell(sr, rng, dur=2.4):
     return (swirl + air + gong * 0.42).astype(np.float32)
 
 
-def _synthesize_audio(duration, boom_times, chime_times, seed=0, sr=44100):
+_TTS_WARNED = [False]
+
+
+def _synthesize_tts(text, voice, out_path):
+    """Render `text` with edge-tts. Raises on any failure; caller decides."""
+    import asyncio
+    import edge_tts
+
+    async def _run():
+        await edge_tts.Communicate(text, voice).save(out_path)
+
+    try:
+        asyncio.run(_run())
+    except RuntimeError:
+        # already inside a running loop (notebook / async host)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_run())
+        finally:
+            loop.close()
+    if not os.path.exists(out_path) or os.path.getsize(out_path) < 512:
+        raise RuntimeError("edge-tts produced no audio")
+    return out_path
+
+
+def _decode_audio_mono(path, sr):
+    """Decode any ffmpeg-readable file to a mono float32 array at `sr`."""
+    clip = AudioFileClip(path)
+    try:
+        arr = clip.to_soundarray(fps=sr)
+    finally:
+        try:
+            clip.close()
+        except Exception:
+            pass
+    arr = np.asarray(arr, np.float32)
+    if arr.ndim == 2:
+        arr = arr.mean(axis=1)
+    return arr.astype(np.float32)
+
+
+def _voice_track(text, voice, sr):
+    """
+    Returns (mono float32 voice, None) or (None, reason_string).
+    Never raises - a missing network or missing edge-tts must not kill render.
+    """
+    if not text:
+        return None, "no cta_text"
+    mp3 = os.path.join(tempfile.gettempdir(), "climax_tts_%s.mp3" % uuid.uuid4().hex[:10])
+    try:
+        _synthesize_tts(text, voice, mp3)
+        _register_temp(mp3)
+        v = _decode_audio_mono(mp3, sr)
+        if v.size == 0:
+            return None, "empty voice track"
+        peak = float(np.max(np.abs(v))) or 1.0
+        return (v / peak * 0.92).astype(np.float32), None
+    except ImportError:
+        return None, "edge-tts not installed (pip install edge-tts)"
+    except Exception as e:
+        return None, "%s: %s" % (type(e).__name__, str(e)[:90])
+
+
+def _duck(bed, voice_env, depth=0.62):
+    """Sidechain: pull the music down wherever the voice is speaking."""
+    return bed * (1.0 - depth * np.clip(voice_env, 0, 1))
+
+
+def _synthesize_audio(duration, boom_times, chime_times, seed=0, sr=44100,
+                      voice_text=None, voice_name="hi-IN-SwaraNeural",
+                      voice_start=None, on_status=None):
     rng = np.random.default_rng(seed + 991)
     n = int(sr * duration)
     t = np.arange(n, dtype=np.float32) / sr
@@ -860,6 +1052,37 @@ def _synthesize_audio(duration, boom_times, chime_times, seed=0, sr=44100):
     for i, ct in enumerate(chime_times):
         _mix(out, _bell(sr, rng, f0=1046.5 * (1.0 if i % 2 == 0 else 1.335)),
              int(ct * sr), gain=0.42)
+
+    # ---- Hindi AI voiceover, ducked into the bed ----
+    if voice_text:
+        voice, reason = _voice_track(voice_text, voice_name, sr)
+        if voice is None:
+            if on_status:
+                on_status("voiceover skipped (%s)" % reason)
+        else:
+            start = FORM_TIME + 0.6 if voice_start is None else float(voice_start)
+            # pull the start earlier if the line would run past the clip
+            start = min(start, max(0.15, duration - voice.size / float(sr) - 0.25))
+            start = max(0.0, start)
+            si = int(start * sr)
+            if voice.size > n - si:                 # still too long -> fade its tail
+                voice = voice[:max(1, n - si)].copy()
+                tail = min(voice.size, int(sr * 0.25))
+                if tail > 1:
+                    voice[-tail:] *= np.linspace(1.0, 0.0, tail, dtype=np.float32)
+
+            env = np.zeros(n, np.float32)
+            mag = np.abs(voice)
+            k = max(1, int(sr * 0.12))
+            mag = _lowpass(mag, k)
+            mag = mag / (float(mag.max()) or 1.0)
+            env[si:si + mag.size] = mag[:max(0, n - si)]
+            env = _lowpass(env, max(1, int(sr * 0.05)))
+            out = _duck(out, env)
+            _mix(out, voice, si, gain=1.0)
+            if on_status:
+                on_status("voiceover mixed at %.2fs (%.2fs long)"
+                          % (start, voice.size / float(sr)))
 
     fade = int(sr * min(0.85, duration * 0.18))
     if fade:
@@ -884,8 +1107,10 @@ def _synthesize_audio(duration, boom_times, chime_times, seed=0, sr=44100):
 # 8. PUBLIC API
 # ==========================================================================
 def generate_climax(duration, cta_text, watermark_path, target_size,
-                    is_draft=True, motif_path=None, with_audio=True,
-                    show_subscribe=True, seed=None):
+                    is_draft=True, motif_path="shiva_motif.png", with_audio=True,
+                    show_subscribe=True, seed=None, with_voice=True,
+                    voice_name="hi-IN-SwaraNeural", voice_text=None,
+                    subscribe_rain=True, on_status=None):
     """
     Build the particle drone-show climax VideoClip (video + synthesized audio).
 
@@ -894,12 +1119,28 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     watermark_path : optional channel logo PNG, bottom-right (may be None)
     target_size    : (width, height) - 9:16 and 16:9 handled automatically
     is_draft       : cheap preview (12 fps, quarter-res layers, fewer particles)
-    motif_path     : OPTIONAL extra image behind the particle figure. NOT
-                     required - the Shiva figure is generated from vector math.
+    motif_path     : centre artwork, default "shiva_motif.png" (resolved against
+                     cwd and this module's folder). When it loads, it becomes
+                     the centrepiece and the particles form mandala rings AROUND
+                     it so nothing covers the motif. When it is missing, the
+                     module falls back to the pure-vector particle Shiva figure.
     with_audio     : attach the synthesized audio bed
     show_subscribe : draw the pulsing SUBSCRIBE + bell UI
     seed           : int for reproducible layouts
+    with_voice     : speak the CTA with edge-tts and duck it into the bed
+    voice_name     : edge-tts voice, default Hindi "hi-IN-SwaraNeural"
+    voice_text     : override the spoken line (defaults to cta_text)
+    subscribe_rain : background rain of tiny subscribe buttons + bells
+    on_status      : optional callable(str) for non-fatal notices (TTS skipped…)
     """
+    def _say(msg):
+        if on_status:
+            try:
+                on_status(msg)
+            except Exception:
+                pass
+        else:
+            sys.stderr.write("[climax] %s\n" % msg)
     duration = max(1.0, float(duration))
     w, h = int(target_size[0]), int(target_size[1])
     vertical = h >= w
@@ -932,19 +1173,38 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     btn_w = int(short * 0.44)
     btn_h = max(8, int(btn_w * 0.26))
 
-    # ---------------- particle fields ----------------
-    field = build_shiva_particles(n_particles, w, h, fig_h, (w * 0.5, fig_cy), rng)
-    field = build_formation(field, w, h, rng)
-    fire = _build_snake_fire(n_fire, field["hood_center"], field["hood_radius"], rng)
+    # ---------------- centre artwork ----------------
+    motif_file = resolve_asset(motif_path)
+    motif_tile = _load_rgba(motif_file, int(min(w * 0.46, fig_h * 0.78)))
+    if motif_path and motif_file is None:
+        _say("motif '%s' not found - falling back to the vector particle figure"
+             % motif_path)
 
-    fig_r = fig_h * 0.55
+    # ---------------- particle fields ----------------
+    if motif_tile is not None:
+        mh, mw = motif_tile.shape[:2]
+        motif_r = 0.5 * math.hypot(mw, mh) * 0.60
+        field = build_mandala_particles(n_particles, w, h, motif_r,
+                                        (w * 0.5, fig_cy), rng)
+        fig_r = motif_r * 2.0
+    else:
+        field = build_shiva_particles(n_particles, w, h, fig_h,
+                                      (w * 0.5, fig_cy), rng)
+        fig_r = fig_h * 0.55
+    field = build_formation(field, w, h, rng)
+    if motif_tile is not None:
+        fire = _build_snake_fire(n_fire, field["hood_center"], field["hood_radius"],
+                                 rng, r_lo=1.02, r_hi=1.30)
+    else:
+        fire = _build_snake_fire(n_fire, field["hood_center"], field["hood_radius"], rng)
+
     fw, burst_times = _build_fireworks(duration, w, h, n_bursts, sparks_per, rng,
                                        avoid=(w * 0.5, fig_cy, fig_r * 1.15))
 
     # particles-per-layer-pixel varies with figure size, aspect and draft mode;
     # without this the same count packed into a smaller figure blows out white
     _ref_density = 2600.0 / (441.0 ** 2)
-    _density = n_particles / max(1.0, (fig_h / pdiv) ** 2)
+    _density = n_particles / max(1.0, ((fig_r * 2.0) / pdiv) ** 2)
     dens_gain = float(np.clip(_ref_density / _density, 0.30, 3.0))
 
     aura = _AuraField(aw, ah, w * 0.5 / adiv, fig_cy / adiv,
@@ -955,11 +1215,10 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     ui_rgb = np.zeros((h, w, 3), np.float32)
     ui_a = np.zeros((h, w), np.float32)
 
-    motif_tile = _load_rgba(motif_path, int(w * 0.40))
+    motif_xy = None
     if motif_tile is not None:
         mh, mw = motif_tile.shape[:2]
-        _blend_tile_over_accum(ui_rgb, ui_a, motif_tile,
-                               int(w * 0.5 - mw / 2), int(fig_cy - mh / 2))
+        motif_xy = (int(w * 0.5 - mw / 2), int(fig_cy - mh / 2))
 
     if watermark_path and os.path.exists(watermark_path):
         wm = _load_rgba(watermark_path, int(w * 0.18))
@@ -982,6 +1241,19 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     ui_a3 = ui_a[..., None]
     has_ui = bool(ui_a.any())
     sub_tile = _make_subscribe_tile(btn_w, btn_h) if show_subscribe else None
+
+    # glowing aura pulse hugging the motif (additive, so it never hides the art)
+    halo = None
+    if motif_tile is not None:
+        yy, xx = np.mgrid[0:ph, 0:pw].astype(np.float32)
+        dd = np.sqrt((xx - w * 0.5 / pdiv) ** 2 + (yy - fig_cy / pdiv) ** 2)
+        dn = dd / max(1.0, (fig_r * 0.5) / pdiv)
+        halo = ((np.clip(1.0 - dn, 0, 1) ** 2.1) * 1.15
+                + np.exp(-((dn - 1.0) ** 2) / 0.05) * 0.65)
+        halo = halo[..., None] * np.array([255.0, 186.0, 82.0], np.float32)
+
+    rain = (_build_subscribe_rain(14 if is_draft else 34, w, h, short, rng, is_draft)
+            if subscribe_rain else None)
 
     # ---------------- timing ----------------
     gravity = GRAVITY * (h / 1920.0)
@@ -1008,6 +1280,9 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
         weight = ((0.30 + 0.70 * prog)
                   * np.where(field["is_outline"], 82.0, 38.0) * dens_gain)
         _scatter(part, px / pdiv, py / pdiv, cols, weight, pw, ph)
+
+        if halo is not None:
+            amb += halo * (0.42 + 0.30 * math.sin(t * 2.0)) * min(1.0, 0.35 + formed)
 
         # ---- divine aura rays, once the figure settles ----
         if formed > 0.25:
@@ -1059,6 +1334,20 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
             if m.any():
                 frame += float(np.sum(np.exp(-11.0 * dt[m]))) * 24.0
 
+        # ---- subscribe rain, drifting down behind the artwork ----
+        if rain is not None:
+            for i in range(rain["kind"].size):
+                tile = rain["tiles"][rain["kind"][i]]
+                ry = (rain["y0"][i] + rain["speed"][i] * t) % rain["span"] - tile.shape[0]
+                rx = (rain["x0"][i]
+                      + rain["amp"][i] * math.sin(t * rain["frq"][i] + rain["phase"][i]))
+                _paste_over_frame(frame, tile, rx, ry, gain=float(rain["gain"][i]))
+
+        # ---- centre artwork, fading up as the drones take formation ----
+        if motif_xy is not None:
+            _paste_over_frame(frame, motif_tile, motif_xy[0], motif_xy[1],
+                              gain=min(1.0, 0.12 + 1.5 * formed))
+
         # ---- UI ----
         if has_ui:
             frame = frame * (1.0 - ui_a3) + ui_rgb
@@ -1084,9 +1373,13 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
 
     if with_audio:
         try:
+            spoken = (voice_text if voice_text is not None else cta_text) \
+                if with_voice else None
             wav = _synthesize_audio(duration, burst_times, chime_times,
                                     seed=int(seed) if seed is not None else 0,
-                                    sr=22050 if is_draft else 44100)
+                                    sr=22050 if is_draft else 44100,
+                                    voice_text=spoken, voice_name=voice_name,
+                                    on_status=_say)
             clip = clip.set_audio(AudioFileClip(wav).set_duration(duration))
         except Exception:
             pass   # audio is a bonus; never fail the segment for it
@@ -1098,8 +1391,6 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
 # CLI:  python climax.py [shorts|long]
 # ==========================================================================
 if __name__ == "__main__":
-    import sys
-
     mode = sys.argv[1] if len(sys.argv) > 1 else "shorts"
     size = (1080, 1920) if mode == "shorts" else (1920, 1080)
 

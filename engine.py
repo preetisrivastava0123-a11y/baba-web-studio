@@ -2,33 +2,76 @@
 """
 engine.py - Baba Web Studio
 Production render pipeline. Consumes the payload dict built by app.py's
-build_payload() exactly as-is and returns a path to the rendered .mp4.
+build_payload() and returns a path to the rendered .mp4.
 
 Public API
 ----------
-master_render_pipeline(payload: dict) -> str
+master_render_pipeline(
+    payload: dict,
+    loop_audio_path=None,
+    is_mantra_mode=None,
+    ticker_enabled=None,
+    cta_type=None,
+    custom_cta_text=None,
+    **kwargs,
+) -> str
+
+Every new argument is OPTIONAL. If it is not passed explicitly, the value
+is read out of the payload dict instead (see _resolve_runtime_options).
+So both of these still work:
+
+    engine.master_render_pipeline(payload)
+    engine.master_render_pipeline(payload, is_mantra_mode=True,
+                                  loop_audio_path="/tmp/mantra.mp3")
+
+WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4)
+----------------------------------------------------------------------
+(1) SIGNATURE - master_render_pipeline() now accepts loop_audio_path,
+    is_mantra_mode, ticker_enabled, cta_type, custom_cta_text plus
+    **kwargs for forward compatibility. _resolve_runtime_options()
+    merges explicit kwargs with payload keys (kwargs win).
+
+(2) AUDIO - when is_mantra_mode is True, the 10-15 sec mantra clip is
+    looped across the FULL video duration and composited alongside the
+    Track 3 background music. Volume balancing: the background music is
+    ducked to BG_DUCK_VOLUME_WITH_MANTRA so the mantra voice stays clear
+    on top. See build_mantra_loop_layer() and build_final_audio().
+
+(3) TICKER - the ticker overlay is only composited when ticker_enabled
+    is True. Otherwise that whole CompositeVideoClip layer is skipped.
+
+(4) CLIMAX - cta_type and custom_cta_text are now forwarded to
+    climax.generate_climax() so climax.py can pick the right 3D/shimmer
+    text style and the right TTS voice. A TypeError fallback keeps older
+    climax.py signatures working.
+
+NOTE ON MOVIEPY VERSION
+----------------------------------------------------------------------
+This module targets MoviePy 1.x (`from moviepy.editor import ...`,
+`.set_duration()`, `.fx(volumex, ...)`). If you ever upgrade to
+MoviePy 2.x these imports and every .set_*/.fx() call must change.
+Pin it in requirements.txt: moviepy==1.0.3
 
 NOTE ON PAYLOAD SHAPE
 ----------------------------------------------------------------------
-app.py's actual build_payload() puts climax fields at the TOP LEVEL of
-the payload (payload['enable_climax'], payload['climax_duration'],
-payload['climax_text'], payload['climax_watermark_path']) -- there is
-no nested payload['climax'] dict. This module reads them from where
-app.py actually puts them, not from a hypothetical nested key.
+app.py puts climax fields at the TOP LEVEL of the payload
+(payload['enable_climax'], payload['climax_duration'],
+payload['climax_text'], payload['climax_watermark_path']). Newer app.py
+versions ALSO add a nested payload['climax'] dict. This module reads the
+top-level keys first and falls back to the nested dict, so both app.py
+versions work.
 
 DEVANAGARI TEXT
 ----------------------------------------------------------------------
-Per app.py's header docstring: PIL's default text layout does not shape
-Devanagari conjuncts/matras correctly. This module renders all Hindi
-text (subtitles/ticker) through a Chromium/Playwright pass when
-available, falling back to PIL + RAQM, then plain PIL as a last resort
--- mirroring the same strategy climax.py uses for the CTA text.
+PIL's default text layout does not shape Devanagari conjuncts/matras
+correctly. This module renders all Hindi text (subtitles/ticker) through
+a Chromium/Playwright pass when available, falling back to PIL + RAQM,
+then plain PIL as a last resort.
 ----------------------------------------------------------------------
 """
 
 import os
 import io
-import math
 import asyncio
 import tempfile
 import traceback
@@ -76,9 +119,16 @@ MUSIC_MODE_VOLUME = {
     "🍃 Background Music": 0.55,
 }
 
+# --- (2) VOLUME BALANCING CONSTANTS -------------------------------------
+# The mantra loop is a VOICE layer, so it sits on top and the background
+# music gets ducked underneath it. Tune these two numbers if the mix
+# sounds off: raise MANTRA_LOOP_VOLUME to make the mantra louder, or
+# lower BG_DUCK_VOLUME_WITH_MANTRA to push the music further down.
+MANTRA_LOOP_VOLUME = 0.95          # mantra voice level when mantra mode is ON
+BG_DUCK_VOLUME_WITH_MANTRA = 0.30  # background music multiplier when mantra is ON
+VOICE_DUCK_VOLUME_WITH_MANTRA = 0.85  # narration level if BOTH voice + mantra exist
+
 # Map app.py's BUILTIN_SFX_LIBRARY labels -> local asset files.
-# These files ship alongside engine.py; if missing, the SFX event is
-# skipped gracefully (see _load_sfx_clip).
 BUILTIN_SFX_ASSETS = {
     "शंख (Shankh)": "assets/sfx/shankh.mp3",
     "डमरू (Damru)": "assets/sfx/damru.mp3",
@@ -86,6 +136,11 @@ BUILTIN_SFX_ASSETS = {
     "सीटी (Whistle)": "assets/sfx/whistle.mp3",
     "तालियां (Applause)": "assets/sfx/applause.mp3",
 }
+
+# --- (4) CTA TYPE CONSTANTS ---------------------------------------------
+CTA_TYPE_DEFAULT = "Default CTA"
+CTA_TYPE_CUSTOM = "Custom CTA"
+DEFAULT_CTA_TEXT = "धन्यवाद! लाइक और सब्सक्राइब करें"
 
 _DEVANAGARI_FONT_CANDIDATES = [
     "C:\\Windows\\Fonts\\Nirmala.ttf",
@@ -102,7 +157,96 @@ def _log(msg):
 
 
 # ==========================================================================
-# DEVANAGARI-SAFE TEXT RENDERING (mirrors climax.py's strategy)
+# (1) RUNTIME OPTIONS RESOLVER - explicit kwargs win, payload is fallback
+# ==========================================================================
+def _resolve_runtime_options(payload, loop_audio_path, is_mantra_mode,
+                             ticker_enabled, cta_type, custom_cta_text):
+    """
+    Builds one options dict from (a) explicitly passed arguments and
+    (b) the payload. An explicitly passed argument always wins; None
+    means "not passed, look in the payload".
+
+    Returns a plain dict so every downstream function takes one object
+    instead of six loose arguments.
+    """
+    track5 = payload.get("track5", {}) or {}
+    nested_climax = payload.get("climax", {}) or {}
+
+    # --- loop audio path ---
+    if loop_audio_path is None:
+        loop_audio_path = (
+            payload.get("audio_file_path")
+            or track5.get("mantra_audio_path")
+            or nested_climax.get("audio_file_path")
+        )
+
+    # --- mantra / loop mode ---
+    if is_mantra_mode is None:
+        is_mantra_mode = bool(
+            payload.get("is_loop_mode")
+            or track5.get("mantra_is_loop_mode")
+            or nested_climax.get("is_loop_mode")
+        )
+    is_mantra_mode = bool(is_mantra_mode)
+
+    # A loop mode with no file is meaningless - turn it off rather than
+    # crashing deeper in the audio mixer.
+    if is_mantra_mode and not (loop_audio_path and os.path.exists(loop_audio_path)):
+        _log("NOTE: is_mantra_mode=True lekin valid loop_audio_path nahi mila - mantra mode OFF kiya ja raha hai.")
+        is_mantra_mode = False
+        loop_audio_path = None
+
+    # --- ticker enabled ---
+    if ticker_enabled is None:
+        if "ticker_enabled" in payload:
+            ticker_enabled = payload.get("ticker_enabled")
+        elif "ticker_enabled" in track5:
+            ticker_enabled = track5.get("ticker_enabled")
+        else:
+            # Legacy payloads have no flag: fall back to the old behaviour
+            # (ticker shows whenever ticker_text is non-empty).
+            ticker_enabled = bool((track5.get("ticker_text") or "").strip())
+    ticker_enabled = bool(ticker_enabled)
+
+    # --- CTA type ---
+    if cta_type is None:
+        cta_type = (
+            track5.get("cta_mode")
+            or nested_climax.get("cta_mode")
+            or CTA_TYPE_DEFAULT
+        )
+
+    # --- custom CTA text ---
+    if custom_cta_text is None:
+        custom_cta_text = track5.get("custom_cta_text") or ""
+    custom_cta_text = (custom_cta_text or "").strip()
+
+    # --- resolved final CTA text that climax.py will actually render ---
+    if cta_type == CTA_TYPE_CUSTOM and custom_cta_text:
+        resolved_cta_text = custom_cta_text
+    else:
+        # payload['climax_text'] is what app.py already resolved; trust it,
+        # then the nested dict, then the hardcoded default.
+        resolved_cta_text = (
+            (payload.get("climax_text") or "").strip()
+            or (nested_climax.get("cta_text") or "").strip()
+            or DEFAULT_CTA_TEXT
+        )
+
+    options = {
+        "loop_audio_path": loop_audio_path,
+        "is_mantra_mode": is_mantra_mode,
+        "ticker_enabled": ticker_enabled,
+        "cta_type": cta_type,
+        "custom_cta_text": custom_cta_text,
+        "resolved_cta_text": resolved_cta_text,
+    }
+    _log(f"Runtime options: {options}")
+    return options
+
+
+# ==========================================================================
+# DEVANAGARI-SAFE TEXT RENDERING
 # ==========================================================================
 def _resolve_font_path(font_config=None):
     candidates = list((font_config or {}).get("preferred_fonts_resolved", []))
@@ -119,7 +263,7 @@ def _resolve_font_path(font_config=None):
 
 
 def _render_text_png_via_playwright(text, font_size, color_hex, canvas_w, canvas_h,
-                                     bg_color_hex=None, align="center"):
+                                    bg_color_hex=None, align="center"):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -155,7 +299,7 @@ def _render_text_png_via_playwright(text, font_size, color_hex, canvas_w, canvas
 
 
 def _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
-                              bg_rgba=(0, 0, 0, 0), font_config=None):
+                             bg_rgba=(0, 0, 0, 0), font_config=None):
     font_path = _resolve_font_path(font_config)
     img = Image.new("RGBA", (canvas_w, canvas_h), bg_rgba)
     draw = ImageDraw.Draw(img)
@@ -179,12 +323,12 @@ def _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
     y = (canvas_h - th) / 2
     stroke_w = max(1, font_size // 20)
     draw.text((x, y), text, font=font, fill=color_rgb + (255,),
-               stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+              stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
     return img
 
 
 def render_hindi_text_image(text, font_size, color_rgb, canvas_w, canvas_h,
-                             bg_color_rgb=None, font_config=None):
+                            bg_color_rgb=None, font_config=None):
     """Chromium first (correct shaping), PIL+raqm fallback. Returns RGBA PIL Image."""
     if not text:
         return Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
@@ -194,7 +338,7 @@ def render_hindi_text_image(text, font_size, color_rgb, canvas_w, canvas_h,
     if img is None:
         bg_rgba = (bg_color_rgb + (255,)) if bg_color_rgb else (0, 0, 0, 0)
         img = _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
-                                        bg_rgba, font_config)
+                                       bg_rgba, font_config)
     return img
 
 
@@ -238,8 +382,10 @@ def _build_visual_clip_for_file(file_entry, target_size, ken_burns):
             clip = _apply_ken_burns(clip, duration)
             # re-center after zoom so it doesn't drift off-canvas
             clip = clip.set_position(("center", "center"))
-            clip = CompositeVideoClip([ColorClip(target_size, color=(0, 0, 0)).set_duration(duration), clip],
-                                       size=target_size).set_duration(duration)
+            clip = CompositeVideoClip(
+                [ColorClip(target_size, color=(0, 0, 0)).set_duration(duration), clip],
+                size=target_size,
+            ).set_duration(duration)
         return clip
 
 
@@ -263,8 +409,8 @@ def build_track1_timeline(track1_payload, target_size):
 
 
 def overlay_track2_clips(base_video, track2_payload, target_size):
-    """Track 2 clips replace/overlay the main timeline as full-frame inserts
-    during their specified [start_sec, end_sec] window (intro/meme/side clips)."""
+    """Track 2 clips overlay the main timeline as full-frame inserts during
+    their specified [start_sec, end_sec] window (intro/meme/side clips)."""
     clips_data = track2_payload.get("clips", [])
     if not clips_data:
         return base_video
@@ -293,20 +439,35 @@ def overlay_track2_clips(base_video, track2_payload, target_size):
 
 
 # ==========================================================================
-# TRACK 5 - TICKER OVERLAY (bottom scrolling text, Devanagari-safe)
+# (3) TRACK 5 - CONDITIONAL TICKER OVERLAY (bottom scrolling, Devanagari-safe)
 # ==========================================================================
-def build_ticker_overlay(track5_payload, target_size, total_duration, font_config):
+def build_ticker_overlay(track5_payload, target_size, total_duration, font_config,
+                         ticker_enabled=True):
+    """
+    Returns a scrolling ticker VideoClip, or None when the ticker should
+    be skipped entirely.
+
+    Skipped when:
+      - ticker_enabled is False (narration/voiceover is active, so app.py
+        turned the ticker off to avoid text-on-text clutter), OR
+      - ticker_text is empty/None.
+    """
+    if not ticker_enabled:
+        _log("Ticker skip: ticker_enabled=False (voiceover/script active).")
+        return None
+
     ticker_text = (track5_payload.get("ticker_text") or "").strip()
     if not ticker_text:
+        _log("Ticker skip: ticker_text khali hai.")
         return None
 
     w, h = target_size
     band_h = max(36, int(h * 0.045))
     font_size = int(band_h * 0.62)
-    bg_rgb = _hex_to_rgb(track5_payload.get("ticker_bg_color", "#000000"), (0, 0, 0))
-    speed = TICKER_SPEED_PX_PER_SEC.get(track5_payload.get("ticker_speed", "Medium"), 120)
+    bg_rgb = _hex_to_rgb(track5_payload.get("ticker_bg_color") or "#000000", (0, 0, 0))
+    speed = TICKER_SPEED_PX_PER_SEC.get(track5_payload.get("ticker_speed") or "Medium", 120)
 
-    # Render the ticker text once at natural width (repeat with spacing so
+    # Render the ticker text once at natural width (repeated with spacing so
     # the scroll never shows a gap), then scroll a window over that strip.
     spacer = "      •      "
     repeated_text = (ticker_text + spacer) * 6
@@ -334,6 +495,7 @@ def build_ticker_overlay(track5_payload, target_size, total_duration, font_confi
     from moviepy.editor import VideoClip
     ticker_clip = VideoClip(make_frame, duration=total_duration).set_fps(20)
     ticker_clip = ticker_clip.set_position((0, h - band_h))
+    _log(f"Ticker overlay banaya (speed={speed}px/s, band_h={band_h}px).")
     return ticker_clip
 
 
@@ -375,6 +537,46 @@ def build_voice_clip(track5_payload):
                 return AudioFileClip(manual_path)
             except Exception as e:
                 _log(f"WARNING: manual voiceover load fail hui: {e}")
+        return None
+
+
+# ==========================================================================
+# (2) MANTRA LOOP LAYER - 10-15 sec clip looped across the whole video
+# ==========================================================================
+def build_mantra_loop_layer(loop_audio_path, total_duration,
+                            volume=MANTRA_LOOP_VOLUME):
+    """
+    Takes the short mantra/voice clip and loops it until it covers the
+    full video duration, then trims it to an exact match.
+
+    Returns an AudioClip starting at t=0, or None if the file can't be
+    loaded (never raises - a broken mantra file must not kill the render).
+    """
+    if not loop_audio_path or not os.path.exists(loop_audio_path):
+        _log(f"WARNING: mantra audio file nahi mili, mantra layer skip: {loop_audio_path}")
+        return None
+
+    try:
+        mantra_clip = AudioFileClip(loop_audio_path)
+        src_duration = mantra_clip.duration
+        if not src_duration or src_duration <= 0:
+            _log("WARNING: mantra audio ki duration 0 hai, skip kiya ja raha hai.")
+            return None
+
+        if src_duration < total_duration:
+            loop_count = int(total_duration // src_duration) + 1
+            _log(f"Mantra loop: {src_duration:.1f}s ko {loop_count}x repeat karke "
+                 f"{total_duration:.1f}s tak bhara ja raha hai.")
+            mantra_clip = mantra_clip.fx(audio_loop, duration=total_duration)
+        else:
+            _log(f"Mantra audio ({src_duration:.1f}s) video se lambi hai - trim kiya ja raha hai.")
+            mantra_clip = mantra_clip.subclip(0, total_duration)
+
+        mantra_clip = mantra_clip.fx(volumex, volume).set_start(0)
+        return mantra_clip
+    except Exception as e:
+        _log(f"WARNING: mantra loop layer banane mein fail: {e}")
+        _log(traceback.format_exc())
         return None
 
 
@@ -473,47 +675,180 @@ def build_track6_sfx_layers(track6_payload):
 
 
 # ==========================================================================
-# AUDIO MIX
+# (2) AUDIO MIX - with mantra loop + volume balancing
 # ==========================================================================
-def build_final_audio(payload, total_duration):
-    layers = []
+def build_final_audio(payload, total_duration, options):
+    """
+    Layer order and levels:
+      1. Track 3 background music  - ducked to BG_DUCK_VOLUME_WITH_MANTRA
+                                     when mantra mode is ON, full level otherwise
+      2. Track 4 timed music clips - same ducking rule
+      3. Track 5 narration voice   - slightly ducked only if mantra ALSO plays
+      4. Mantra loop               - MANTRA_LOOP_VOLUME, sits on top
+      5. Track 6 SFX               - untouched, they are short accents
 
+    Ducking the music (rather than boosting the mantra) keeps the mix from
+    clipping, which is what you'd get by pushing the voice above 1.0.
+    """
+    layers = []
+    is_mantra_mode = options["is_mantra_mode"]
+
+    # --- 1. Track 3 background music (ducked under the mantra) ---
     bg_music = build_track3_bg_music(payload.get("track3", {}), total_duration)
     if bg_music is not None:
+        if is_mantra_mode:
+            bg_music = bg_music.fx(volumex, BG_DUCK_VOLUME_WITH_MANTRA)
+            _log(f"Mantra mode ON - background music {BG_DUCK_VOLUME_WITH_MANTRA}x par duck kiya gaya.")
         layers.append(bg_music.set_start(0))
 
-    layers.extend(build_track4_music_clips(payload.get("track4", {}), total_duration))
+    # --- 2. Track 4 timed music clips (same ducking rule) ---
+    for t4_clip in build_track4_music_clips(payload.get("track4", {}), total_duration):
+        if is_mantra_mode:
+            t4_clip = t4_clip.fx(volumex, BG_DUCK_VOLUME_WITH_MANTRA)
+        layers.append(t4_clip)
 
+    # --- 3. Track 5 narration voice ---
     voice_clip = build_voice_clip(payload.get("track5", {}))
     if voice_clip is not None:
         if voice_clip.duration > total_duration:
             voice_clip = voice_clip.subclip(0, total_duration)
+        if is_mantra_mode:
+            # Both narration AND mantra are playing - pull the narration
+            # down a touch so the two voices don't fight each other.
+            voice_clip = voice_clip.fx(volumex, VOICE_DUCK_VOLUME_WITH_MANTRA)
+            _log("NOTE: narration aur mantra dono active hain - narration halka duck kiya gaya.")
         layers.append(voice_clip.set_start(0))
 
+    # --- 4. Mantra loop layer (on top) ---
+    if is_mantra_mode:
+        mantra_layer = build_mantra_loop_layer(
+            options["loop_audio_path"], total_duration, MANTRA_LOOP_VOLUME
+        )
+        if mantra_layer is not None:
+            layers.append(mantra_layer)
+
+    # --- 5. Track 6 SFX ---
     layers.extend(build_track6_sfx_layers(payload.get("track6", {})))
 
     if not layers:
         return None
 
     final_audio = CompositeAudioClip(layers).set_duration(total_duration)
+    _log(f"Final audio mix: {len(layers)} layers, {total_duration:.1f}s.")
     return final_audio
 
 
 # ==========================================================================
-# MASTER PIPELINE
+# (4) CLIMAX INTEGRATION - forward cta_type + custom_cta_text
 # ==========================================================================
-def master_render_pipeline(payload: dict) -> str:
+def build_climax_clip(payload, target_size, options):
+    """
+    Calls climax.generate_climax() with the CTA type and text so climax.py
+    can pick the right 3D/shimmer style and the right TTS voice.
+
+    Returns the climax VideoClip, or None if it could not be generated
+    (the main video must still render in that case).
+
+    A TypeError fallback keeps older climax.py signatures working: if
+    generate_climax() doesn't accept cta_type/custom_cta_text yet, we
+    retry with just the original arguments.
+    """
+    nested_climax = payload.get("climax", {}) or {}
+    climax_duration = payload.get("climax_duration") or nested_climax.get("duration") or 10
+    watermark_path = payload.get("climax_watermark_path") or nested_climax.get("watermark_path")
+    cta_text = options["resolved_cta_text"]
+
+    _log(f"Climax call: type={options['cta_type']} duration={climax_duration}s text='{cta_text}'")
+
+    try:
+        return climax.generate_climax(
+            duration=climax_duration,
+            cta_text=cta_text,
+            cta_type=options["cta_type"],
+            custom_cta_text=options["custom_cta_text"],
+            watermark_path=watermark_path,
+            target_size=target_size,
+            is_draft=bool(payload.get("is_draft", False)),
+        )
+    except TypeError as te:
+        _log(f"NOTE: climax.generate_climax() naye arguments accept nahi karta ({te}) - "
+             f"purane signature se retry kiya ja raha hai.")
+        try:
+            return climax.generate_climax(
+                duration=climax_duration,
+                cta_text=cta_text,
+                watermark_path=watermark_path,
+                target_size=target_size,
+                is_draft=bool(payload.get("is_draft", False)),
+            )
+        except Exception as e:
+            _log(f"WARNING: Climax segment generate nahi hui, skip: {e}")
+            _log(traceback.format_exc())
+            return None
+    except Exception as e:
+        _log(f"WARNING: Climax segment generate nahi hui, skip: {e}")
+        _log(traceback.format_exc())
+        return None
+
+
+# ==========================================================================
+# (1) MASTER PIPELINE
+# ==========================================================================
+def master_render_pipeline(
+    payload: dict,
+    loop_audio_path=None,
+    is_mantra_mode=None,
+    ticker_enabled=None,
+    cta_type=None,
+    custom_cta_text=None,
+    **kwargs,
+) -> str:
     """
     Entry point called by app.py:
+
         output_file = engine.master_render_pipeline(payload)
+
+    or with explicit overrides:
+
+        output_file = engine.master_render_pipeline(
+            payload,
+            is_mantra_mode=True,
+            loop_audio_path="/tmp/mantra.mp3",
+            ticker_enabled=False,
+            cta_type="Custom CTA",
+            custom_cta_text="बेल आइकन दबाएं",
+        )
+
+    Any argument left as None is read from the payload instead.
+    **kwargs absorbs anything app.py sends that this version doesn't
+    know about yet (e.g. is_loop_mode / audio_file_path aliases), so a
+    newer app.py never crashes an older engine.py.
+
     Returns a filesystem path to the rendered .mp4.
     """
+    # app.py may send these alias names - accept them too.
+    if loop_audio_path is None:
+        loop_audio_path = kwargs.get("audio_file_path")
+    if is_mantra_mode is None:
+        is_mantra_mode = kwargs.get("is_loop_mode")
+    if kwargs:
+        unknown = [k for k in kwargs if k not in ("audio_file_path", "is_loop_mode")]
+        if unknown:
+            _log(f"NOTE: unknown extra arguments ignore kiye gaye: {unknown}")
+
     ratio = payload.get("ratio", "Shorts (9:16)")
     quality = payload.get("output_quality", "1080p")
     target_size = TARGET_SIZES.get((ratio, quality), TARGET_SIZES[("Shorts (9:16)", "720p")])
     font_config = payload.get("font_config", {})
 
-    _log(f"Render start | ratio={ratio} quality={quality} size={target_size} draft={payload.get('is_draft')}")
+    # ---- (1) Resolve every runtime option in one place ----
+    options = _resolve_runtime_options(
+        payload, loop_audio_path, is_mantra_mode,
+        ticker_enabled, cta_type, custom_cta_text,
+    )
+
+    _log(f"Render start | ratio={ratio} quality={quality} size={target_size} "
+         f"draft={payload.get('is_draft')}")
 
     # ---- Track 1: mandatory visual base ----
     main_video = build_track1_timeline(payload.get("track1", {}), target_size)
@@ -523,34 +858,27 @@ def master_render_pipeline(payload: dict) -> str:
 
     base_duration = main_video.duration
 
-    # ---- Track 5 ticker overlay ----
-    ticker_clip = build_ticker_overlay(payload.get("track5", {}), target_size, base_duration, font_config)
+    # ---- (3) Track 5 ticker overlay - only when ticker_enabled ----
+    ticker_clip = build_ticker_overlay(
+        payload.get("track5", {}), target_size, base_duration, font_config,
+        ticker_enabled=options["ticker_enabled"],
+    )
     if ticker_clip is not None:
-        main_video = CompositeVideoClip([main_video, ticker_clip], size=target_size).set_duration(base_duration)
+        main_video = CompositeVideoClip(
+            [main_video, ticker_clip], size=target_size
+        ).set_duration(base_duration)
 
-    # ---- Audio mix (Track 3, 4, 5 voice, 6) ----
-    final_audio = build_final_audio(payload, base_duration)
+    # ---- (2) Audio mix (Track 3, 4, 5 voice, mantra loop, 6) ----
+    final_audio = build_final_audio(payload, base_duration, options)
     if final_audio is not None:
         main_video = main_video.set_audio(final_audio)
 
-    # ---- Climax handoff ----
+    # ---- (4) Climax handoff ----
     full_clip = main_video
     if payload.get("enable_climax"):
-        climax_duration = payload.get("climax_duration", 10)
-        climax_text = payload.get("climax_text", "")
-        watermark_path = payload.get("climax_watermark_path")
-        try:
-            climax_clip = climax.generate_climax(
-                duration=climax_duration,
-                cta_text=climax_text,
-                watermark_path=watermark_path,
-                target_size=target_size,
-                is_draft=bool(payload.get("is_draft", False)),
-            )
+        climax_clip = build_climax_clip(payload, target_size, options)
+        if climax_clip is not None:
             full_clip = concatenate_videoclips([main_video, climax_clip], method="compose")
-        except Exception as e:
-            _log(f"WARNING: Climax segment generate nahi hui, ise skip kiya ja raha hai: {e}")
-            _log(traceback.format_exc())
 
     # ---- Export ----
     out_fps = 15 if payload.get("is_draft") else 30

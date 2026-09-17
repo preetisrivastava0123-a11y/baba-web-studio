@@ -110,7 +110,12 @@ BUILTIN_SFX_LIBRARY = ["शंख (Shankh)", "डमरू (Damru)", "घंट�
 CTA_MODE_DEFAULT = "Default CTA"
 CTA_MODE_CUSTOM = "Custom CTA"
 CTA_MODES = [CTA_MODE_DEFAULT, CTA_MODE_CUSTOM]
-DEFAULT_CTA_TEXT = "धन्यवाद! लाइक और सब्सक्राइब करें"
+DEFAULT_CTA_TEXT = (
+    "\u2728 वीडियो देखने के लिए धन्यवाद! \u2728 "
+    "\U0001F44D चैनल को लाइक और सब्सक्राइब करें। \U0001F514 "
+    "\U0001F64F कमेंट में 'हर हर महादेव' जरूर लिखें! \U0001F549\ufe0f "
+    "\U0001F338 आपका दिन शुभ हो! \U0001F33A"
+)
 
 # --- PART A: mantra upload guideline (seconds) ---
 MANTRA_MIN_SECONDS = 10

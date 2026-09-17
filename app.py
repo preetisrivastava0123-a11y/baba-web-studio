@@ -166,7 +166,7 @@ DEFAULTS = {
     "track5_manual_voice_path": None,
     "track5_subtitle_font_color": "#FFFFFF",
     "track5_subtitle_font_size": 40,
-    "track5_ticker_text": "बाबा वेब स्टूडियो — प्रोफेशनल वीडियो एडिटिंग के लिए संपर्क करें",
+    "track5_ticker_text": st.session_state.get("ticker_text_input", "").strip() or st.session_state.get("track5_script_text", "").strip(),
     "track5_ticker_speed": "Medium",
     "track5_ticker_bg_color": "#000000",
     # PART A - new Track 5 fields

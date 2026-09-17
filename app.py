@@ -11,18 +11,50 @@ Optionally, engine.py hands off the last 10-15 sec to `climax.py`
 watermark / Hindi AI voiceover) as described in the product plan.
 
 --------------------------------------------------------------------------
-DEVANAGARI / HINDI TEXT RENDERING — IMPORTANT NOTE FOR `engine.py`
+WHAT CHANGED IN THIS VERSION (A / B / C)
+--------------------------------------------------------------------------
+PART A - Track 5 UI additions:
+  * Mantra / short voice upload (10-15 sec MP3/WAV) -> payload key
+    track5.mantra_audio_path
+  * Climax CTA mode st.radio(): "Default CTA" vs "Custom CTA"
+  * st.text_area() for the custom CTA text, shown ONLY when
+    "Custom CTA" is selected.
+  * NOTE: the CTA text input was MOVED here from the Master Setup
+    climax expander so there is only ONE source of truth for
+    climax_text. The climax expander now just displays the resolved
+    text read-only.
+
+PART B - Bottom ticker conditional rendering:
+  * If the script/TTS field is non-empty, OR a script file was
+    uploaded, OR a manual voiceover was uploaded, then the ticker is
+    DISABLED: payload gets ticker_enabled=False and ticker_text=None.
+  * The ticker is only processed when the video is music-only
+    (i.e. Track 3 / background-music mode with no narration).
+  * `is_voiceover_active()` is the single helper both the UI and the
+    payload builder use, so the on-screen warning and the actual
+    payload can never disagree.
+
+PART C - Audio looping parameters:
+  * payload now always carries top-level `is_loop_mode` and
+    `audio_file_path`, and the same two keys are repeated inside the
+    `climax` block so `generate_climax()` can read them directly
+    without digging through the whole payload.
+  * `audio_file_path` resolves to: mantra upload -> else manual
+    voiceover -> else first Track 3 audio file.
+
+--------------------------------------------------------------------------
+DEVANAGARI / HINDI TEXT RENDERING - IMPORTANT NOTE FOR `engine.py`
 --------------------------------------------------------------------------
 This app collects Hindi/Devanagari text (script, ticker, climax text,
 subtitles) as plain Python strings. Streamlit itself handles UTF-8
-natively — no special handling needed on the UI side. The risk is
+natively - no special handling needed on the UI side. The risk is
 entirely on the RENDER side (MoviePy / PIL):
 
   - PIL's default ImageFont/ImageDraw does NOT shape Devanagari
-    conjuncts/matras correctly without libraqm support — text renders
+    conjuncts/matras correctly without libraqm support - text renders
     as broken/disconnected glyphs.
   - Use "Nirmala.ttf" or "Mangal.ttf" (Windows) / "NotoSansDevanagari"
-    (Linux) — a generic sans-serif font has NO Devanagari glyphs at all
+    (Linux) - a generic sans-serif font has NO Devanagari glyphs at all
     and will render empty boxes.
   - RECOMMENDED: render Hindi text as HTML/CSS via headless Chromium
     (Playwright) to a transparent PNG, then composite onto the video
@@ -74,6 +106,16 @@ AI_VOICE_OPTIONS = [
 
 BUILTIN_SFX_LIBRARY = ["शंख (Shankh)", "डमरू (Damru)", "घंटी (Ghanti)", "सीटी (Whistle)", "तालियां (Applause)"]
 
+# --- PART A: CTA mode constants ---
+CTA_MODE_DEFAULT = "Default CTA"
+CTA_MODE_CUSTOM = "Custom CTA"
+CTA_MODES = [CTA_MODE_DEFAULT, CTA_MODE_CUSTOM]
+DEFAULT_CTA_TEXT = "धन्यवाद! लाइक और सब्सक्राइब करें"
+
+# --- PART A: mantra upload guideline (seconds) ---
+MANTRA_MIN_SECONDS = 10
+MANTRA_MAX_SECONDS = 15
+
 DEVANAGARI_FONT_CONFIG = {
     "language": "hi",
     "preferred_fonts": ["Nirmala.ttf", "Mangal.ttf", "NotoSansDevanagari-Regular.ttf"],
@@ -99,7 +141,6 @@ DEFAULTS = {
     "final_quality": "1080p",
     "enable_climax": True,
     "climax_duration": 10,
-    "climax_text": "धन्यवाद! लाइक और सब्सक्राइब करें",
     "climax_watermark_path": None,
     # Track 1 - mandatory visuals
     "track1_files": [],   # {name, path, type, order, start_sec, end_sec, image_duration}
@@ -123,6 +164,11 @@ DEFAULTS = {
     "track5_ticker_text": "बाबा वेब स्टूडियो — प्रोफेशनल वीडियो एडिटिंग के लिए संपर्क करें",
     "track5_ticker_speed": "Medium",
     "track5_ticker_bg_color": "#000000",
+    # PART A - new Track 5 fields
+    "track5_mantra_audio_path": None,
+    "track5_mantra_audio_name": None,
+    "track5_cta_mode": CTA_MODE_DEFAULT,
+    "track5_custom_cta_text": "",
     # Track 6 - optional SFX timeline
     "track6_sfx": [],   # {source_type, name, path, builtin_name, start_sec, end_sec, volume}
     # Track 7 - live preview / transitions
@@ -189,6 +235,57 @@ def compute_total_visual_time() -> float:
 
 
 # --------------------------------------------------------------------------
+# PART A HELPER - resolve the final climax / CTA text
+# --------------------------------------------------------------------------
+def resolve_climax_text() -> str:
+    """
+    Default CTA -> the fixed DEFAULT_CTA_TEXT.
+    Custom CTA  -> whatever the user typed; falls back to the default
+                   if they picked Custom but left the box empty.
+    """
+    if st.session_state.track5_cta_mode == CTA_MODE_CUSTOM:
+        custom_text = (st.session_state.track5_custom_cta_text or "").strip()
+        return custom_text if custom_text else DEFAULT_CTA_TEXT
+    return DEFAULT_CTA_TEXT
+
+
+# --------------------------------------------------------------------------
+# PART B HELPER - is any narration/voiceover active?
+# --------------------------------------------------------------------------
+def is_voiceover_active() -> bool:
+    """
+    Returns True if the video will carry narration of any kind:
+      - script text typed into the TTS box, OR
+      - a script file (PDF/DOCX) uploaded for TTS, OR
+      - a manual voiceover audio file uploaded.
+
+    When this is True the bottom ticker MUST be suppressed - a scrolling
+    ticker fighting with spoken narration + subtitles is visual noise.
+    The ticker is only for music-only / background-song videos.
+    """
+    has_script_text = bool((st.session_state.track5_script_text or "").strip())
+    has_script_file = bool(st.session_state.track5_script_file_path)
+    has_manual_voice = bool(st.session_state.track5_manual_voice_path)
+    return has_script_text or has_script_file or has_manual_voice
+
+
+def resolve_loop_audio_path():
+    """
+    PART C - which audio file should be looped.
+    Priority: mantra upload -> manual voiceover -> first Track 3 audio.
+    Returns None if nothing is available.
+    """
+    if st.session_state.track5_mantra_audio_path:
+        return st.session_state.track5_mantra_audio_path
+    if st.session_state.track5_manual_voice_path:
+        return st.session_state.track5_manual_voice_path
+    if st.session_state.track3_audio:
+        ordered = sorted(st.session_state.track3_audio, key=lambda x: x["order"])
+        return ordered[0]["path"]
+    return None
+
+
+# --------------------------------------------------------------------------
 # HEADER / MASTER SETUP (Step 0)
 # --------------------------------------------------------------------------
 st.title("🎬 Baba Web Studio")
@@ -248,8 +345,14 @@ with st.expander("🎆 क्लाइमैक्स / आउटरो से�
                 min_value=1, value=int(st.session_state.climax_duration), step=1, key="climax_dur_in",
             )
     if st.session_state.enable_climax:
-        st.session_state.climax_text = st.text_input(
-            "क्लाइमैक्स टेक्स्ट / CTA", value=st.session_state.climax_text, key="climax_text_in"
+        # PART A: the CTA text is now controlled from Track 5 (Default vs Custom CTA).
+        # Shown here read-only so there is only ONE source of truth.
+        st.caption("📝 क्लाइमैक्स टेक्स्ट अब **ट्रैक 5** से कंट्रोल होता है (Default CTA / Custom CTA)।")
+        st.text_input(
+            "क्लाइमैक्स टेक्स्ट / CTA (ट्रैक 5 से सेट होगा)",
+            value=resolve_climax_text(),
+            disabled=True,
+            key="climax_text_readonly",
         )
         cl_logo = st.file_uploader("चैनल लोगो / वॉटरमार्क (PNG) — क्लाइमैक्स सेगमेंट में दिखेगा", type=["png"], key="climax_logo_uploader")
         if cl_logo is not None:
@@ -488,6 +591,64 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
         if t5_voice_file is not None:
             st.session_state.track5_manual_voice_path = save_uploaded_file(t5_voice_file, "track5_voice")
 
+    # ----------------------------------------------------------------------
+    # PART A-1: MANTRA / SHORT VOICE UPLOAD (10-15 sec, looped by the engine)
+    # ----------------------------------------------------------------------
+    st.markdown("**🕉️ मंत्र / शॉर्ट वॉइस अपलोड (Mantra Loop)**")
+    st.caption(
+        f"📏 गाइडलाइन: {MANTRA_MIN_SECONDS}–{MANTRA_MAX_SECONDS} सेकंड का छोटा ऑडियो (MP3/WAV) अपलोड करें। "
+        "सिस्टम इसे Loop करके पूरी वीडियो/क्लाइमैक्स ड्यूरेशन तक चला देगा।"
+    )
+    t5_mantra_file = st.file_uploader(
+        "मंत्र / शॉर्ट ऑडियो अपलोड करें (MP3/WAV)",
+        type=["mp3", "wav", "m4a"],
+        key="t5_mantra_uploader",
+    )
+    if t5_mantra_file is not None:
+        st.session_state.track5_mantra_audio_path = save_uploaded_file(t5_mantra_file, "track5_mantra")
+        st.session_state.track5_mantra_audio_name = t5_mantra_file.name
+
+    if st.session_state.track5_mantra_audio_path:
+        mc_col1, mc_col2 = st.columns([3, 1])
+        mc_col1.success(f"✅ मंत्र ऑडियो सेट है: **{st.session_state.track5_mantra_audio_name}** (Loop Mode ऑन रहेगा)")
+        if mc_col2.button("मंत्र हटाएं", key="t5_mantra_remove_btn"):
+            st.session_state.track5_mantra_audio_path = None
+            st.session_state.track5_mantra_audio_name = None
+            st.rerun()
+    else:
+        st.caption("ℹ️ अभी कोई मंत्र ऑडियो अपलोड नहीं हुआ है (वैकल्पिक)।")
+
+    # ----------------------------------------------------------------------
+    # PART A-2 / A-3: CLIMAX CTA MODE (Default vs Custom) + custom text box
+    # ----------------------------------------------------------------------
+    st.markdown("**🎆 क्लाइमैक्स CTA टेक्स्ट (Climax CTA)**")
+    st.session_state.track5_cta_mode = st.radio(
+        "CTA मोड चुनें",
+        options=CTA_MODES,
+        index=CTA_MODES.index(st.session_state.track5_cta_mode),
+        key="t5_cta_mode_radio",
+        horizontal=True,
+    )
+
+    if st.session_state.track5_cta_mode == CTA_MODE_CUSTOM:
+        # This text_area appears ONLY when "Custom CTA" is selected.
+        st.session_state.track5_custom_cta_text = st.text_area(
+            "अपना कस्टम CTA टेक्स्ट लिखें",
+            value=st.session_state.track5_custom_cta_text,
+            key="t5_custom_cta_text_in",
+            height=100,
+            placeholder="उदाहरण: चैनल को सब्सक्राइब करें और बेल आइकन दबाएं 🔔",
+        )
+        if not (st.session_state.track5_custom_cta_text or "").strip():
+            st.warning(f"⚠️ कस्टम CTA खाली है — डिफ़ॉल्ट टेक्स्ट इस्तेमाल होगा: “{DEFAULT_CTA_TEXT}”")
+    else:
+        st.caption(f"ℹ️ डिफ़ॉल्ट CTA इस्तेमाल होगा: “{DEFAULT_CTA_TEXT}”")
+
+    st.info(f"📌 फ़ाइनल क्लाइमैक्स टेक्स्ट: **{resolve_climax_text()}**")
+
+    # ----------------------------------------------------------------------
+    # SUBTITLE STYLE
+    # ----------------------------------------------------------------------
     st.markdown("**सबटाइटल स्टाइल (Subtitle Style)**")
     s_col1, s_col2 = st.columns(2)
     with s_col1:
@@ -499,19 +660,41 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
             "फॉन्ट साइज़", min_value=10, value=int(st.session_state.track5_subtitle_font_size), step=2, key="t5_sub_size"
         )
 
+    # ----------------------------------------------------------------------
+    # PART B: BOTTOM TICKER - conditional rendering
+    # Ticker is only allowed when there is NO narration/voiceover.
+    # ----------------------------------------------------------------------
     st.markdown("**नीचे स्क्रॉल होने वाला टिकर (Bottom Ticker)**")
-    st.session_state.track5_ticker_text = st.text_input(
-        "टिकर टेक्स्ट", value=st.session_state.track5_ticker_text, key="t5_ticker_text_in"
-    )
-    t_col1, t_col2 = st.columns(2)
-    with t_col1:
-        st.session_state.track5_ticker_speed = st.selectbox(
-            "टिकर स्पीड", options=["Slow", "Medium", "Fast"], index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), key="t5_ticker_speed_sel"
+
+    voiceover_active_now = is_voiceover_active()
+
+    if voiceover_active_now:
+        st.warning(
+            "🚫 टिकर अभी बंद है — क्योंकि स्क्रिप्ट/वॉइसओवर एक्टिव है। "
+            "स्क्रॉलिंग टिकर और बोली गई आवाज़ + सबटाइटल एक साथ चलने पर स्क्रीन बहुत भर जाती है। "
+            "टिकर केवल तभी चलेगा जब वीडियो सिर्फ़ 'Background Music / Songs' मोड में हो "
+            "(यानी स्क्रिप्ट टेक्स्ट खाली हो, कोई स्क्रिप्ट फ़ाइल न हो, और कोई मैनुअल वॉइसओवर अपलोड न हो)।"
         )
-    with t_col2:
-        st.session_state.track5_ticker_bg_color = st.color_picker(
-            "टिकर बैकग्राउंड रंग", value=st.session_state.track5_ticker_bg_color, key="t5_ticker_bg_color_pick"
+        st.text_input(
+            "टिकर टेक्स्ट (अभी निष्क्रिय)",
+            value=st.session_state.track5_ticker_text,
+            disabled=True,
+            key="t5_ticker_text_disabled",
         )
+    else:
+        st.success("✅ म्यूज़िक-ओनली मोड डिटेक्ट हुआ — बॉटम टिकर एक्टिव रहेगा।")
+        st.session_state.track5_ticker_text = st.text_input(
+            "टिकर टेक्स्ट", value=st.session_state.track5_ticker_text, key="t5_ticker_text_in"
+        )
+        t_col1, t_col2 = st.columns(2)
+        with t_col1:
+            st.session_state.track5_ticker_speed = st.selectbox(
+                "टिकर स्पीड", options=["Slow", "Medium", "Fast"], index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), key="t5_ticker_speed_sel"
+            )
+        with t_col2:
+            st.session_state.track5_ticker_bg_color = st.color_picker(
+                "टिकर बैकग्राउंड रंग", value=st.session_state.track5_ticker_bg_color, key="t5_ticker_bg_color_pick"
+            )
 
 st.divider()
 
@@ -617,6 +800,10 @@ with st.expander("⏱️ ट्रैक 7: लाइव प्रीव्य�
             "Base Duration (sec)": int(st.session_state.video_duration),
             "Climax Duration (sec)": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
             "Total Duration (sec)": total_target_duration,
+            "Climax CTA Mode": st.session_state.track5_cta_mode,
+            "Climax Text": resolve_climax_text(),
+            "Ticker Enabled": not is_voiceover_active(),
+            "Loop Mode": bool(resolve_loop_audio_path()),
         }
     )
 
@@ -673,6 +860,28 @@ def build_payload(is_draft: bool) -> dict:
         for s in st.session_state.track6_sfx
     ] if st.session_state.track6_sfx else []
 
+    # ----------------------------------------------------------------------
+    # PART B - ticker conflict resolution (single source of truth)
+    # ----------------------------------------------------------------------
+    voiceover_active = is_voiceover_active()
+    ticker_enabled = not voiceover_active
+    ticker_text_value = (st.session_state.track5_ticker_text or "").strip() if ticker_enabled else None
+    if not ticker_text_value:
+        # Empty string counts as "no ticker" too.
+        ticker_enabled = False
+        ticker_text_value = None
+
+    # ----------------------------------------------------------------------
+    # PART A - resolved CTA / climax text
+    # ----------------------------------------------------------------------
+    resolved_climax_text = resolve_climax_text() if st.session_state.enable_climax else ""
+
+    # ----------------------------------------------------------------------
+    # PART C - loop-mode audio parameters
+    # ----------------------------------------------------------------------
+    loop_audio_path = resolve_loop_audio_path()
+    is_loop_mode = bool(loop_audio_path)
+
     payload = {
         "ratio": st.session_state.ratio,
         "is_shorts": st.session_state.ratio == "Shorts (9:16)",
@@ -681,9 +890,29 @@ def build_payload(is_draft: bool) -> dict:
         "output_quality": "360p" if is_draft else st.session_state.final_quality,
         "enable_climax": bool(st.session_state.enable_climax),
         "climax_duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
-        "climax_text": st.session_state.climax_text if st.session_state.enable_climax else "",
+        "climax_text": resolved_climax_text,
         "climax_watermark_path": st.session_state.climax_watermark_path,
         "font_config": DEVANAGARI_FONT_CONFIG,
+
+        # PART C - top-level loop params, always present
+        "is_loop_mode": is_loop_mode,
+        "audio_file_path": loop_audio_path,
+
+        # PART B - top-level ticker flags so engine.py never has to guess
+        "voiceover_active": voiceover_active,
+        "ticker_enabled": ticker_enabled,
+
+        # PART A + C - everything generate_climax() needs, in one block
+        "climax": {
+            "enabled": bool(st.session_state.enable_climax),
+            "duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
+            "cta_mode": st.session_state.track5_cta_mode,
+            "cta_text": resolved_climax_text,
+            "watermark_path": st.session_state.climax_watermark_path,
+            "is_loop_mode": is_loop_mode,
+            "audio_file_path": loop_audio_path,
+        },
+
         "track1": {
             "files": t1_files_list,   # never None
             "default_image_duration": int(st.session_state.t1_def_dur),
@@ -700,9 +929,20 @@ def build_payload(is_draft: bool) -> dict:
             "manual_voice_path": st.session_state.track5_manual_voice_path if st.session_state.track5_voice_source != "AI Voice (Edge-TTS)" else None,
             "subtitle_font_color": st.session_state.track5_subtitle_font_color,
             "subtitle_font_size": int(st.session_state.track5_subtitle_font_size),
-            "ticker_text": st.session_state.track5_ticker_text or "",
-            "ticker_speed": st.session_state.track5_ticker_speed,
-            "ticker_bg_color": st.session_state.track5_ticker_bg_color,
+
+            # PART A - mantra loop audio
+            "mantra_audio_path": st.session_state.track5_mantra_audio_path,
+            "mantra_is_loop_mode": bool(st.session_state.track5_mantra_audio_path),
+
+            # PART A - CTA mode + raw custom text (resolved text lives in climax_text)
+            "cta_mode": st.session_state.track5_cta_mode,
+            "custom_cta_text": (st.session_state.track5_custom_cta_text or "").strip(),
+
+            # PART B - ticker is None/False whenever narration is active
+            "ticker_enabled": ticker_enabled,
+            "ticker_text": ticker_text_value,
+            "ticker_speed": st.session_state.track5_ticker_speed if ticker_enabled else None,
+            "ticker_bg_color": st.session_state.track5_ticker_bg_color if ticker_enabled else None,
         },
         "track6": {"sfx": t6_sfx_list},
         "track7": {
@@ -731,7 +971,16 @@ def run_render(is_draft: bool):
             import importlib
             import engine  # noqa: F401  (dynamic import, sibling module)
             importlib.reload(engine)
-            output_file = engine.master_render_pipeline(payload)
+
+            # PART C - pass the loop params explicitly as keyword arguments too,
+            # so engine.master_render_pipeline() can use them directly without
+            # having to dig into the payload dict. engine.py should accept
+            # **kwargs for forward compatibility.
+            output_file = engine.master_render_pipeline(
+                payload,
+                is_loop_mode=payload["is_loop_mode"],
+                audio_file_path=payload["audio_file_path"],
+            )
 
         if output_file and os.path.exists(output_file):
             st.session_state.last_output_path = output_file
@@ -744,6 +993,25 @@ def run_render(is_draft: bool):
             "`engine.py` nahi mila. Isse `app.py` ke same folder mein rakhein aur "
             "`master_render_pipeline(payload)` function define karein."
         )
+    except TypeError as te:
+        # Older engine.py signatures accept only (payload) - retry without kwargs.
+        if "master_render_pipeline" in str(te) or "unexpected keyword argument" in str(te):
+            try:
+                import engine  # noqa: F811
+                output_file = engine.master_render_pipeline(payload)
+                if output_file and os.path.exists(output_file):
+                    st.session_state.last_output_path = output_file
+                    st.success("Render complete! (legacy engine signature)")
+                else:
+                    st.error("Engine ne valid output file path return nahi kiya.")
+            except Exception as inner_e:
+                st.error(f"Render fail hua: {inner_e}")
+                with st.expander("Error Details"):
+                    st.code(traceback.format_exc())
+        else:
+            st.error(f"Render fail hua: {te}")
+            with st.expander("Error Details"):
+                st.code(traceback.format_exc())
     except Exception as e:
         st.error(f"Render fail hua: {e}")
         with st.expander("Error Details"):

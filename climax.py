@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-climax.py - Baba Web Studio  |  v3 "Particle Drone Show"
-========================================================
+climax.py - Baba Web Studio  |  v4 "Particle Drone Show + Living CTA"
+====================================================================
 
 Zero external image assets. The Lord Shiva figure is generated from pure
 vector math at runtime (trishul + crescent moon + damru + coiled snake with
@@ -11,6 +11,8 @@ across the canvas and swirl into formation during the first ~2 seconds.
 Sequence
 --------
     0.0 - 2.0s   particles converge from dispersion into the Shiva outline
+    ~1.2s +      CTA banner + text fades and zooms in, then shimmers
+                 gold -> bright white -> saffron -> neon gold, forever
     2.0s +       divine aura: multi-coloured rays + expanding light rings
                  radiating outward, hues cycling gold -> neon blue -> fiery
                  orange, with a rainbow sweep running through the figure
@@ -18,25 +20,56 @@ Sequence
                  fireworks bursts synced to the audio booms
     lower third  metallic red SUBSCRIBE button + bell + Devanagari CTA
 
+WHAT CHANGED IN v4 (A / B / C / D)
+----------------------------------
+(A) CTA OVERRIDE - generate_climax() now takes cta_type and
+    custom_cta_text (exactly what engine.py's build_climax_clip sends).
+    _resolve_cta_text() picks the winner: custom text > cta_text >
+    DEFAULT_CTA_TEXT. The SAME resolved string is what gets spoken by
+    the TTS cascade, so the screen and the voice can never disagree.
+
+(B) MANTRA / AUDIO LOOP - new loop_audio_path + is_mantra_mode params.
+    The 10-15 sec mantra file is looped with moviepy's audio_loop fx
+    across the FULL climax duration and composited over the synthesized
+    bed, with the bed ducked underneath so the mantra stays clear.
+    See _attach_climax_audio().
+
+(C) HIGHLIGHT BANNER + 3D DEPTH - _make_highlight_banner() draws a
+    semi-transparent saffron/dark rounded plate behind the CTA, and
+    _mask_to_rgba() now takes shadow_offset_mult / include_fill so the
+    drop shadow can be pushed further out for a real 3D lift while the
+    glyph fill is kept as a SEPARATE layer (needed for (D)).
+
+(D) SHIMMER + 2D ZOOM/FADE - the CTA is no longer baked into the static
+    UI plate. It is composited per frame as
+    banner+shadow+glow (static)  ->  glyph fill (tinted per frame).
+    _shimmer_color(t) cycles Gold -> Bright White -> Saffron -> Neon Gold
+    with smooth cosine fades, and the first CTA_INTRO_SECONDS apply a
+    zoom-in + fade-in.
+
 DEVANAGARI SAFETY NOTE  (do not "optimise" this away)
 -----------------------------------------------------
 PIL's ``stroke_width=`` runs FreeType's outline stroker on the *shaped glyph
 outline*. On conjuncts like "स्क्रा" that stroker fuses the half-form with the
-following consonant, so "सब्सक्राइब" renders as "सब्सत्राइब" — at ANY stroke
+following consonant, so "सब्सक्राइब" renders as "सब्सत्राइब" - at ANY stroke
 width, thin included. Confirmed on the two-line wrapped CTA.
 
 So this module NEVER passes stroke_width to draw.text(). The glyph mask is
-drawn exactly once, fill only. All rim / outline / shadow look is rebuilt
-afterwards from a GAUSSIAN BLUR of that finished bitmap, composited UNDER it.
-Blurring a finished bitmap cannot change glyph topology, so shaping is
-guaranteed identical to the plain render. ``assert_glyph_mask_untouched()``
-proves it numerically.
+drawn exactly once, fill only. All rim / outline / shadow / banner look is
+rebuilt afterwards from a GAUSSIAN BLUR of that finished bitmap, composited
+UNDER it. Blurring a finished bitmap cannot change glyph topology, so shaping
+is guaranteed identical to the plain render. The per-frame shimmer in (D) is
+a pure colour MULTIPLY on the finished alpha mask - it never re-runs the text
+shaper, so it cannot break conjuncts either.
+``assert_glyph_mask_untouched()`` proves it numerically.
 
 Public API (backwards compatible)
 ---------------------------------
     generate_climax(duration, cta_text, watermark_path, target_size,
                     is_draft=True, motif_path=None, with_audio=True,
-                    show_subscribe=True, seed=None) -> VideoClip
+                    show_subscribe=True, seed=None,
+                    cta_type=None, custom_cta_text=None,
+                    loop_audio_path=None, is_mantra_mode=False) -> VideoClip
 
 Self-contained: does not import engine.py.
 Deps: numpy, opencv-python, Pillow, moviepy==1.0.3
@@ -55,13 +88,15 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 
-from moviepy.editor import VideoClip, AudioFileClip
+from moviepy.editor import VideoClip, AudioFileClip, CompositeAudioClip
+from moviepy.audio.fx.all import audio_loop, volumex
 
 __all__ = [
     "generate_climax",
     "build_shiva_mask",
     "render_devanagari_text_image",
     "assert_glyph_mask_untouched",
+    "DEFAULT_CTA_TEXT",
 ]
 
 # --------------------------------------------------------------------------
@@ -80,6 +115,30 @@ SUBSCRIBE_RED_HI = (255, 62, 62)
 SUBSCRIBE_TEXT = (255, 255, 255)
 BELL_COLOR = (255, 255, 255)
 
+# ---- (C) HIGHLIGHT BANNER ------------------------------------------------
+BANNER_DARK = (26, 10, 6)        # deep base plate behind the text
+BANNER_SAFFRON = (196, 88, 16)   # saffron wash across the top half
+BANNER_EDGE = (255, 178, 64)     # bright rim around the plate
+BANNER_BASE_ALPHA = 165          # 0-255, plate opacity
+BANNER_WASH_ALPHA = 92           # 0-255, saffron wash opacity
+BANNER_EDGE_ALPHA = 210
+BANNER_PAD_X_RATIO = 0.035       # horizontal padding as a fraction of canvas w
+BANNER_PAD_Y_RATIO = 0.16        # vertical padding as a fraction of canvas h
+CTA_SHADOW_OFFSET_MULT = 3.0     # 3D lift: how far the drop shadow is pushed
+
+# ---- (D) SHIMMER + INTRO ANIMATION --------------------------------------
+# Gold -> Bright White -> Saffron -> Neon Gold, then back round to Gold.
+SHIMMER_COLORS = [
+    (255, 214, 92),     # gold
+    (255, 252, 236),    # bright white
+    (255, 142, 30),     # saffron
+    (255, 236, 120),    # neon gold
+]
+SHIMMER_CYCLE_SECONDS = 3.6      # one full pass through every colour above
+# CTA_APPEAR_TIME is set just below FORM_TIME (it is derived from it).
+CTA_INTRO_SECONDS = 0.9          # length of the zoom-in + fade-in
+CTA_INTRO_ZOOM = 0.86            # starting scale of the zoom-in
+
 # divine hue cycle: gold -> neon blue -> fiery orange -> violet  (HSV degrees)
 DIVINE_HUES = [45.0, 196.0, 22.0, 280.0, 45.0]
 
@@ -96,8 +155,16 @@ GRAVITY = 260.0
 SPARK_DRAG = 1.35
 FORM_TIME = 2.0          # seconds for the drone formation
 
+# The CTA appears a little before the drones finish forming, so the viewer
+# is already reading it while the figure lands.
+CTA_APPEAR_TIME = FORM_TIME * 0.60
+
+# ---- (B) MANTRA LOOP -----------------------------------------------------
+MANTRA_LOOP_VOLUME = 0.95        # mantra level when mantra mode is ON
+BED_DUCK_WITH_MANTRA = 0.34      # synthesized bed multiplier under the mantra
+
 # The channel's standard sign-off line. The emoji render as the hand-drawn
-# icons in _EMOJI_ICONS above (not font glyphs), and are stripped out again
+# icons in _EMOJI_ICONS below (not font glyphs), and are stripped out again
 # automatically for whichever TTS backend speaks it - see _strip_for_speech.
 DEFAULT_CTA_TEXT = (
     "\u2728 वीडियो देखने के लिए धन्यवाद! \u2728 "
@@ -105,6 +172,10 @@ DEFAULT_CTA_TEXT = (
     "\U0001F64F कमेंट में 'हर हर महादेव' जरूर लिखें! \U0001F549\ufe0f "
     "\U0001F338 आपका दिन शुभ हो! \U0001F33A"
 )
+
+# (A) CTA type labels - must match app.py / engine.py
+CTA_TYPE_DEFAULT = "Default CTA"
+CTA_TYPE_CUSTOM = "Custom CTA"
 
 DESIGN_W, DESIGN_H = 1000, 1400   # Shiva vector design space
 
@@ -139,6 +210,36 @@ def _cleanup_temp():
             os.remove(p)
         except Exception:
             pass
+
+
+# ==========================================================================
+# 0. (A) CTA TEXT RESOLUTION
+# ==========================================================================
+def _resolve_cta_text(cta_text=None, cta_type=None, custom_cta_text=None):
+    """
+    Decides which string actually goes on screen (and into the TTS).
+
+    Priority:
+      1. custom_cta_text, when it is non-empty - a user who typed something
+         into the app's "Custom CTA" box always wins, whether or not
+         cta_type made it through intact.
+      2. cta_text, when it is non-empty - whatever the caller resolved.
+      3. DEFAULT_CTA_TEXT - the channel's standard 4-line sign-off.
+
+    cta_type is accepted for API symmetry with engine.py and is only used
+    to force the default when the user explicitly selected "Default CTA"
+    but a stale custom string is still being passed along.
+    """
+    custom = (custom_cta_text or "").strip()
+    given = (cta_text or "").strip()
+
+    if cta_type == CTA_TYPE_DEFAULT and not given:
+        return DEFAULT_CTA_TEXT
+    if custom:
+        return custom
+    if given:
+        return given
+    return DEFAULT_CTA_TEXT
 
 
 # ==========================================================================
@@ -734,13 +835,13 @@ def _icon_flower(draw, box, n_petals=5, width_ratio=0.85, stamen=False):
 
 
 _EMOJI_ICONS = {
-    "\u2728": _icon_sparkle,                                                    # ✨
-    "\U0001F44D": _icon_thumbs_up,                                              # 👍
-    "\U0001F514": _icon_bell_glyph,                                             # 🔔
-    "\U0001F64F": _icon_namaste,                                                # 🙏
-    "\U0001F549": _icon_om,                                                     # 🕉
-    "\U0001F338": lambda d, b: _icon_flower(d, b, n_petals=5, width_ratio=0.72, stamen=False),  # 🌸
-    "\U0001F33A": lambda d, b: _icon_flower(d, b, n_petals=5, width_ratio=0.55, stamen=True),   # 🌺
+    "\u2728": _icon_sparkle,                                                    # sparkle
+    "\U0001F44D": _icon_thumbs_up,                                              # thumbs up
+    "\U0001F514": _icon_bell_glyph,                                             # bell
+    "\U0001F64F": _icon_namaste,                                                # folded hands
+    "\U0001F549": _icon_om,                                                     # om
+    "\U0001F338": lambda d, b: _icon_flower(d, b, n_petals=5, width_ratio=0.72, stamen=False),
+    "\U0001F33A": lambda d, b: _icon_flower(d, b, n_petals=5, width_ratio=0.55, stamen=True),
 }
 
 
@@ -767,7 +868,8 @@ def _split_runs(word, skipped):
             continue
         if ch in _EMOJI_ICONS:
             if buf:
-                runs.append(("text", buf)); buf = ""
+                runs.append(("text", buf))
+                buf = ""
             runs.append(("icon", ch))
         elif _is_decorative_symbol(ch):
             skipped.add(ch)
@@ -868,13 +970,24 @@ def _strip_for_speech(text):
         return text
     kept = [ch for ch in text
             if not (ch in _VARIATION_SELECTORS or ch in _EMOJI_ICONS
-                   or _is_decorative_symbol(ch))]
+                    or _is_decorative_symbol(ch))]
     return re.sub(r"[ \t]+", " ", "".join(kept)).strip()
 
 
 def _mask_to_rgba(mask, fill_rgb, rim_rgb=None, shadow_rgb=(0, 0, 0),
-                  rim_strength=1.0, glow_rgb=None, glow_strength=0.0):
-    """Decoration is derived from blur(mask) and composited strictly UNDER it."""
+                  rim_strength=1.0, glow_rgb=None, glow_strength=0.0,
+                  include_fill=True, shadow_offset_mult=1.6):
+    """
+    Decoration is derived from blur(mask) and composited strictly UNDER it.
+
+    include_fill=False returns ONLY the decoration (shadow + glow + rim)
+    with the glyph body left transparent - used by (D) so the glyph fill
+    can be a separate, per-frame-tinted layer on top.
+
+    shadow_offset_mult controls the 3D lift: how far the drop shadow is
+    pushed down-right from the glyph. Larger = the text floats higher off
+    the plate behind it.
+    """
     h, w = mask.shape
     a = mask.astype(np.float32) / 255.0
     base = max(1.0, min(h, w) * 0.010)
@@ -893,7 +1006,8 @@ def _mask_to_rgba(mask, fill_rgb, rim_rgb=None, shadow_rgb=(0, 0, 0),
         out_rgb = rgb * alpha[..., None] + out_rgb * inv[..., None]
         out_a = alpha + out_a * inv
 
-    _over(np.array(fill_rgb, np.float32)[None, None, :], a)
+    if include_fill:
+        _over(np.array(fill_rgb, np.float32)[None, None, :], a)
 
     if rim_rgb is not None and rim_strength > 0:
         blur = cv2.GaussianBlur(a, (0, 0), sigmaX=base * 1.15, sigmaY=base * 1.15)
@@ -907,7 +1021,7 @@ def _mask_to_rgba(mask, fill_rgb, rim_rgb=None, shadow_rgb=(0, 0, 0),
 
     if shadow_rgb is not None:
         sh = cv2.GaussianBlur(a, (0, 0), sigmaX=base * 2.1, sigmaY=base * 2.1)
-        off = max(1, int(base * 1.6))
+        off = max(1, int(base * float(shadow_offset_mult)))
         sh = np.roll(np.roll(sh, off, 0), off, 1)
         sh[:off, :] = 0.0
         sh[:, :off] = 0.0
@@ -919,6 +1033,130 @@ def _mask_to_rgba(mask, fill_rgb, rim_rgb=None, shadow_rgb=(0, 0, 0),
     rgba[..., :3] = np.clip(out_rgb / safe[..., None], 0, 255).astype(np.uint8)
     rgba[..., 3] = np.clip(out_a * 255.0, 0, 255).astype(np.uint8)
     return rgba
+
+
+def _mask_to_glyph_tile(mask, fill_rgb=(255, 255, 255)):
+    """
+    The glyph body ONLY, as a flat-coloured RGBA tile whose alpha IS the
+    mask. Kept separate from the decoration so (D) can multiply its RGB
+    by the shimmer colour every frame without re-running the text shaper -
+    a colour multiply cannot alter glyph topology, so conjuncts stay safe.
+    """
+    h, w = mask.shape
+    rgba = np.zeros((h, w, 4), np.uint8)
+    rgba[..., 0] = fill_rgb[0]
+    rgba[..., 1] = fill_rgb[1]
+    rgba[..., 2] = fill_rgb[2]
+    rgba[..., 3] = mask
+    return rgba
+
+
+# ==========================================================================
+# 5b. (C) HIGHLIGHT BANNER BEHIND THE CTA
+# ==========================================================================
+def _make_highlight_banner(canvas_w, canvas_h, mask,
+                           pad_x_ratio=BANNER_PAD_X_RATIO,
+                           pad_y_ratio=BANNER_PAD_Y_RATIO):
+    """
+    A semi-transparent saffron/dark rounded plate sized to the text's own
+    bounding box, so the CTA stays readable over fireworks and bright
+    particles instead of fighting them.
+
+    Returns an RGBA uint8 tile the size of the text canvas, or None when
+    the mask is empty (no font / no text).
+
+    NOTE: ImageDraw REPLACES destination pixels including alpha, so every
+    translucent pass is drawn on its own layer and alpha_composite'd -
+    drawing a translucent shape straight onto the plate would punch a
+    hole through it (same trap as _make_subscribe_tile).
+    """
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        return None
+
+    pad_x = int(canvas_w * pad_x_ratio)
+    pad_y = int(canvas_h * pad_y_ratio)
+    x0 = max(0, int(xs.min()) - pad_x)
+    x1 = min(canvas_w - 1, int(xs.max()) + pad_x)
+    y0 = max(0, int(ys.min()) - pad_y)
+    y1 = min(canvas_h - 1, int(ys.max()) + pad_y)
+    if x1 <= x0 or y1 <= y0:
+        return None
+
+    radius = max(4.0, (y1 - y0) * 0.22)
+
+    img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    _rounded_rect(d, [x0, y0, x1, y1], radius, BANNER_DARK + (BANNER_BASE_ALPHA,))
+
+    # saffron wash over the top half + bright edge, on their own layers
+    wash = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    wd = ImageDraw.Draw(wash)
+    _rounded_rect(wd, [x0, y0, x1, y0 + (y1 - y0) * 0.55], radius * 0.85,
+                  BANNER_SAFFRON + (BANNER_WASH_ALPHA,))
+    img.alpha_composite(wash)
+
+    edge = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ed = ImageDraw.Draw(edge)
+    try:
+        ed.rounded_rectangle([x0, y0, x1, y1], radius=radius,
+                             outline=BANNER_EDGE + (BANNER_EDGE_ALPHA,),
+                             width=max(2, int(canvas_h * 0.012)))
+    except Exception:
+        ed.rectangle([x0, y0, x1, y1], outline=BANNER_EDGE + (BANNER_EDGE_ALPHA,),
+                     width=max(2, int(canvas_h * 0.012)))
+    img.alpha_composite(edge)
+
+    # soften the whole plate slightly so it sits in the scene rather than
+    # looking like a pasted rectangle
+    arr = np.array(img, np.uint8).astype(np.float32)
+    arr[..., 3] = cv2.GaussianBlur(arr[..., 3], (0, 0),
+                                   sigmaX=max(1.0, canvas_h * 0.004),
+                                   sigmaY=max(1.0, canvas_h * 0.004))
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+# ==========================================================================
+# 5c. (D) SHIMMER COLOUR CYCLE
+# ==========================================================================
+def _shimmer_color(t, colors=SHIMMER_COLORS, cycle=SHIMMER_CYCLE_SECONDS):
+    """
+    Smoothly fades through SHIMMER_COLORS (Gold -> Bright White -> Saffron
+    -> Neon Gold -> back to Gold) on a `cycle`-second loop.
+
+    A raised-cosine blend is used instead of a linear one so the colour
+    lingers on each stop and eases between them, rather than sliding at a
+    constant rate - which reads as a metallic shimmer rather than a hue
+    slider being dragged.
+    """
+    n = len(colors)
+    pos = (float(t) / max(1e-3, cycle)) * n
+    i = int(pos) % n
+    j = (i + 1) % n
+    k = pos - int(pos)
+    e = 0.5 - 0.5 * math.cos(math.pi * k)      # raised cosine ease
+    c0, c1 = colors[i], colors[j]
+    return (c0[0] + (c1[0] - c0[0]) * e,
+            c0[1] + (c1[1] - c0[1]) * e,
+            c0[2] + (c1[2] - c0[2]) * e)
+
+
+def _cta_intro(t, appear_time=CTA_APPEAR_TIME, intro=CTA_INTRO_SECONDS,
+               zoom_from=CTA_INTRO_ZOOM):
+    """
+    (D) 2D movement: returns (alpha, scale) for the CTA at time t.
+
+    alpha 0 -> 1 and scale zoom_from -> 1.0 over `intro` seconds starting
+    at `appear_time`, on a smoothstep. Before appear_time the CTA is not
+    drawn at all (alpha 0).
+    """
+    k = (t - appear_time) / max(1e-3, intro)
+    if k <= 0.0:
+        return 0.0, zoom_from
+    if k >= 1.0:
+        return 1.0, 1.0
+    e = k * k * (3.0 - 2.0 * k)
+    return e, zoom_from + (1.0 - zoom_from) * e
 
 
 def render_devanagari_text_image(text, font_size, color_rgb, canvas_w, canvas_h):
@@ -943,6 +1181,11 @@ def assert_glyph_mask_untouched(text="सब्सक्राइब", font_size
     assert (rgba[..., 3][solid] == 255).all(), "decoration eroded glyph alpha"
     for c in range(3):
         assert (rgba[..., c][solid] == CTA_TEXT_COLOR[c]).all(), "rim bled into glyph body"
+
+    # the (D) glyph tile must carry the mask through byte-for-byte, since
+    # the per-frame shimmer only ever multiplies its RGB
+    glyph = _mask_to_glyph_tile(mask)
+    assert (glyph[..., 3] == mask).all(), "glyph tile alpha diverged from the mask"
     return mask
 
 
@@ -1137,6 +1380,16 @@ def _blend_tile_over_accum(acc_rgb, acc_a, tile, x, y):
     acc_a[dy0:dy0 + ch, dx0:dx0 + cw] = sa + acc_a[dy0:dy0 + ch, dx0:dx0 + cw] * inv
 
 
+def _accum_to_rgba(acc_rgb, acc_a):
+    """Pack a premultiplied accumulation buffer back into a straight RGBA tile."""
+    h, w = acc_a.shape
+    rgba = np.zeros((h, w, 4), np.uint8)
+    safe = np.maximum(acc_a, 1e-6)
+    rgba[..., :3] = np.clip(acc_rgb / safe[..., None], 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(acc_a * 255.0, 0, 255).astype(np.uint8)
+    return rgba
+
+
 def _paste_over_frame(frame, tile, x, y, gain=1.0):
     H, W = frame.shape[:2]
     th, tw = tile.shape[:2]
@@ -1255,8 +1508,8 @@ def _synthesize_tts_gtts(text, out_path, lang="hi"):
 
 
 # Cascade order: edge-tts first (it's the higher-quality neural voice), then
-# gTTS. Each entry is (name, fn(text, out_path) -> out_path). Add more
-# backends here (e.g. a local/offline TTS) and the cascade picks them up
+# gTTS. Each entry is (name, fn(text, out_path, voice, lang) -> out_path). Add
+# more backends here (e.g. a local/offline TTS) and the cascade picks them up
 # automatically - _voice_track tries them in order and stops at the first
 # one that actually produces audio.
 _TTS_BACKENDS = [
@@ -1267,7 +1520,7 @@ _TTS_BACKENDS = [
 
 def _decode_audio_mono(path, sr):
     """Decode any ffmpeg-readable file (mp3 from either TTS backend) to a
-    mono float32 array at `sr`, via MoviePy's AudioFileClip as requested."""
+    mono float32 array at `sr`, via MoviePy's AudioFileClip."""
     clip = AudioFileClip(path)
     try:
         arr = clip.to_soundarray(fps=sr)
@@ -1409,6 +1662,78 @@ def _synthesize_audio(duration, boom_times, chime_times, seed=0, sr=44100,
 
 
 # ==========================================================================
+# 7b. (B) MANTRA / AUDIO LOOP
+# ==========================================================================
+def _build_mantra_loop_clip(loop_audio_path, duration, volume=MANTRA_LOOP_VOLUME,
+                            on_status=None):
+    """
+    Loop a short (10-15 sec) mantra/voice file across the FULL climax
+    duration using moviepy's audio_loop fx, then trim to an exact match.
+
+    The same helper handles the "1 hour video" case: audio_loop repeats as
+    many times as `duration` needs, so a 12-second mantra fills 3600
+    seconds just as happily as it fills 12.
+
+    Returns an AudioClip or None. Never raises - a broken mantra file must
+    not take the climax down with it.
+    """
+    if not loop_audio_path or not os.path.exists(loop_audio_path):
+        if on_status:
+            on_status("mantra loop skipped - file not found: %s" % loop_audio_path)
+        return None
+    try:
+        clip = AudioFileClip(loop_audio_path)
+        src = float(clip.duration or 0.0)
+        if src <= 0:
+            if on_status:
+                on_status("mantra loop skipped - source duration is 0")
+            return None
+
+        if src < duration:
+            reps = int(duration // src) + 1
+            clip = clip.fx(audio_loop, duration=duration)
+            if on_status:
+                on_status("mantra looped %.1fs x%d -> %.1fs" % (src, reps, duration))
+        else:
+            clip = clip.subclip(0, duration)
+            if on_status:
+                on_status("mantra trimmed %.1fs -> %.1fs" % (src, duration))
+
+        return clip.fx(volumex, float(volume)).set_duration(duration)
+    except Exception as e:
+        if on_status:
+            on_status("mantra loop failed (%s: %s)" % (type(e).__name__, str(e)[:80]))
+        return None
+
+
+def _attach_climax_audio(clip, duration, bed_wav_path, loop_audio_path=None,
+                         is_mantra_mode=False, on_status=None):
+    """
+    Build the final climax audio: the synthesized bed, plus (when mantra
+    mode is on) the looped mantra composited over it.
+
+    Volume balancing follows the same rule as engine.py: the BED is ducked
+    under the mantra rather than the mantra being boosted, because pushing
+    a voice above 1.0 clips instead of getting louder.
+    """
+    bed = AudioFileClip(bed_wav_path).set_duration(duration)
+
+    mantra = None
+    if is_mantra_mode:
+        mantra = _build_mantra_loop_clip(loop_audio_path, duration,
+                                         MANTRA_LOOP_VOLUME, on_status)
+
+    if mantra is None:
+        return clip.set_audio(bed)
+
+    bed = bed.fx(volumex, BED_DUCK_WITH_MANTRA)
+    mixed = CompositeAudioClip([bed, mantra]).set_duration(duration)
+    if on_status:
+        on_status("mantra mixed over bed (bed ducked to %.2fx)" % BED_DUCK_WITH_MANTRA)
+    return clip.set_audio(mixed)
+
+
+# ==========================================================================
 # 8. PUBLIC API
 # ==========================================================================
 def generate_climax(duration, cta_text, watermark_path, target_size,
@@ -1416,16 +1741,18 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
                     show_subscribe=True, seed=None, with_voice=True,
                     voice_name="hi-IN-SwaraNeural", voice_text=None,
                     subscribe_rain=True, on_status=None, gtts_lang="hi",
-                    tts_timeout_s=14.0):
+                    tts_timeout_s=14.0,
+                    cta_type=None, custom_cta_text=None,
+                    loop_audio_path=None, is_mantra_mode=False,
+                    **kwargs):
     """
     Build the particle drone-show climax VideoClip (video + synthesized audio).
 
     duration       : seconds (>= ~5s recommended so the formation can breathe)
-    cta_text       : Devanagari CTA text, e.g. DEFAULT_CTA_TEXT below. May
-                     include the emoji in _EMOJI_ICONS - they render as
-                     hand-drawn icons (see the module note above) and are
-                     stripped automatically for whichever TTS backend
-                     speaks the line (see _strip_for_speech).
+    cta_text       : Devanagari CTA text, e.g. DEFAULT_CTA_TEXT. May include
+                     the emoji in _EMOJI_ICONS - they render as hand-drawn
+                     icons and are stripped automatically for whichever TTS
+                     backend speaks the line (see _strip_for_speech).
     watermark_path : optional channel logo PNG, bottom-right (may be None)
     target_size    : (width, height) - 9:16 and 16:9 handled automatically
     is_draft       : cheap preview (12 fps, quarter-res layers, fewer particles)
@@ -1439,17 +1766,28 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     seed           : int for reproducible layouts
     with_voice     : speak the CTA and duck it into the bed. Tries edge-tts
                      (voice_name) first; if that's blocked, errors, or hangs
-                     past tts_timeout_s, falls back to gTTS (gtts_lang) -
-                     see _TTS_BACKENDS. Either way a failure never breaks the
-                     render, it just leaves the voiceover out (on_status says
-                     why).
+                     past tts_timeout_s, falls back to gTTS (gtts_lang).
+                     A failure never breaks the render, it just leaves the
+                     voiceover out (on_status says why).
     voice_name     : edge-tts voice, default Hindi "hi-IN-SwaraNeural"
-    voice_text     : override the spoken line (defaults to cta_text)
+    voice_text     : override the spoken line (defaults to the resolved CTA)
     subscribe_rain : background rain of tiny subscribe buttons + bells
-    on_status      : optional callable(str) for non-fatal notices (TTS skipped…)
+    on_status      : optional callable(str) for non-fatal notices
     gtts_lang      : gTTS language code used ONLY if edge-tts fails, default "hi"
-    tts_timeout_s  : per-backend wall-clock timeout in seconds before the next
-                     backend in the cascade is tried
+    tts_timeout_s  : per-backend wall-clock timeout before the next backend
+
+    --- (A) CTA override, sent by engine.py ---
+    cta_type       : "Default CTA" or "Custom CTA" (app.py's radio button)
+    custom_cta_text: the user's own CTA line. When non-empty it REPLACES
+                     DEFAULT_CTA_TEXT both on screen and in the TTS.
+
+    --- (B) mantra loop, sent by engine.py ---
+    loop_audio_path: a short (10-15 sec) mantra/voice file
+    is_mantra_mode : when True, that file is looped across the whole
+                     climax duration and mixed over the bed
+
+    **kwargs is absorbed and ignored so a newer engine.py can pass extra
+    arguments to an older climax.py without crashing the render.
     """
     def _say(msg):
         if on_status:
@@ -1459,10 +1797,19 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
                 pass
         else:
             sys.stderr.write("[climax] %s\n" % msg)
+
+    if kwargs:
+        _say("ignoring unknown arguments: %s" % ", ".join(sorted(kwargs)))
+
     duration = max(1.0, float(duration))
     w, h = int(target_size[0]), int(target_size[1])
     vertical = h >= w
     rng = np.random.default_rng(seed if seed is not None else 20260916)
+
+    # ---------------- (A) resolve which CTA text wins ----------------
+    resolved_cta = _resolve_cta_text(cta_text, cta_type, custom_cta_text)
+    if custom_cta_text and custom_cta_text.strip():
+        _say("using custom CTA text (%d chars)" % len(resolved_cta))
 
     fps = 12 if is_draft else 30
     pdiv = 4 if is_draft else 2
@@ -1545,19 +1892,39 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
             _blend_tile_over_accum(ui_rgb, ui_a, wm,
                                    w - wm.shape[1] - m, h - wm.shape[0] - m)
 
-    # CTA text blended LAST so it sits above everything in the UI stack
-    if cta_text:
+    # ---------------- (C)+(D) CTA: banner + 3D decor + tintable glyph ----
+    # The CTA is NOT baked into the static UI plate any more. It is built as
+    # two tiles so the frame loop can zoom/fade it in and shimmer its colour:
+    #   cta_base_tile  = highlight banner + drop shadow + glow + rim (static)
+    #   cta_glyph_tile = the glyph body alone, white, alpha = the glyph mask
+    cta_base_tile = None
+    cta_glyph_tile = None
+    cta_xy = ((w - text_cw) // 2, int(h * text_cy) - text_ch // 2)
+
+    if resolved_cta:
         font = _load_font(_DEVANAGARI_FONT_CANDIDATES, font_size)
-        mask, _, skipped_syms = _draw_plain_mask(cta_text, font, text_cw, text_ch)
+        mask, _, skipped_syms = _draw_plain_mask(resolved_cta, font, text_cw, text_ch)
         if skipped_syms:
             _say("CTA text: no icon for %d symbol(s), dropped: %s"
                  % (len(skipped_syms), " ".join(skipped_syms)))
-        tile = _mask_to_rgba(mask, CTA_TEXT_COLOR,
-                             rim_rgb=CTA_RIM_COLOR, rim_strength=1.0,
-                             glow_rgb=(255, 168, 44), glow_strength=0.45,
-                             shadow_rgb=CTA_SHADOW_COLOR)
-        _blend_tile_over_accum(ui_rgb, ui_a, tile,
-                               (w - text_cw) // 2, int(h * text_cy) - text_ch // 2)
+
+        acc_rgb = np.zeros((text_ch, text_cw, 3), np.float32)
+        acc_a = np.zeros((text_ch, text_cw), np.float32)
+
+        banner = _make_highlight_banner(text_cw, text_ch, mask)
+        if banner is not None:
+            _blend_tile_over_accum(acc_rgb, acc_a, banner, 0, 0)
+
+        decor = _mask_to_rgba(mask, CTA_TEXT_COLOR,
+                              rim_rgb=CTA_RIM_COLOR, rim_strength=1.0,
+                              glow_rgb=(255, 168, 44), glow_strength=0.45,
+                              shadow_rgb=CTA_SHADOW_COLOR,
+                              include_fill=False,
+                              shadow_offset_mult=CTA_SHADOW_OFFSET_MULT)
+        _blend_tile_over_accum(acc_rgb, acc_a, decor, 0, 0)
+
+        cta_base_tile = _accum_to_rgba(acc_rgb, acc_a)
+        cta_glyph_tile = _mask_to_glyph_tile(mask, (255, 255, 255))
 
     ui_a3 = ui_a[..., None]
     has_ui = bool(ui_a.any())
@@ -1669,10 +2036,44 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
             _paste_over_frame(frame, motif_tile, motif_xy[0], motif_xy[1],
                               gain=min(1.0, 0.12 + 1.5 * formed))
 
-        # ---- UI ----
+        # ---- UI (watermark etc) ----
         if has_ui:
             frame = frame * (1.0 - ui_a3) + ui_rgb
 
+        # ---- (C)+(D) CTA: banner + 3D decor, then shimmering glyph on top ----
+        if cta_base_tile is not None:
+            cta_alpha, cta_scale = _cta_intro(t)
+            if cta_alpha > 0.004:
+                bh, bw = cta_base_tile.shape[:2]
+                nw = max(2, int(bw * cta_scale))
+                nh = max(2, int(bh * cta_scale))
+                # keep the CTA centred on its anchor while it zooms
+                ox = cta_xy[0] + (bw - nw) / 2.0
+                oy = cta_xy[1] + (bh - nh) / 2.0
+
+                if abs(cta_scale - 1.0) > 0.004:
+                    base = cv2.resize(cta_base_tile, (nw, nh),
+                                      interpolation=cv2.INTER_LINEAR)
+                    glyph = cv2.resize(cta_glyph_tile, (nw, nh),
+                                       interpolation=cv2.INTER_LINEAR)
+                else:
+                    base, glyph = cta_base_tile, cta_glyph_tile
+
+                _paste_over_frame(frame, base, ox, oy, gain=cta_alpha)
+
+                # shimmer: a pure colour MULTIPLY on the finished glyph mask.
+                # The text shaper is never re-run, so conjuncts cannot break.
+                sc = _shimmer_color(t)
+                tinted = glyph.copy()
+                tinted[..., 0] = int(sc[0])
+                tinted[..., 1] = int(sc[1])
+                tinted[..., 2] = int(sc[2])
+                # gentle brightness breath on top of the colour cycle
+                pulse = 1.0 + 0.06 * math.sin(t * 2.6)
+                _paste_over_frame(frame, tinted, ox, oy,
+                                  gain=min(1.0, cta_alpha * pulse))
+
+        # ---- SUBSCRIBE button ----
         if sub_tile is not None:
             past = [c for c in chime_times if c <= t]
             since = (t - past[-1]) if past else 99.0
@@ -1695,18 +2096,21 @@ def generate_climax(duration, cta_text, watermark_path, target_size,
     if with_audio:
         try:
             # voice_text, if given, is spoken exactly as passed. Otherwise the
-            # on-screen cta_text (which may carry decorative emoji for the
-            # visual, like the sparkle/bell/flower CTA below) is cleaned of
+            # RESOLVED on-screen CTA (custom or default) is cleaned of
             # emoji/symbols first - TTS engines read those badly or not at all.
             spoken = (voice_text if voice_text is not None
-                     else _strip_for_speech(cta_text)) if with_voice else None
+                      else _strip_for_speech(resolved_cta)) if with_voice else None
             wav = _synthesize_audio(duration, burst_times, chime_times,
                                     seed=int(seed) if seed is not None else 0,
                                     sr=22050 if is_draft else 44100,
                                     voice_text=spoken, voice_name=voice_name,
                                     gtts_lang=gtts_lang, tts_timeout_s=tts_timeout_s,
                                     on_status=_say)
-            clip = clip.set_audio(AudioFileClip(wav).set_duration(duration))
+            # (B) bed + looped mantra
+            clip = _attach_climax_audio(clip, duration, wav,
+                                        loop_audio_path=loop_audio_path,
+                                        is_mantra_mode=bool(is_mantra_mode),
+                                        on_status=_say)
         except Exception:
             pass   # audio is a bonus; never fail the segment for it
 

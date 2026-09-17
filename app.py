@@ -247,10 +247,29 @@ with st.expander("🎆 क्लाइमैक्स / आउटरो से�
                 "क्लाइमैक्स ड्यूरेशन (सेकंड)",
                 min_value=1, value=int(st.session_state.climax_duration), step=1, key="climax_dur_in",
             )
+            if int(st.session_state.climax_duration) < 10:
+                st.caption("💡 टिप: अगर क्लाइमैक्स 10 सेकंड से कम है, तो एनीमेशन और टेक्स्ट उसी समय में फ़िट कर दिए जाएँगे।")
+
     if st.session_state.enable_climax:
-        st.session_state.climax_text = st.text_input(
-            "क्लाइमैक्स टेक्स्ट / CTA", value=st.session_state.climax_text, key="climax_text_in"
+        st.markdown("**क्लाइमैक्स संदेश प्रकार (Climax CTA Type)**")
+        st.session_state.climax_cta_type = st.radio(
+            "CTA प्रकार चुनें",
+            options=["Default CTA", "Custom CTA"],
+            index=["Default CTA", "Custom CTA"].index(st.session_state.get("climax_cta_type", "Default CTA")),
+            key="climax_cta_type_radio",
+            horizontal=True
         )
+        
+        if st.session_state.climax_cta_type == "Custom CTA":
+            st.session_state.climax_custom_text = st.text_area(
+                "अपना कस्टम क्लाइमैक्स संदेश लिखें",
+                value=st.session_state.get("climax_custom_text", ""),
+                key="climax_custom_text_in",
+                height=80
+            )
+        else:
+            st.caption("ℹ️ डिफ़ॉल्ट संदेश दिखाया जाएगा: ✨ धन्यवाद! 👍 लाइक व सब्सक्राइब करें। 🔔")
+
         cl_logo = st.file_uploader("चैनल लोगो / वॉटरमार्क (PNG) — क्लाइमैक्स सेगमेंट में दिखेगा", type=["png"], key="climax_logo_uploader")
         if cl_logo is not None:
             st.session_state.climax_watermark_path = save_uploaded_file(cl_logo, "climax")
@@ -263,7 +282,6 @@ st.success(f"📐 कुल वीडियो लंबाई (Master Timeline)
            f"= **{total_target_duration} सेकंड**")
 
 st.divider()
-
 # --------------------------------------------------------------------------
 # TRACK 1 - VIDEO CREATION FOLDER (MANDATORY)
 # --------------------------------------------------------------------------
@@ -487,6 +505,7 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
         t5_voice_file = st.file_uploader("वॉइसओवर ऑडियो अपलोड करें (MP3/WAV)", type=["mp3", "wav", "m4a"], key="t5_manual_voice_uploader")
         if t5_voice_file is not None:
             st.session_state.track5_manual_voice_path = save_uploaded_file(t5_voice_file, "track5_voice")
+        st.caption("💡 नोट (Mantra Mode): अगर आप 10-15 सेकंड की आवाज़/मंत्र अपलोड करके लंबी वीडियो ड्यूरेशन चुनते हैं, तो यह आवाज़ पूरे वीडियो में लूप (Loop) होकर चलेगी।")
 
     st.markdown("**सबटाइटल स्टाइल (Subtitle Style)**")
     s_col1, s_col2 = st.columns(2)
@@ -499,18 +518,38 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
             "फॉन्ट साइज़", min_value=10, value=int(st.session_state.track5_subtitle_font_size), step=2, key="t5_sub_size"
         )
 
+    # --- SMART TICKER LOGIC (NO CONFLICT CHECK) ---
+    has_script_or_voice = bool(
+        st.session_state.track5_script_text or 
+        st.session_state.track5_script_file_path or 
+        st.session_state.track5_manual_voice_path
+    )
+
     st.markdown("**नीचे स्क्रॉल होने वाला टिकर (Bottom Ticker)**")
+    if has_script_or_voice:
+        st.warning("⚠️ स्क्रिप्ट/वॉयसओवर सक्रिय होने के कारण टिकर पट्टी लॉक (Disabled) है, ताकि ऑन-स्क्रीन टेक्स्ट टकराएं नहीं। यह केवल Background Music मोड में चलेगा।")
+
     st.session_state.track5_ticker_text = st.text_input(
-        "टिकर टेक्स्ट", value=st.session_state.track5_ticker_text, key="t5_ticker_text_in"
+        "टिकर टेक्स्ट", 
+        value=st.session_state.track5_ticker_text, 
+        key="t5_ticker_text_in",
+        disabled=has_script_or_voice
     )
     t_col1, t_col2 = st.columns(2)
     with t_col1:
         st.session_state.track5_ticker_speed = st.selectbox(
-            "टिकर स्पीड", options=["Slow", "Medium", "Fast"], index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), key="t5_ticker_speed_sel"
+            "टिकर स्पीड", 
+            options=["Slow", "Medium", "Fast"], 
+            index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), 
+            key="t5_ticker_speed_sel",
+            disabled=has_script_or_voice
         )
     with t_col2:
         st.session_state.track5_ticker_bg_color = st.color_picker(
-            "टिकर बैकग्राउंड रंग", value=st.session_state.track5_ticker_bg_color, key="t5_ticker_bg_color_pick"
+            "टिकर बैकग्राउंड रंग", 
+            value=st.session_state.track5_ticker_bg_color, 
+            key="t5_ticker_bg_color_pick",
+            disabled=has_script_or_voice
         )
 
 st.divider()
@@ -673,6 +712,14 @@ def build_payload(is_draft: bool) -> dict:
         for s in st.session_state.track6_sfx
     ] if st.session_state.track6_sfx else []
 
+    # --- SMART TICKER CHECK ---
+    has_script_or_voice = bool(
+        st.session_state.track5_script_text or 
+        st.session_state.track5_script_file_path or 
+        st.session_state.track5_manual_voice_path
+    )
+    ticker_enabled = not has_script_or_voice
+
     payload = {
         "ratio": st.session_state.ratio,
         "is_shorts": st.session_state.ratio == "Shorts (9:16)",
@@ -681,7 +728,9 @@ def build_payload(is_draft: bool) -> dict:
         "output_quality": "360p" if is_draft else st.session_state.final_quality,
         "enable_climax": bool(st.session_state.enable_climax),
         "climax_duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
-        "climax_text": st.session_state.climax_text if st.session_state.enable_climax else "",
+        "climax_text": st.session_state.get("climax_text", ""),
+        "climax_cta_type": st.session_state.get("climax_cta_type", "Default CTA"),
+        "climax_custom_text": st.session_state.get("climax_custom_text", ""),
         "climax_watermark_path": st.session_state.climax_watermark_path,
         "font_config": DEVANAGARI_FONT_CONFIG,
         "track1": {
@@ -700,6 +749,7 @@ def build_payload(is_draft: bool) -> dict:
             "manual_voice_path": st.session_state.track5_manual_voice_path if st.session_state.track5_voice_source != "AI Voice (Edge-TTS)" else None,
             "subtitle_font_color": st.session_state.track5_subtitle_font_color,
             "subtitle_font_size": int(st.session_state.track5_subtitle_font_size),
+            "ticker_enabled": ticker_enabled,
             "ticker_text": st.session_state.track5_ticker_text or "",
             "ticker_speed": st.session_state.track5_ticker_speed,
             "ticker_bg_color": st.session_state.track5_ticker_bg_color,
@@ -750,7 +800,6 @@ def run_render(is_draft: bool):
             st.code(traceback.format_exc())
     finally:
         st.session_state.is_rendering = False
-
 
 # --------------------------------------------------------------------------
 # EXECUTION BUTTONS

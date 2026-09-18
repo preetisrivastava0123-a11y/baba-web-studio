@@ -11,37 +11,31 @@ Optionally, engine.py hands off the last 10-15 sec to `climax.py`
 watermark / Hindi AI voiceover) as described in the product plan.
 
 --------------------------------------------------------------------------
-WHAT CHANGED IN THIS VERSION (A / B / C)
+WHAT CHANGED IN THIS VERSION (Quality / Ticker / Mantra update)
 --------------------------------------------------------------------------
-PART A - Track 5 UI additions:
-  * Mantra / short voice upload (10-15 sec MP3/WAV) -> payload key
-    track5.mantra_audio_path
-  * Climax CTA mode st.radio(): "Default CTA" vs "Custom CTA"
-  * st.text_area() for the custom CTA text, shown ONLY when
-    "Custom CTA" is selected.
-  * NOTE: the CTA text input was MOVED here from the Master Setup
-    climax expander so there is only ONE source of truth for
-    climax_text. The climax expander now just displays the resolved
-    text read-only.
+QUALITY:
+  * Only two quality tiers exist in the system: 720p (Draft) and
+    1080p (Final). The user no longer picks a "final quality" -
+    Quick Draft always renders at 720p, Final Render always renders
+    at 1080p Full HD.
 
-PART B - Bottom ticker conditional rendering:
-  * If the script/TTS field is non-empty, OR a script file was
-    uploaded, OR a manual voiceover was uploaded, then the ticker is
-    DISABLED: payload gets ticker_enabled=False and ticker_text=None.
-  * The ticker is only processed when the video is music-only
-    (i.e. Track 3 / background-music mode with no narration).
-  * `is_voiceover_active()` is the single helper both the UI and the
-    payload builder use, so the on-screen warning and the actual
-    payload can never disagree.
+TICKER (Smart-Lock removed):
+  * The old "Smart-Lock" logic that disabled the bottom ticker
+    whenever a script/voiceover was present has been removed
+    entirely. The ticker is now ALWAYS active.
+  * By default the bottom ticker plays whatever text is typed into
+    the Script box (Track 5).
+  * The separate ticker text box is now a CUSTOM CTA / OVERRIDE box:
+    if the user types something into it, that text replaces the
+    script text in the ticker. If left empty, the script text is
+    used automatically.
 
-PART C - Audio looping parameters:
-  * payload now always carries top-level `is_loop_mode` and
-    `audio_file_path`, and the same two keys are repeated inside the
-    `climax` block so `generate_climax()` can read them directly
-    without digging through the whole payload.
-  * `audio_file_path` resolves to: mantra upload -> else manual
-    voiceover -> else first Track 3 audio file.
-
+MANTRA:
+  * The Mantra/short-voice upload (10-15 sec) keeps looping for the
+    full video/climax duration exactly as before.
+  * The Script text now simultaneously drives THREE things when
+    present: the AI voice narration (if AI Voice is selected), the
+    on-screen subtitles, and (by default) the bottom ticker text.
 --------------------------------------------------------------------------
 DEVANAGARI / HINDI TEXT RENDERING - IMPORTANT NOTE FOR `engine.py`
 --------------------------------------------------------------------------
@@ -121,6 +115,10 @@ DEFAULT_CTA_TEXT = (
 MANTRA_MIN_SECONDS = 10
 MANTRA_MAX_SECONDS = 15
 
+# --- QUALITY: only two tiers exist in the system ---
+DRAFT_QUALITY = "720p"
+FINAL_QUALITY = "1080p"
+
 DEVANAGARI_FONT_CONFIG = {
     "language": "hi",
     "preferred_fonts": ["Nirmala.ttf", "Mangal.ttf", "NotoSansDevanagari-Regular.ttf"],
@@ -143,7 +141,6 @@ DEFAULTS = {
     "custom_minutes": 0,
     "custom_seconds": 30,
     "video_duration": 30,
-    "final_quality": "1080p",
     "enable_climax": True,
     "climax_duration": 10,
     "climax_watermark_path": None,
@@ -166,7 +163,9 @@ DEFAULTS = {
     "track5_manual_voice_path": None,
     "track5_subtitle_font_color": "#FFFFFF",
     "track5_subtitle_font_size": 40,
-    "track5_ticker_text": st.session_state.get("ticker_text_input", "").strip() or st.session_state.get("track5_script_text", "").strip(),
+    # Ticker text box is now a CUSTOM OVERRIDE box - empty by default so
+    # the script text is used automatically.
+    "track5_ticker_text": "",
     "track5_ticker_speed": "Medium",
     "track5_ticker_bg_color": "#000000",
     # PART A - new Track 5 fields
@@ -255,23 +254,24 @@ def resolve_climax_text() -> str:
 
 
 # --------------------------------------------------------------------------
-# PART B HELPER - is any narration/voiceover active?
+# TICKER HELPER (Smart-Lock removed)
 # --------------------------------------------------------------------------
-def is_voiceover_active() -> bool:
+def resolve_ticker_text() -> str:
     """
-    Returns True if the video will carry narration of any kind:
-      - script text typed into the TTS box, OR
-      - a script file (PDF/DOCX) uploaded for TTS, OR
-      - a manual voiceover audio file uploaded.
+    The bottom ticker is ALWAYS active - it is never disabled by the
+    presence of a script or voiceover.
 
-    When this is True the bottom ticker MUST be suppressed - a scrolling
-    ticker fighting with spoken narration + subtitles is visual noise.
-    The ticker is only for music-only / background-song videos.
+    Priority:
+      1. The custom ticker/CTA override box (track5_ticker_text), if the
+         user typed something into it.
+      2. Otherwise, the Script text (track5_script_text) is used
+         automatically, so narration + subtitles + ticker all read from
+         the same script.
     """
-    has_script_text = bool((st.session_state.track5_script_text or "").strip())
-    has_script_file = bool(st.session_state.track5_script_file_path)
-    has_manual_voice = bool(st.session_state.track5_manual_voice_path)
-    return has_script_text or has_script_file or has_manual_voice
+    custom_override = (st.session_state.track5_ticker_text or "").strip()
+    if custom_override:
+        return custom_override
+    return (st.session_state.track5_script_text or "").strip()
 
 
 def resolve_loop_audio_path():
@@ -298,7 +298,7 @@ st.caption("Multi-Track Video Editor")
 
 st.markdown("### ⚙️ Master Setup")
 
-m_col1, m_col2, m_col3 = st.columns(3)
+m_col1, m_col2 = st.columns(2)
 with m_col1:
     st.session_state.ratio = st.selectbox(
         "वीडियो फॉर्मेट (Video Format)",
@@ -312,13 +312,11 @@ with m_col2:
         index=list(DURATION_PRESETS.keys()).index(st.session_state.duration_preset),
         key="duration_preset_select",
     )
-with m_col3:
-    st.session_state.final_quality = st.selectbox(
-        "क्वालिटी (Final Render Quality)",
-        options=["720p", "1080p"],
-        index=["720p", "1080p"].index(st.session_state.final_quality),
-        key="final_quality_select",
-    )
+
+st.caption(
+    f"🎚️ क्वालिटी: Quick Draft हमेशा **{DRAFT_QUALITY}** में रेंडर होगा (तेज़ स्पीड के लिए), "
+    f"और Final Render हमेशा ऑटोमैटिक **{FINAL_QUALITY} Full HD** में रेंडर होगा।"
+)
 
 if st.session_state.duration_preset == "Custom":
     c_col1, c_col2 = st.columns(2)
@@ -571,7 +569,10 @@ st.divider()
 # TRACK 5 - SCRIPT & VOICE (OPTIONAL)
 # --------------------------------------------------------------------------
 with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और आवाज़ — वैकल्पिक (Optional)", expanded=False):
-    st.info("नोट: वीडियो की स्क्रिप्ट टाइप करें या PDF/DOCX अपलोड करें, AI आवाज़ चुनें, सबटाइटल स्टाइल और नीचे स्क्रॉल होने वाला टिकर टेक्स्ट सेट करें।")
+    st.info(
+        "नोट: वीडियो की स्क्रिप्ट टाइप करें या PDF/DOCX अपलोड करें। यही स्क्रिप्ट AI आवाज़ (अगर सेलेक्ट हो), "
+        "सबटाइटल और नीचे स्क्रॉल होने वाला टिकर — तीनों में एक साथ इस्तेमाल होती है।"
+    )
 
     st.session_state.track5_script_text = st.text_area(
         "स्क्रिप्ट टेक्स्ट (Script)", value=st.session_state.track5_script_text, key="t5_script_text_in", height=120
@@ -602,7 +603,7 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
     st.markdown("**🕉️ मंत्र / शॉर्ट वॉइस अपलोड (Mantra Loop)**")
     st.caption(
         f"📏 गाइडलाइन: {MANTRA_MIN_SECONDS}–{MANTRA_MAX_SECONDS} सेकंड का छोटा ऑडियो (MP3/WAV) अपलोड करें। "
-        "सिस्टम इसे Loop करके पूरी वीडियो/क्लाइमैक्स ड्यूरेशन तक चला देगा।"
+        "सिस्टम इसे Loop करके पूरी वीडियो/क्लाइमैक्स ड्यूरेशन तक लगातार चला देगा — स्क्रिप्ट/AI आवाज़ चालू रहने पर भी।"
     )
     t5_mantra_file = st.file_uploader(
         "मंत्र / शॉर्ट ऑडियो अपलोड करें (MP3/WAV)",
@@ -666,40 +667,38 @@ with st.expander("🎙️ ट्रैक 5: स्क्रिप्ट और 
         )
 
     # ----------------------------------------------------------------------
-    # PART B: BOTTOM TICKER - conditional rendering
-    # Ticker is only allowed when there is NO narration/voiceover.
+    # BOTTOM TICKER - always active (Smart-Lock removed).
+    # Default source is the Script text; the box below is an optional
+    # override that, if filled, replaces the script text in the ticker.
     # ----------------------------------------------------------------------
     st.markdown("**नीचे स्क्रॉल होने वाला टिकर (Bottom Ticker)**")
+    st.caption(
+        "✅ टिकर हमेशा एक्टिव रहता है। डिफ़ॉल्ट रूप से ऊपर लिखी **स्क्रिप्ट** ही टिकर में चलेगी। "
+        "अगर नीचे बॉक्स में कुछ टाइप करेंगे, तो वह (Custom) टेक्स्ट स्क्रिप्ट की जगह ले लेगा।"
+    )
 
-    voiceover_active_now = is_voiceover_active()
+    st.session_state.track5_ticker_text = st.text_input(
+        "कस्टम टिकर / CTA टेक्स्ट (वैकल्पिक — भरने पर स्क्रिप्ट की जगह यही टिकर में चलेगा)",
+        value=st.session_state.track5_ticker_text,
+        key="t5_ticker_text_in",
+        placeholder="खाली छोड़ने पर ऊपर की स्क्रिप्ट टेक्स्ट अपने आप टिकर में चलेगी।",
+    )
 
-    if voiceover_active_now:
-        st.warning(
-            "🚫 टिकर अभी बंद है — क्योंकि स्क्रिप्ट/वॉइसओवर एक्टिव है। "
-            "स्क्रॉलिंग टिकर और बोली गई आवाज़ + सबटाइटल एक साथ चलने पर स्क्रीन बहुत भर जाती है। "
-            "टिकर केवल तभी चलेगा जब वीडियो सिर्फ़ 'Background Music / Songs' मोड में हो "
-            "(यानी स्क्रिप्ट टेक्स्ट खाली हो, कोई स्क्रिप्ट फ़ाइल न हो, और कोई मैनुअल वॉइसओवर अपलोड न हो)।"
-        )
-        st.text_input(
-            "टिकर टेक्स्ट (अभी निष्क्रिय)",
-            value=st.session_state.track5_ticker_text,
-            disabled=True,
-            key="t5_ticker_text_disabled",
-        )
+    resolved_ticker_preview = resolve_ticker_text()
+    if resolved_ticker_preview:
+        st.info(f"📌 फ़ाइनल टिकर टेक्स्ट: **{resolved_ticker_preview}**")
     else:
-        st.success("✅ म्यूज़िक-ओनली मोड डिटेक्ट हुआ — बॉटम टिकर एक्टिव रहेगा।")
-        st.session_state.track5_ticker_text = st.text_input(
-            "टिकर टेक्स्ट", value=st.session_state.track5_ticker_text, key="t5_ticker_text_in"
+        st.warning("⚠️ अभी टिकर के लिए कोई टेक्स्ट नहीं है — ऊपर स्क्रिप्ट लिखें या यहाँ कस्टम टेक्स्ट डालें।")
+
+    t_col1, t_col2 = st.columns(2)
+    with t_col1:
+        st.session_state.track5_ticker_speed = st.selectbox(
+            "टिकर स्पीड", options=["Slow", "Medium", "Fast"], index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), key="t5_ticker_speed_sel"
         )
-        t_col1, t_col2 = st.columns(2)
-        with t_col1:
-            st.session_state.track5_ticker_speed = st.selectbox(
-                "टिकर स्पीड", options=["Slow", "Medium", "Fast"], index=["Slow", "Medium", "Fast"].index(st.session_state.track5_ticker_speed), key="t5_ticker_speed_sel"
-            )
-        with t_col2:
-            st.session_state.track5_ticker_bg_color = st.color_picker(
-                "टिकर बैकग्राउंड रंग", value=st.session_state.track5_ticker_bg_color, key="t5_ticker_bg_color_pick"
-            )
+    with t_col2:
+        st.session_state.track5_ticker_bg_color = st.color_picker(
+            "टिकर बैकग्राउंड रंग", value=st.session_state.track5_ticker_bg_color, key="t5_ticker_bg_color_pick"
+        )
 
 st.divider()
 
@@ -807,8 +806,11 @@ with st.expander("⏱️ ट्रैक 7: लाइव प्रीव्य�
             "Total Duration (sec)": total_target_duration,
             "Climax CTA Mode": st.session_state.track5_cta_mode,
             "Climax Text": resolve_climax_text(),
-            "Ticker Enabled": not is_voiceover_active(),
+            "Ticker Enabled": True,
+            "Ticker Text": resolve_ticker_text(),
             "Loop Mode": bool(resolve_loop_audio_path()),
+            "Draft Quality": DRAFT_QUALITY,
+            "Final Quality": FINAL_QUALITY,
         }
     )
 
@@ -866,15 +868,12 @@ def build_payload(is_draft: bool) -> dict:
     ] if st.session_state.track6_sfx else []
 
     # ----------------------------------------------------------------------
-    # PART B - ticker conflict resolution (single source of truth)
+    # TICKER (Smart-Lock removed) - the ticker is ALWAYS enabled. Its text
+    # defaults to the Script text and only falls back to the custom
+    # override box when that box has something typed into it.
     # ----------------------------------------------------------------------
-    voiceover_active = is_voiceover_active()
-    ticker_enabled = not voiceover_active
-    ticker_text_value = (st.session_state.track5_ticker_text or "").strip() if ticker_enabled else None
-    if not ticker_text_value:
-        # Empty string counts as "no ticker" too.
-        ticker_enabled = False
-        ticker_text_value = None
+    ticker_text_value = resolve_ticker_text()
+    ticker_enabled = True  # never disabled, regardless of script/voiceover state
 
     # ----------------------------------------------------------------------
     # PART A - resolved CTA / climax text
@@ -892,7 +891,8 @@ def build_payload(is_draft: bool) -> dict:
         "is_shorts": st.session_state.ratio == "Shorts (9:16)",
         "duration": int(st.session_state.video_duration),
         "is_draft": bool(is_draft),
-        "output_quality": "360p" if is_draft else st.session_state.final_quality,
+        # QUALITY - only two tiers exist: Draft always 720p, Final always 1080p.
+        "output_quality": DRAFT_QUALITY if is_draft else FINAL_QUALITY,
         "enable_climax": bool(st.session_state.enable_climax),
         "climax_duration": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
         "climax_text": resolved_climax_text,
@@ -903,8 +903,13 @@ def build_payload(is_draft: bool) -> dict:
         "is_loop_mode": is_loop_mode,
         "audio_file_path": loop_audio_path,
 
-        # PART B - top-level ticker flags so engine.py never has to guess
-        "voiceover_active": voiceover_active,
+        # Ticker - top-level flags so engine.py never has to guess.
+        # ticker_enabled is always True (Smart-Lock removed).
+        "voiceover_active": bool(
+            (st.session_state.track5_script_text or "").strip()
+            or st.session_state.track5_script_file_path
+            or st.session_state.track5_manual_voice_path
+        ),
         "ticker_enabled": ticker_enabled,
 
         # PART A + C - everything generate_climax() needs, in one block
@@ -935,7 +940,8 @@ def build_payload(is_draft: bool) -> dict:
             "subtitle_font_color": st.session_state.track5_subtitle_font_color,
             "subtitle_font_size": int(st.session_state.track5_subtitle_font_size),
 
-            # PART A - mantra loop audio
+            # PART A - mantra loop audio (keeps looping for the full
+            # video/climax duration independent of script/voice state)
             "mantra_audio_path": st.session_state.track5_mantra_audio_path,
             "mantra_is_loop_mode": bool(st.session_state.track5_mantra_audio_path),
 
@@ -943,11 +949,13 @@ def build_payload(is_draft: bool) -> dict:
             "cta_mode": st.session_state.track5_cta_mode,
             "custom_cta_text": (st.session_state.track5_custom_cta_text or "").strip(),
 
-            # PART B - ticker is None/False whenever narration is active
-            "ticker_enabled": ticker_enabled,
+            # Ticker - always enabled. Defaults to script_text; the raw
+            # override value is also included for transparency/debugging.
+            "ticker_enabled": True,
             "ticker_text": ticker_text_value,
-            "ticker_speed": st.session_state.track5_ticker_speed if ticker_enabled else None,
-            "ticker_bg_color": st.session_state.track5_ticker_bg_color if ticker_enabled else None,
+            "ticker_text_override": (st.session_state.track5_ticker_text or "").strip() or None,
+            "ticker_speed": st.session_state.track5_ticker_speed,
+            "ticker_bg_color": st.session_state.track5_ticker_bg_color,
         },
         "track6": {"sfx": t6_sfx_list},
         "track7": {
@@ -971,7 +979,7 @@ def run_render(is_draft: bool):
 
     try:
         with st.spinner(
-            "Quick Draft render ho raha hai..." if is_draft else "वीडियो तैयार हो रहा है, कृपया प्रतीक्षा करें..."
+            f"Quick Draft render ho raha hai ({DRAFT_QUALITY})..." if is_draft else f"वीडियो {FINAL_QUALITY} में तैयार हो रहा है, कृपया प्रतीक्षा करें..."
         ):
             import importlib
             import engine  # noqa: F401  (dynamic import, sibling module)
@@ -1030,10 +1038,10 @@ def run_render(is_draft: bool):
 # --------------------------------------------------------------------------
 btn_col1, btn_col2 = st.columns(2)
 with btn_col1:
-    if st.button("⚡ Quick Draft Render (360p)", use_container_width=True, disabled=st.session_state.is_rendering):
+    if st.button(f"⚡ Quick Draft Render ({DRAFT_QUALITY})", use_container_width=True, disabled=st.session_state.is_rendering):
         run_render(is_draft=True)
 with btn_col2:
-    if st.button(f"🎬 Final Video Render ({st.session_state.final_quality})", use_container_width=True, type="primary", disabled=st.session_state.is_rendering):
+    if st.button(f"🎬 Final Video Render ({FINAL_QUALITY})", use_container_width=True, type="primary", disabled=st.session_state.is_rendering):
         run_render(is_draft=False)
 
 # --------------------------------------------------------------------------

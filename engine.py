@@ -24,7 +24,7 @@ So both of these still work:
     engine.master_render_pipeline(payload, is_mantra_mode=True,
                                   loop_audio_path="/tmp/mantra.mp3")
 
-WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4)
+WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4 / 5 / 6)
 ----------------------------------------------------------------------
 (1) SIGNATURE - master_render_pipeline() now accepts loop_audio_path,
     is_mantra_mode, ticker_enabled, cta_type, custom_cta_text plus
@@ -38,12 +38,42 @@ WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4)
     on top. See build_mantra_loop_layer() and build_final_audio().
 
 (3) TICKER - the ticker overlay is only composited when ticker_enabled
-    is True. Otherwise that whole CompositeVideoClip layer is skipped.
+    is True. app.py's ticker box is now fully INDEPENDENT of the
+    Script text (no more fall-back to the script) - it is enabled only
+    when track5.ticker_text itself is non-empty. This module does not
+    need to know why the ticker is on/off, it just honours the flag +
+    text that app.py already resolved.
 
 (4) CLIMAX - cta_type and custom_cta_text are now forwarded to
     climax.generate_climax() so climax.py can pick the right 3D/shimmer
     text style and the right TTS voice. A TypeError fallback keeps older
     climax.py signatures working.
+
+(5) MANTRA ON-SCREEN TEXT (new) - app.py's Track 5 now has a
+    'mantra_text' field that is completely independent of the mantra
+    AUDIO loop, the subtitles, the ticker, and the CTA. When present, it
+    is rendered as a static on-screen banner (own style/color/size) for
+    the full duration of the main video. See build_mantra_text_overlay().
+
+(6) QUALITY - app.py now only ever sends "720p" (draft) or the user's
+    chosen "720p"/"1080p" (final download quality, default 1080p). The
+    old hard-coded "360p" draft tier is gone from app.py, but this
+    module still recognises it in TARGET_SIZES for backward
+    compatibility with any older payload that still sends it.
+
+(7) SUBTITLE + SCRIPT-FILE FIX (bug fix, not an app.py change) - two
+    gaps were found while syncing this file with app.py and are now
+    fixed:
+      - Subtitles were never actually drawn on screen. app.py has
+        always collected subtitle_font_color/subtitle_font_size, but no
+        function in this file ever rendered them. build_subtitle_overlay()
+        now does, as a static word-wrapped caption (no per-word timing
+        data exists anywhere in the payload to sync it line-by-line).
+      - track5.script_file_path (an uploaded PDF/DOCX) was accepted into
+        the payload but never read - only the typed script_text box
+        worked. resolve_script_text() now extracts text from the file
+        when the text box is empty, and both the AI voice and the new
+        subtitle overlay use it.
 
 NOTE ON MOVIEPY VERSION
 ----------------------------------------------------------------------
@@ -64,9 +94,9 @@ versions work.
 DEVANAGARI TEXT
 ----------------------------------------------------------------------
 PIL's default text layout does not shape Devanagari conjuncts/matras
-correctly. This module renders all Hindi text (subtitles/ticker) through
-a Chromium/Playwright pass when available, falling back to PIL + RAQM,
-then plain PIL as a last resort.
+correctly. This module renders all Hindi text (subtitles/ticker/mantra
+text) through a Chromium/Playwright pass when available, falling back
+to PIL + RAQM, then plain PIL as a last resort.
 ----------------------------------------------------------------------
 """
 
@@ -102,6 +132,8 @@ OUTPUT_DIR = os.path.join(tempfile.gettempdir(), "baba_web_studio_renders")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # (ratio, quality) -> (width, height)
+# "360p" is kept only for backward compatibility with older payloads;
+# current app.py never sends it (draft = 720p, final = 720p/1080p).
 TARGET_SIZES = {
     ("Shorts (9:16)", "1080p"): (1080, 1920),
     ("Shorts (9:16)", "720p"): (720, 1280),
@@ -147,6 +179,50 @@ DEFAULT_CTA_TEXT = (
     "\U0001F338 आपका दिन शुभ हो! \U0001F33A"
 )
 
+# --- (5) MANTRA ON-SCREEN TEXT STYLE PRESETS ----------------------------
+# Matches app.py's MANTRA_TEXT_STYLES options exactly. Each preset only
+# controls how the mantra TEXT looks - it has nothing to do with the
+# mantra AUDIO loop.
+MANTRA_TEXT_STYLE_PRESETS = {
+    "Classic Bold": {
+        "font_family": "'Noto Sans Devanagari', 'Nirmala UI', 'Mangal', sans-serif",
+        "font_weight": "800",
+        "font_style": "normal",
+        "letter_spacing": "1px",
+        "text_shadow": "0 0 10px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.9)",
+        "pil_stroke_color": (0, 0, 0),
+        "pil_stroke_ratio": 20,
+    },
+    "Elegant Script": {
+        "font_family": "'Noto Sans Devanagari', cursive, 'Mangal', sans-serif",
+        "font_weight": "500",
+        "font_style": "italic",
+        "letter_spacing": "0.5px",
+        "text_shadow": "0 0 8px rgba(0,0,0,0.7)",
+        "pil_stroke_color": (20, 20, 20),
+        "pil_stroke_ratio": 28,
+    },
+    "Modern Sans": {
+        "font_family": "'Noto Sans Devanagari', 'Nirmala UI', sans-serif",
+        "font_weight": "600",
+        "font_style": "normal",
+        "letter_spacing": "2px",
+        "text_shadow": "0 2px 6px rgba(0,0,0,0.6)",
+        "pil_stroke_color": (0, 0, 0),
+        "pil_stroke_ratio": 24,
+    },
+    "Traditional Devanagari Calligraphy": {
+        "font_family": "'Noto Sans Devanagari', 'Nirmala UI', 'Mangal', serif",
+        "font_weight": "800",
+        "font_style": "normal",
+        "letter_spacing": "0px",
+        "text_shadow": "0 0 16px rgba(255,215,0,0.55), 0 0 4px rgba(0,0,0,0.9)",
+        "pil_stroke_color": (120, 72, 0),
+        "pil_stroke_ratio": 16,
+    },
+}
+DEFAULT_MANTRA_TEXT_STYLE = "Classic Bold"
+
 _DEVANAGARI_FONT_CANDIDATES = [
     "C:\\Windows\\Fonts\\Nirmala.ttf",
     "C:\\Windows\\Fonts\\Mangal.ttf",
@@ -177,7 +253,7 @@ def _resolve_runtime_options(payload, loop_audio_path, is_mantra_mode,
     track5 = payload.get("track5", {}) or {}
     nested_climax = payload.get("climax", {}) or {}
 
-    # --- loop audio path ---
+    # --- loop audio path (mantra AUDIO only - unrelated to mantra text) ---
     if loop_audio_path is None:
         loop_audio_path = (
             payload.get("audio_file_path")
@@ -202,6 +278,10 @@ def _resolve_runtime_options(payload, loop_audio_path, is_mantra_mode,
         loop_audio_path = None
 
     # --- ticker enabled ---
+    # app.py's ticker box is fully independent of the Script now: it is
+    # enabled only when the ticker box itself has text. We simply trust
+    # the flag app.py already computed; the legacy fallback below only
+    # kicks in for payloads from an OLD app.py that never set the flag.
     if ticker_enabled is None:
         if "ticker_enabled" in payload:
             ticker_enabled = payload.get("ticker_enabled")
@@ -238,6 +318,17 @@ def _resolve_runtime_options(payload, loop_audio_path, is_mantra_mode,
             or DEFAULT_CTA_TEXT
         )
 
+    # --- (5) mantra on-screen TEXT - independent of everything above ---
+    mantra_text = (track5.get("mantra_text") or "").strip()
+    mantra_text_style = track5.get("mantra_text_style") or DEFAULT_MANTRA_TEXT_STYLE
+    if mantra_text_style not in MANTRA_TEXT_STYLE_PRESETS:
+        mantra_text_style = DEFAULT_MANTRA_TEXT_STYLE
+    mantra_text_color = track5.get("mantra_text_color") or "#FFD700"
+    try:
+        mantra_text_size = int(track5.get("mantra_text_size") or 48)
+    except (TypeError, ValueError):
+        mantra_text_size = 48
+
     options = {
         "loop_audio_path": loop_audio_path,
         "is_mantra_mode": is_mantra_mode,
@@ -245,6 +336,10 @@ def _resolve_runtime_options(payload, loop_audio_path, is_mantra_mode,
         "cta_type": cta_type,
         "custom_cta_text": custom_cta_text,
         "resolved_cta_text": resolved_cta_text,
+        "mantra_text": mantra_text,
+        "mantra_text_style": mantra_text_style,
+        "mantra_text_color": mantra_text_color,
+        "mantra_text_size": mantra_text_size,
     }
     _log(f"Runtime options: {options}")
     return options
@@ -268,13 +363,22 @@ def _resolve_font_path(font_config=None):
 
 
 def _render_text_png_via_playwright(text, font_size, color_hex, canvas_w, canvas_h,
-                                    bg_color_hex=None, align="center"):
+                                    bg_color_hex=None, align="center", style_name=None):
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         return None
 
     background_css = bg_color_hex if bg_color_hex else "transparent"
+    style_preset = MANTRA_TEXT_STYLE_PRESETS.get(style_name, {}) if style_name else {}
+    font_family = style_preset.get(
+        "font_family", "'Noto Sans Devanagari', 'Nirmala UI', 'Mangal', sans-serif"
+    )
+    font_weight = style_preset.get("font_weight", "600")
+    font_style = style_preset.get("font_style", "normal")
+    letter_spacing = style_preset.get("letter_spacing", "0px")
+    text_shadow = style_preset.get("text_shadow", "0 0 6px rgba(0,0,0,0.8)")
+
     html = f"""
     <html><head><style>
       html, body {{
@@ -283,10 +387,12 @@ def _render_text_png_via_playwright(text, font_size, color_hex, canvas_w, canvas
         display: flex; align-items: center; justify-content: {align};
       }}
       #txt {{
-        font-family: 'Noto Sans Devanagari', 'Nirmala UI', 'Mangal', sans-serif;
-        font-size: {font_size}px; font-weight: 600; color: {color_hex};
+        font-family: {font_family};
+        font-size: {font_size}px; font-weight: {font_weight};
+        font-style: {font_style}; letter-spacing: {letter_spacing};
+        color: {color_hex};
         white-space: nowrap; padding: 0 16px;
-        text-shadow: 0 0 6px rgba(0,0,0,0.8);
+        text-shadow: {text_shadow};
       }}
     </style></head>
     <body><div id="txt">{text}</div></body></html>
@@ -304,7 +410,7 @@ def _render_text_png_via_playwright(text, font_size, color_hex, canvas_w, canvas
 
 
 def _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
-                             bg_rgba=(0, 0, 0, 0), font_config=None):
+                             bg_rgba=(0, 0, 0, 0), font_config=None, style_name=None):
     font_path = _resolve_font_path(font_config)
     img = Image.new("RGBA", (canvas_w, canvas_h), bg_rgba)
     draw = ImageDraw.Draw(img)
@@ -322,28 +428,39 @@ def _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
         _log("WARNING: no Devanagari-capable font found; text may render as empty boxes.")
         font = ImageFont.load_default()
 
+    style_preset = MANTRA_TEXT_STYLE_PRESETS.get(style_name, {}) if style_name else {}
+    stroke_color = style_preset.get("pil_stroke_color", (0, 0, 0))
+    stroke_ratio = style_preset.get("pil_stroke_ratio", 20)
+
     bbox = draw.textbbox((0, 0), text, font=font)
     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
     x = (canvas_w - tw) / 2
     y = (canvas_h - th) / 2
-    stroke_w = max(1, font_size // 20)
+    stroke_w = max(1, font_size // stroke_ratio)
     draw.text((x, y), text, font=font, fill=color_rgb + (255,),
-              stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255))
+              stroke_width=stroke_w, stroke_fill=stroke_color + (255,))
     return img
 
 
 def render_hindi_text_image(text, font_size, color_rgb, canvas_w, canvas_h,
-                            bg_color_rgb=None, font_config=None):
-    """Chromium first (correct shaping), PIL+raqm fallback. Returns RGBA PIL Image."""
+                            bg_color_rgb=None, font_config=None, style_name=None):
+    """Chromium first (correct shaping), PIL+raqm fallback. Returns RGBA PIL Image.
+
+    style_name (optional) selects one of MANTRA_TEXT_STYLE_PRESETS to control
+    font weight/slant/letter-spacing/glow. Leave as None for the plain
+    ticker/subtitle look.
+    """
     if not text:
         return Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     hex_color = "#%02x%02x%02x" % color_rgb
     bg_hex = ("#%02x%02x%02x" % bg_color_rgb) if bg_color_rgb else None
-    img = _render_text_png_via_playwright(text, font_size, hex_color, canvas_w, canvas_h, bg_hex)
+    img = _render_text_png_via_playwright(
+        text, font_size, hex_color, canvas_w, canvas_h, bg_hex, style_name=style_name
+    )
     if img is None:
         bg_rgba = (bg_color_rgb + (255,)) if bg_color_rgb else (0, 0, 0, 0)
         img = _render_text_png_via_pil(text, font_size, color_rgb, canvas_w, canvas_h,
-                                       bg_rgba, font_config)
+                                       bg_rgba, font_config, style_name=style_name)
     return img
 
 
@@ -453,12 +570,14 @@ def build_ticker_overlay(track5_payload, target_size, total_duration, font_confi
     be skipped entirely.
 
     Skipped when:
-      - ticker_enabled is False (narration/voiceover is active, so app.py
-        turned the ticker off to avoid text-on-text clutter), OR
+      - ticker_enabled is False (the ticker box in app.py was left empty -
+        the ticker is fully independent of the Script now, it is NOT
+        auto-disabled by narration and it does NOT fall back to the
+        script text either), OR
       - ticker_text is empty/None.
     """
     if not ticker_enabled:
-        _log("Ticker skip: ticker_enabled=False (voiceover/script active).")
+        _log("Ticker skip: ticker_enabled=False (ticker box khali chhoda gaya).")
         return None
 
     ticker_text = (track5_payload.get("ticker_text") or "").strip()
@@ -505,6 +624,219 @@ def build_ticker_overlay(track5_payload, target_size, total_duration, font_confi
 
 
 # ==========================================================================
+# (5) TRACK 5 - MANTRA ON-SCREEN TEXT OVERLAY (independent of mantra audio)
+# ==========================================================================
+def build_mantra_text_overlay(track5_payload, target_size, total_duration, font_config,
+                              options=None):
+    """
+    Renders the optional mantra TEXT (e.g. "ॐ नमः शिवाय") as a static
+    banner near the top of the frame, for the full duration of the main
+    video.
+
+    This is completely independent of:
+      - the mantra AUDIO loop (build_mantra_loop_layer) - text can be
+        shown with or without the audio, and vice versa,
+      - the subtitles (spoken script),
+      - the bottom ticker,
+      - the climax CTA text.
+
+    Returns an ImageClip, or None when there is no mantra text to show.
+    """
+    if options is not None:
+        mantra_text = options.get("mantra_text", "")
+        style_name = options.get("mantra_text_style", DEFAULT_MANTRA_TEXT_STYLE)
+        color_hex = options.get("mantra_text_color", "#FFD700")
+        font_size = int(options.get("mantra_text_size", 48))
+    else:
+        mantra_text = (track5_payload.get("mantra_text") or "").strip()
+        style_name = track5_payload.get("mantra_text_style") or DEFAULT_MANTRA_TEXT_STYLE
+        color_hex = track5_payload.get("mantra_text_color") or "#FFD700"
+        font_size = int(track5_payload.get("mantra_text_size") or 48)
+
+    mantra_text = (mantra_text or "").strip()
+    if not mantra_text:
+        _log("Mantra text overlay skip: mantra_text khali hai.")
+        return None
+
+    if style_name not in MANTRA_TEXT_STYLE_PRESETS:
+        style_name = DEFAULT_MANTRA_TEXT_STYLE
+
+    w, h = target_size
+    color_rgb = _hex_to_rgb(color_hex, (255, 215, 0))
+    band_h = max(int(font_size * 1.9), 64)
+
+    img = render_hindi_text_image(
+        mantra_text, font_size, color_rgb, w, band_h,
+        bg_color_rgb=None, font_config=font_config, style_name=style_name,
+    )
+    img_np = np.array(img)  # RGBA, (band_h, w, 4)
+
+    mantra_clip = ImageClip(img_np, transparent=True).set_duration(total_duration)
+    # Sit in the upper area of the frame (~8% down) so it never collides
+    # with subtitles (usually lower-third) or the bottom ticker.
+    mantra_clip = mantra_clip.set_position(("center", int(h * 0.08)))
+    _log(f"Mantra text overlay banaya: style={style_name} color={color_hex} "
+         f"size={font_size} text='{mantra_text}'")
+    return mantra_clip
+
+
+# ==========================================================================
+# (7) TRACK 5 - SUBTITLE OVERLAY (was completely missing before - the
+# Script text has always been used for the AI voice, but nothing ever
+# actually drew it on screen as a subtitle even though app.py collects
+# subtitle_font_color/subtitle_font_size for exactly this purpose).
+# ==========================================================================
+def _render_subtitle_png_pil(text, font_size, color_rgb, canvas_w, canvas_h, font_config=None):
+    """Multi-line, center-aligned Devanagari-safe caption via PIL + RAQM.
+
+    (Subtitles need line-wrapping, so they use their own PIL renderer
+    rather than the single-line render_hindi_text_image() used for the
+    ticker/mantra text.)
+    """
+    font_path = _resolve_font_path(font_config)
+    img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    font = None
+    if font_path:
+        try:
+            font = ImageFont.truetype(font_path, font_size, layout_engine=ImageFont.LAYOUT_RAQM)
+        except Exception:
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+            except Exception:
+                font = None
+    if font is None:
+        _log("WARNING: no Devanagari-capable font found for subtitles; may render as empty boxes.")
+        font = ImageFont.load_default()
+
+    bbox = draw.multiline_textbbox((0, 0), text, font=font, align="center", spacing=8)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    x = (canvas_w - tw) / 2
+    y = (canvas_h - th) / 2
+    stroke_w = max(1, font_size // 18)
+    draw.multiline_text(
+        (x, y), text, font=font, fill=color_rgb + (255,), align="center", spacing=8,
+        stroke_width=stroke_w, stroke_fill=(0, 0, 0, 255),
+    )
+    return img
+
+
+def build_subtitle_overlay(track5_payload, target_size, total_duration, font_config,
+                           ticker_enabled=False):
+    """
+    Renders the resolved Script text (typed, or extracted from an
+    uploaded PDF/DOCX - see resolve_script_text) as an on-screen
+    subtitle caption for the full duration of the main video.
+
+    NOTE: there is no per-word/per-line timing data anywhere in the
+    payload, so this shows a single word-wrapped caption throughout the
+    video rather than time-synced subtitle lines. If line-by-line timed
+    subtitles are needed later, this is the function to extend (it would
+    need timestamps from the TTS engine or a forced-alignment step).
+
+    Returns an ImageClip, or None when there is no script text at all.
+    """
+    script_text = resolve_script_text(track5_payload)
+    if not script_text:
+        return None
+
+    w, h = target_size
+    font_size = int(track5_payload.get("subtitle_font_size") or 40)
+    color_rgb = _hex_to_rgb(track5_payload.get("subtitle_font_color") or "#FFFFFF", (255, 255, 255))
+
+    import textwrap
+    max_chars_per_line = max(10, int(w / max(1, int(font_size * 0.55))))
+    lines = textwrap.wrap(script_text, width=max_chars_per_line)
+    if not lines:
+        return None
+    # Cap to 4 lines on screen at once so a long script doesn't take over
+    # the frame - it's a caption, not the whole script dumped on screen.
+    wrapped_text = "\n".join(lines[:4])
+
+    line_count = wrapped_text.count("\n") + 1
+    band_h = int(font_size * 1.35 * line_count) + 24
+
+    img = _render_subtitle_png_pil(wrapped_text, font_size, color_rgb, w, band_h, font_config)
+    img_np = np.array(img)
+
+    subtitle_clip = ImageClip(img_np, transparent=True).set_duration(total_duration)
+
+    # Sit just above the bottom ticker band when the ticker is active, so
+    # the two never overlap; otherwise sit near the bottom of the frame.
+    reserved_bottom = max(36, int(h * 0.045)) if ticker_enabled else 0
+    y_pos = max(0, h - reserved_bottom - band_h - 16)
+    subtitle_clip = subtitle_clip.set_position(("center", y_pos))
+
+    _log(f"Subtitle overlay banaya ({line_count} lines, font_size={font_size}).")
+    return subtitle_clip
+
+
+# ==========================================================================
+# (7) SCRIPT TEXT RESOLUTION - typed text, or extracted from PDF/DOCX
+# ==========================================================================
+def _extract_text_from_pdf(path):
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(path)
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except ImportError:
+        try:
+            # fallback if only PyPDF2 is installed instead of pypdf
+            import PyPDF2
+            reader = PyPDF2.PdfReader(path)
+            return "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as e:
+            _log(f"WARNING: PDF text extract fail (pypdf/PyPDF2 nahi mila ya error): {e}")
+            return ""
+    except Exception as e:
+        _log(f"WARNING: PDF text extract fail: {e}")
+        return ""
+
+
+def _extract_text_from_docx(path):
+    try:
+        import docx  # python-docx
+        doc = docx.Document(path)
+        return "\n".join(p.text for p in doc.paragraphs)
+    except Exception as e:
+        _log(f"WARNING: DOCX text extract fail: {e}")
+        return ""
+
+
+def resolve_script_text(track5_payload):
+    """
+    app.py lets the user EITHER type the script OR upload a PDF/DOCX file
+    (script_file_path). Typed text always wins; if it's empty, this reads
+    and extracts text from the uploaded file so the AI voice + subtitle
+    still get the script even when nothing was typed.
+    """
+    script_text = (track5_payload.get("script_text") or "").strip()
+    if script_text:
+        return script_text
+
+    file_path = track5_payload.get("script_file_path")
+    if not file_path or not os.path.exists(file_path):
+        return ""
+
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".pdf":
+        extracted = _extract_text_from_pdf(file_path)
+    elif ext == ".docx":
+        extracted = _extract_text_from_docx(file_path)
+    else:
+        _log(f"WARNING: script_file_path ka extension pehchana nahi gaya: {ext}")
+        extracted = ""
+
+    extracted = (extracted or "").strip()
+    if extracted:
+        _log(f"Script file ({ext}) se text extract hua - {len(extracted)} characters.")
+    else:
+        _log(f"WARNING: script file se koi text extract nahi hua: {file_path}")
+    return extracted
+
+
+# ==========================================================================
 # TRACK 5 - VOICE (AI via Edge-TTS, or uploaded voiceover)
 # ==========================================================================
 async def _edge_tts_save(text, voice_short, out_path):
@@ -529,10 +861,11 @@ def generate_ai_voice_clip(script_text, ai_voice_label):
 
 
 def build_voice_clip(track5_payload):
+    script_text = resolve_script_text(track5_payload)
     voice_source = track5_payload.get("voice_source")
     if voice_source == "AI Voice (Edge-TTS)":
         return generate_ai_voice_clip(
-            track5_payload.get("script_text", ""),
+            script_text,
             track5_payload.get("ai_voice") or "hi-IN-MadhurNeural (पुरुष आवाज़)",
         )
     else:
@@ -694,6 +1027,9 @@ def build_final_audio(payload, total_duration, options):
 
     Ducking the music (rather than boosting the mantra) keeps the mix from
     clipping, which is what you'd get by pushing the voice above 1.0.
+
+    NOTE: this is purely about the mantra AUDIO. The mantra on-screen TEXT
+    (see build_mantra_text_overlay) has no effect on this mix at all.
     """
     layers = []
     is_mantra_mode = options["is_mantra_mode"]
@@ -842,6 +1178,9 @@ def master_render_pipeline(
             _log(f"NOTE: unknown extra arguments ignore kiye gaye: {unknown}")
 
     ratio = payload.get("ratio", "Shorts (9:16)")
+    # app.py now only ever sends "720p" (draft) or the user's chosen
+    # "720p"/"1080p" (final, default 1080p). Fall back to 720p target
+    # size if an unrecognised (ratio, quality) combo ever shows up.
     quality = payload.get("output_quality", "1080p")
     target_size = TARGET_SIZES.get((ratio, quality), TARGET_SIZES[("Shorts (9:16)", "720p")])
     font_config = payload.get("font_config", {})
@@ -864,14 +1203,35 @@ def master_render_pipeline(
     base_duration = main_video.duration
 
     # ---- (3) Track 5 ticker overlay - only when ticker_enabled ----
+    overlay_layers = [main_video]
+
     ticker_clip = build_ticker_overlay(
         payload.get("track5", {}), target_size, base_duration, font_config,
         ticker_enabled=options["ticker_enabled"],
     )
     if ticker_clip is not None:
-        main_video = CompositeVideoClip(
-            [main_video, ticker_clip], size=target_size
-        ).set_duration(base_duration)
+        overlay_layers.append(ticker_clip)
+
+    # ---- (7) Track 5 subtitle overlay - the Script text (typed or
+    # extracted from PDF/DOCX), drawn on screen. This was previously
+    # collected by app.py (subtitle_font_color/size) but never rendered.
+    subtitle_clip = build_subtitle_overlay(
+        payload.get("track5", {}), target_size, base_duration, font_config,
+        ticker_enabled=options["ticker_enabled"],
+    )
+    if subtitle_clip is not None:
+        overlay_layers.append(subtitle_clip)
+
+    # ---- (5) Track 5 mantra on-screen text - independent of mantra audio ----
+    mantra_text_clip = build_mantra_text_overlay(
+        payload.get("track5", {}), target_size, base_duration, font_config,
+        options=options,
+    )
+    if mantra_text_clip is not None:
+        overlay_layers.append(mantra_text_clip)
+
+    if len(overlay_layers) > 1:
+        main_video = CompositeVideoClip(overlay_layers, size=target_size).set_duration(base_duration)
 
     # ---- (2) Audio mix (Track 3, 4, 5 voice, mantra loop, 6) ----
     final_audio = build_final_audio(payload, base_duration, options)

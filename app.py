@@ -123,6 +123,11 @@ MANTRA_TEXT_STYLES = [
     "Traditional Devanagari Calligraphy",
 ]
 
+# --- TRACK 8: generic Music/Video Loop system ---
+TRACK8_MODES = ["🎵 म्यूज़िक लूप", "🎬 वीडियो लूप (PIP)"]
+TRACK8_VIDEO_POSITIONS = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"]
+MAX_TRACK8_MUSIC_LAYERS = 3  # main track + this many extra simultaneous layers
+
 # --- QUALITY: Draft is always fast/low quality for speed. Final download
 # quality is chosen by the user (defaulting to 1080p Full HD). ---
 DRAFT_QUALITY = "720p"
@@ -196,6 +201,18 @@ DEFAULTS = {
     # Track 7 - live preview / transitions
     "track7_transition_mode": "Auto-Magic",
     "track7_manual_transition": "Zoom",
+    # Track 8 - generic Music/Video Loop system
+    "track8_mode": TRACK8_MODES[0],
+    "track8_music_path": None,
+    "track8_music_name": None,
+    "track8_instrumental_only": False,
+    "track8_music_volume": 0.75,
+    "track8_music_extra_layers": [],  # [{path, name, volume}]
+    "track8_video_path": None,
+    "track8_video_name": None,
+    "track8_video_position": "Bottom-Right",
+    "track8_video_size_pct": 25,
+    "track8_video_opacity": 0.85,
     # Execution
     "is_rendering": False,
     "last_output_path": None,
@@ -825,33 +842,83 @@ st.divider()
 # --------------------------------------------------------------------------
 # TRACK 7 - LIVE PREVIEW BOARD / MASTER TIMELINE & CLIMAX HANDOFF
 # --------------------------------------------------------------------------
+def _truncate_preview(text, max_len=40):
+    text = (text or "").strip()
+    if not text:
+        return "—"
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "…"
+
+
 with st.expander("⏱️ ट्रैक 7: लाइव प्रीव्यू और टाइमिंग बोर्ड (Timeline & Climax Handoff)", expanded=False):
-    st.info("नोट: यह ट्रैक सिर्फ जानकारी दिखाता है — यहाँ कोई अपलोड नहीं होता। ट्रैक 1 और ट्रैक 2 के डेटा से यह अपने आप टाइम-मैपिंग टेबल बना देता है।")
+    st.caption(
+        "यह ट्रैक 3 हिस्सों में है: (A) विज़ुअल टाइमलाइन, (B) ट्रांज़िशन सेटिंग, (C) फ़ाइनल सारांश। "
+        "यहाँ कोई अपलोड नहीं होता — सब कुछ बाकी ट्रैक्स से अपने आप बन जाता है।"
+    )
 
-    st.markdown("**🖼️ मुख्य विज़ुअल क्रम (Track 1 Auto-Time Mapping)**")
-    if not st.session_state.track1_files:
-        st.caption("Track 1 में फाइलें अपलोड करने के बाद यहाँ टाइमिंग टेबल दिखेगी।")
+    # ========================================================================
+    # (A) VISUAL TIMELINE — one compact proportional bar instead of a wall
+    # of numbers. Full per-file table is tucked into a collapsed expander.
+    # ========================================================================
+    st.markdown("**🖼️ विज़ुअल टाइमलाइन (Visual Timeline)**")
+
+    if total_target_duration > 0:
+        base_pct = (int(st.session_state.video_duration) / total_target_duration) * 100
+        climax_pct = 100 - base_pct if st.session_state.enable_climax else 0
+        climax_segment_html = (
+            f"<div style='width:{climax_pct:.1f}%; background:#F2994A; display:flex; "
+            f"align-items:center; justify-content:center; white-space:nowrap; overflow:hidden;'>"
+            f"क्लाइमैक्स {int(st.session_state.climax_duration)}s</div>"
+            if st.session_state.enable_climax else ""
+        )
+        st.markdown(
+            f"""
+            <div style="display:flex; width:100%; height:30px; border-radius:6px;
+                        overflow:hidden; font-size:12px; font-weight:600; color:white;
+                        border:1px solid rgba(255,255,255,0.15);">
+              <div style="width:{base_pct:.1f}%; background:#4F8EF7; display:flex;
+                          align-items:center; justify-content:center; white-space:nowrap; overflow:hidden;">
+                मुख्य वीडियो {int(st.session_state.video_duration)}s
+              </div>
+              {climax_segment_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
-        cursor = 0.0
-        rows = []
-        for f in sorted(st.session_state.track1_files, key=lambda x: x["order"]):
-            dur = (
-                max(0.0, float(f["end_sec"]) - float(f["start_sec"])) or float(st.session_state.t1_def_dur)
-                if f["type"] == "video"
-                else float(f.get("image_duration", st.session_state.t1_def_dur))
-            )
-            rows.append({"समय (Time)": f"{cursor:.1f}s → {cursor + dur:.1f}s", "कंटेंट": f["name"], "प्रकार": f["type"]})
-            cursor += dur
-        st.dataframe(rows, use_container_width=True, hide_index=True)
+        st.caption("ड्यूरेशन सेट करने के बाद यहाँ टाइमलाइन बार दिखेगा।")
 
-    if st.session_state.track2_clips:
-        st.markdown("**🎞️ वीडियो क्लिप्स (Track 2)**")
-        rows2 = [
-            {"समय (Time)": f"{c['start_sec']:.1f}s → {c['end_sec']:.1f}s", "क्लिप": c["name"] or "(फ़ाइल पेंडिंग)"}
-            for c in sorted(st.session_state.track2_clips, key=lambda x: x["order"])
-        ]
-        st.dataframe(rows2, use_container_width=True, hide_index=True)
+    with st.expander("📋 पूरी टाइमिंग टेबल देखें (हर फ़ाइल का समय)", expanded=False):
+        if not st.session_state.track1_files:
+            st.caption("Track 1 में फाइलें अपलोड करने के बाद यहाँ टाइमिंग टेबल दिखेगी।")
+        else:
+            cursor = 0.0
+            rows = []
+            for f in sorted(st.session_state.track1_files, key=lambda x: x["order"]):
+                dur = (
+                    max(0.0, float(f["end_sec"]) - float(f["start_sec"])) or float(st.session_state.t1_def_dur)
+                    if f["type"] == "video"
+                    else float(f.get("image_duration", st.session_state.t1_def_dur))
+                )
+                rows.append({"समय (Time)": f"{cursor:.1f}s → {cursor + dur:.1f}s", "कंटेंट": f["name"], "प्रकार": f["type"]})
+                cursor += dur
+            st.dataframe(rows, use_container_width=True, hide_index=True)
 
+        if st.session_state.track2_clips:
+            st.markdown("**🎞️ वीडियो क्लिप्स (Track 2)**")
+            rows2 = [
+                {"समय (Time)": f"{c['start_sec']:.1f}s → {c['end_sec']:.1f}s", "क्लिप": c["name"] or "(फ़ाइल पेंडिंग)"}
+                for c in sorted(st.session_state.track2_clips, key=lambda x: x["order"])
+            ]
+            st.dataframe(rows2, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ========================================================================
+    # (B) TRANSITION SETTINGS — kept separate from the timeline/summary so
+    # it's clearly a SETTING, not a preview.
+    # ========================================================================
     st.markdown("**🎨 इफ़ेक्ट / ट्रांज़िशन मोड**")
     tr_col1, tr_col2 = st.columns(2)
     with tr_col1:
@@ -867,23 +934,156 @@ with st.expander("⏱️ ट्रैक 7: लाइव प्रीव्य�
                 key="t7_manual_trans_select",
             )
 
-    st.markdown("**📐 मास्टर टाइमलाइन सारांश (Master Timeline Summary)**")
-    st.write(
-        {
-            "Base Duration (sec)": int(st.session_state.video_duration),
-            "Climax Duration (sec)": int(st.session_state.climax_duration) if st.session_state.enable_climax else 0,
-            "Total Duration (sec)": total_target_duration,
-            "Climax CTA Mode": st.session_state.track5_cta_mode,
-            "Climax Text": resolve_climax_text(),
-            "Ticker Enabled": bool(resolve_ticker_text()),
-            "Ticker Text": resolve_ticker_text(),
-            "Loop Mode": bool(resolve_loop_audio_path()),
-            "Draft Quality": DRAFT_QUALITY,
-            "Final Quality": st.session_state.final_quality,
-        }
-    )
+    st.markdown("---")
+
+    # ========================================================================
+    # (C) FINAL SUMMARY — compact metrics + short one-line badges instead
+    # of a raw dict dump (no full CTA/ticker text spilling the page).
+    # ========================================================================
+    st.markdown("**📐 फ़ाइनल सारांश (Final Summary)**")
+
+    sm_col1, sm_col2, sm_col3, sm_col4 = st.columns(4)
+    sm_col1.metric("कुल ड्यूरेशन", f"{total_target_duration}s")
+    sm_col2.metric("मुख्य वीडियो", f"{int(st.session_state.video_duration)}s")
+    sm_col3.metric("क्लाइमैक्स", f"{int(st.session_state.climax_duration)}s" if st.session_state.enable_climax else "बंद")
+    sm_col4.metric("डाउनलोड क्वालिटी", st.session_state.final_quality)
+
+    ticker_on = bool(resolve_ticker_text())
+    mantra_loop_on = bool(resolve_loop_audio_path())
+    mantra_text_on = bool((st.session_state.track5_mantra_text or "").strip())
+
+    badge_col1, badge_col2 = st.columns(2)
+    with badge_col1:
+        st.caption(f"{'✅' if ticker_on else '⬜'} **टिकर**: {_truncate_preview(resolve_ticker_text())}")
+        st.caption(f"{'✅' if mantra_loop_on else '⬜'} **मंत्र ऑडियो लूप**")
+        st.caption(f"{'✅' if mantra_text_on else '⬜'} **मंत्र टेक्स्ट**: {_truncate_preview(st.session_state.track5_mantra_text)}")
+    with badge_col2:
+        st.caption(f"🎆 **CTA मोड**: {st.session_state.track5_cta_mode}")
+        st.caption(f"📝 **क्लाइमैक्स टेक्स्ट**: {_truncate_preview(resolve_climax_text())}")
+        st.caption(f"🎙️ **आवाज़ स्रोत**: {st.session_state.track5_voice_source}")
 
 st.divider()
+
+# --------------------------------------------------------------------------
+# TRACK 8 - LOOP SYSTEM (Music Loop OR Video Loop) — वैकल्पिक (Optional)
+# --------------------------------------------------------------------------
+with st.expander("🔁 ट्रैक 8: लूप सिस्टम (Music / Video Loop) — वैकल्पिक (Optional)", expanded=False):
+    st.info(
+        "नोट: यह ट्रैक एक जनरल-पर्पज़ Loop टूल है। यहाँ जो भी फ़ाइल डालेंगे (Music या Video), वह पूरी "
+        "वीडियो ड्यूरेशन तक अपने आप Loop (Repeat) होती रहेगी — चाहे उसकी अपनी लंबाई कितनी भी कम क्यों न हो।"
+    )
+
+    st.session_state.track8_mode = st.radio(
+        "मोड चुनें", options=TRACK8_MODES, index=TRACK8_MODES.index(st.session_state.track8_mode),
+        key="t8_mode_radio", horizontal=True,
+    )
+
+    # ========================================================================
+    # MUSIC LOOP MODE
+    # ========================================================================
+    if st.session_state.track8_mode == TRACK8_MODES[0]:
+        st.markdown("**🎵 म्यूज़िक लूप अपलोड करें**")
+        t8_music_file = st.file_uploader(
+            "लूप के लिए म्यूज़िक/भजन अपलोड करें (MP3/WAV)", type=["mp3", "wav", "m4a"], key="t8_music_uploader"
+        )
+        if t8_music_file is not None:
+            st.session_state.track8_music_path = save_uploaded_file(t8_music_file, "track8_music")
+            st.session_state.track8_music_name = t8_music_file.name
+
+        if st.session_state.track8_music_path:
+            st.success(f"✅ म्यूज़िक लूप सेट है: **{st.session_state.track8_music_name}**")
+
+            mv_col1, mv_col2 = st.columns(2)
+            with mv_col1:
+                st.session_state.track8_instrumental_only = st.toggle(
+                    "🎤 सिर्फ़ Instrumental (आवाज़/वोकल हटाएं)",
+                    value=st.session_state.track8_instrumental_only,
+                    key="t8_instrumental_toggle",
+                )
+            with mv_col2:
+                st.session_state.track8_music_volume = st.slider(
+                    "वॉल्यूम", 0.0, 1.0, float(st.session_state.track8_music_volume), step=0.05, key="t8_music_vol"
+                )
+            if st.session_state.track8_instrumental_only:
+                st.caption(
+                    "ℹ️ यह 'center-channel elimination' तकनीक इस्तेमाल करता है (Left − Right चैनल घटाकर) — "
+                    "ज़्यादातर गानों में बीच में mix की गई आवाज़/वोकल कम हो जाती है। यह किसी AI-आधारित परफ़ेक्ट "
+                    "vocal-separation जितना साफ़ नहीं होता, और सिर्फ़ Stereo फ़ाइलों पर काम करता है।"
+                )
+
+            st.markdown("**➕ और म्यूज़िक लेयर जोड़ें (एक साथ कई ट्रैक Mix करें)**")
+            st.caption(
+                f"एक साथ ज़्यादा से ज़्यादा {MAX_TRACK8_MUSIC_LAYERS} और ट्रैक जोड़ सकते हैं — सब simultaneously मिक्स होकर बजेंगे।"
+            )
+            if len(st.session_state.track8_music_extra_layers) < MAX_TRACK8_MUSIC_LAYERS:
+                if st.button("➕ नई म्यूज़िक लेयर जोड़ें", key="t8_add_layer_btn"):
+                    st.session_state.track8_music_extra_layers.append({"path": None, "name": None, "volume": 0.5})
+                    st.rerun()
+            else:
+                st.caption(f"अधिकतम {MAX_TRACK8_MUSIC_LAYERS} लेयर जोड़ी जा चुकी हैं।")
+
+            for idx, layer in enumerate(st.session_state.track8_music_extra_layers):
+                lc1, lc2, lc3 = st.columns([3, 2, 1])
+                layer_file = lc1.file_uploader(
+                    f"लेयर {idx + 1} फ़ाइल", type=["mp3", "wav", "m4a"], key=f"t8_layer_file_{idx}"
+                )
+                if layer_file is not None:
+                    layer["path"] = save_uploaded_file(layer_file, "track8_music_layer")
+                    layer["name"] = layer_file.name
+                layer["volume"] = lc2.slider(
+                    "वॉल्यूम", 0.0, 1.0, float(layer.get("volume", 0.5)), step=0.05, key=f"t8_layer_vol_{idx}"
+                )
+                if lc3.button("हटाएं", key=f"t8_layer_remove_{idx}"):
+                    st.session_state.track8_music_extra_layers.pop(idx)
+                    st.rerun()
+
+            st.warning(
+                "⚠️ ध्यान दें: कई ट्रैक Mix करने या आवाज़ हटाने से कॉपीराइट खत्म नहीं होता — अगर गाना/म्यूज़िक "
+                "कॉपीराइटेड है, तो उसे वीडियो में इस्तेमाल करने के लिए फिर भी लाइसेंस/इजाज़त चाहिए होगी और प्लेटफ़ॉर्म "
+                "का Content-ID सिस्टम फिर भी उसे पहचान सकता है। पूरी तरह कॉपीराइट-फ्री रहने के लिए सिर्फ़ "
+                "Royalty-Free / खुद के लाइसेंस वाला म्यूज़िक ही इस्तेमाल करें।"
+            )
+        else:
+            st.caption("ℹ️ अभी कोई म्यूज़िक लूप अपलोड नहीं हुआ है।")
+
+    # ========================================================================
+    # VIDEO LOOP MODE (small looping overlay - e.g. Subscribe animation, logo loop)
+    # ========================================================================
+    else:
+        st.markdown("**🎬 वीडियो लूप (PIP) अपलोड करें**")
+        st.caption(
+            "उदाहरण: Subscribe animation, चैनल लोगो एनिमेशन, या कोई छोटा looping graphic — यह वीडियो के एक "
+            "कोने में छोटे साइज़ में पूरी ड्यूरेशन तक Loop होता रहेगा।"
+        )
+        t8_video_file = st.file_uploader(
+            "लूप के लिए वीडियो क्लिप अपलोड करें (MP4)", type=["mp4"], key="t8_video_uploader"
+        )
+        if t8_video_file is not None:
+            st.session_state.track8_video_path = save_uploaded_file(t8_video_file, "track8_video")
+            st.session_state.track8_video_name = t8_video_file.name
+
+        if st.session_state.track8_video_path:
+            st.success(f"✅ वीडियो लूप सेट है: **{st.session_state.track8_video_name}**")
+            vp_col1, vp_col2, vp_col3 = st.columns(3)
+            with vp_col1:
+                st.session_state.track8_video_position = st.selectbox(
+                    "कोना चुनें", options=TRACK8_VIDEO_POSITIONS,
+                    index=TRACK8_VIDEO_POSITIONS.index(st.session_state.track8_video_position),
+                    key="t8_video_pos_sel",
+                )
+            with vp_col2:
+                st.session_state.track8_video_size_pct = st.slider(
+                    "साइज़ (% स्क्रीन चौड़ाई)", 10, 50, int(st.session_state.track8_video_size_pct), step=5, key="t8_video_size_sl"
+                )
+            with vp_col3:
+                st.session_state.track8_video_opacity = st.slider(
+                    "पारदर्शिता (Opacity)", 0.1, 1.0, float(st.session_state.track8_video_opacity), step=0.05, key="t8_video_op_sl"
+                )
+        else:
+            st.caption("ℹ️ अभी कोई वीडियो लूप अपलोड नहीं हुआ है।")
+
+st.divider()
+
 
 # --------------------------------------------------------------------------
 # PAYLOAD CONSTRUCTION
@@ -935,6 +1135,16 @@ def build_payload(is_draft: bool) -> dict:
         }
         for s in st.session_state.track6_sfx
     ] if st.session_state.track6_sfx else []
+
+    # ----------------------------------------------------------------------
+    # TRACK 8 - extra simultaneous music layers (only the ones with a
+    # file actually uploaded are sent through).
+    # ----------------------------------------------------------------------
+    t8_extra_music_layers = [
+        {"path": layer["path"], "volume": float(layer.get("volume", 0.5))}
+        for layer in st.session_state.track8_music_extra_layers
+        if layer.get("path")
+    ]
 
     # ----------------------------------------------------------------------
     # TICKER (Smart-Lock removed, and no longer defaults to Script).
@@ -1038,6 +1248,21 @@ def build_payload(is_draft: bool) -> dict:
         "track7": {
             "transition_mode": st.session_state.track7_transition_mode,
             "manual_transition": st.session_state.track7_manual_transition if st.session_state.track7_transition_mode == "Manual" else None,
+        },
+        "track8": {
+            "mode": st.session_state.track8_mode,
+            "music": {
+                "path": st.session_state.track8_music_path,
+                "instrumental_only": bool(st.session_state.track8_instrumental_only),
+                "volume": float(st.session_state.track8_music_volume),
+                "extra_layers": t8_extra_music_layers,
+            },
+            "video": {
+                "path": st.session_state.track8_video_path,
+                "position": st.session_state.track8_video_position,
+                "size_pct": int(st.session_state.track8_video_size_pct),
+                "opacity": float(st.session_state.track8_video_opacity),
+            },
         },
     }
     return payload

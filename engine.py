@@ -75,6 +75,21 @@ WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4 / 5 / 6)
         when the text box is empty, and both the AI voice and the new
         subtitle overlay use it.
 
+(8) TRACK 8 - NEW generic Loop system (Music Loop OR Video Loop,
+    mutually exclusive, independent of Track 3 / mantra):
+      - Music Loop: one file looped to the full video duration, with an
+        optional "instrumental only" toggle (center-channel vocal
+        removal - an approximation, not true AI stem separation) and up
+        to MAX_TRACK8_MUSIC_LAYERS extra simultaneous layers mixed on
+        top, each with its own volume.
+      - Video Loop: a small looping picture-in-picture clip (e.g. a
+        Subscribe animation / logo loop) in a chosen corner, with
+        adjustable size and opacity, looped for the full video duration.
+      - IMPORTANT: mixing multiple tracks or removing vocals does not
+        remove copyright from a track - it only changes how the audio
+        sounds. Only royalty-free / properly licensed music is actually
+        safe to use; app.py shows this disclaimer to the user directly.
+
 NOTE ON MOVIEPY VERSION
 ----------------------------------------------------------------------
 This module targets MoviePy 1.x (`from moviepy.editor import ...`,
@@ -122,6 +137,7 @@ from moviepy.editor import (
 )
 from moviepy.audio.fx.all import audio_loop, volumex
 from moviepy.video.fx.all import resize as vfx_resize  # noqa: F401 (available if needed)
+from moviepy.video.fx.all import loop as vfx_loop
 
 import climax  # sibling module - handles the ending segment
 
@@ -1013,6 +1029,155 @@ def build_track6_sfx_layers(track6_payload):
 
 
 # ==========================================================================
+# (8) TRACK 8 - GENERIC LOOP SYSTEM (Music Loop OR Video Loop, mutually
+# exclusive modes chosen in app.py). Completely independent of Track 3
+# (main background music) and the Track 5 mantra loop.
+# ==========================================================================
+TRACK8_MODE_MUSIC = "🎵 म्यूज़िक लूप"
+TRACK8_MODE_VIDEO = "🎬 वीडियो लूप (PIP)"
+
+TRACK8_POSITION_MAP = {
+    "Top-Left": ("left", "top"),
+    "Top-Right": ("right", "top"),
+    "Bottom-Left": ("left", "bottom"),
+    "Bottom-Right": ("right", "bottom"),
+}
+
+
+def _remove_vocals_center_channel(audio_clip):
+    """
+    Classic 'center-channel elimination' trick: L-R (left channel minus
+    right channel). Anything panned dead-center - typically the lead
+    vocal, and often the kick/bass too - cancels out, leaving mostly the
+    stereo-panned instrumental elements.
+
+    This is an approximation, NOT true AI stem-separation - some vocal
+    bleed can remain depending on how the original track was mixed, and
+    it only works on stereo audio (mono files are returned unchanged).
+
+    IMPORTANT: this does not remove copyright - it only changes how the
+    audio sounds. A copyrighted track run through this is still that
+    same copyrighted composition/recording.
+    """
+    try:
+        from moviepy.audio.AudioClip import AudioArrayClip
+        arr = audio_clip.to_soundarray(fps=44100)
+        if arr.ndim < 2 or arr.shape[1] < 2:
+            _log("WARNING: mono audio hai - vocal removal (center-channel trick) sirf stereo par kaam karta hai, original audio use kiya ja raha hai.")
+            return audio_clip
+        left = arr[:, 0]
+        right = arr[:, 1]
+        diff = left - right
+        peak = float(np.max(np.abs(diff))) or 1.0
+        diff = (diff / peak) * 0.9  # normalize so we don't clip
+        instrumental = np.stack([diff, diff], axis=1)
+        new_clip = AudioArrayClip(instrumental, fps=44100).set_duration(audio_clip.duration)
+        _log("Instrumental mode: center-channel elimination laagu ki gayi.")
+        return new_clip
+    except Exception as e:
+        _log(f"WARNING: vocal removal fail hui, original audio use kiya ja raha hai: {e}")
+        return audio_clip
+
+
+def _loop_audio_to_duration(clip, total_duration):
+    if not clip or not clip.duration:
+        return None
+    if clip.duration < total_duration:
+        return clip.fx(audio_loop, duration=total_duration)
+    return clip.subclip(0, total_duration)
+
+
+def build_track8_music_layers(track8_payload, total_duration):
+    """
+    Returns a list of AudioClips: the main Track 8 music-loop file (with
+    optional instrumental/vocal-removal applied) plus any extra
+    simultaneous layers the user added, each looped to the full video
+    duration and volume-adjusted independently.
+
+    Returns [] if Track 8 is not in music-loop mode or has no file.
+    """
+    if track8_payload.get("mode") != TRACK8_MODE_MUSIC:
+        return []
+
+    music = track8_payload.get("music", {}) or {}
+    layers = []
+
+    main_path = music.get("path")
+    if main_path and os.path.exists(main_path):
+        try:
+            main_clip = AudioFileClip(main_path)
+            if music.get("instrumental_only"):
+                main_clip = _remove_vocals_center_channel(main_clip)
+            main_clip = _loop_audio_to_duration(main_clip, total_duration)
+            if main_clip is not None:
+                main_clip = main_clip.fx(volumex, float(music.get("volume", 0.75))).set_start(0)
+                layers.append(main_clip)
+        except Exception as e:
+            _log(f"WARNING: Track8 music loop load fail hui ({main_path}): {e}")
+
+    for extra in music.get("extra_layers", []):
+        path = extra.get("path")
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            extra_clip = AudioFileClip(path)
+            extra_clip = _loop_audio_to_duration(extra_clip, total_duration)
+            if extra_clip is not None:
+                extra_clip = extra_clip.fx(volumex, float(extra.get("volume", 0.5))).set_start(0)
+                layers.append(extra_clip)
+        except Exception as e:
+            _log(f"WARNING: Track8 extra music layer load fail hui ({path}): {e}")
+
+    if layers:
+        _log(f"Track8 music-loop: {len(layers)} simultaneous layer(s) mix ho rahi hain "
+             f"(instrumental_only={bool(music.get('instrumental_only'))}).")
+    return layers
+
+
+def build_track8_video_loop_overlay(track8_payload, target_size, total_duration):
+    """
+    Returns a small looping picture-in-picture VideoClip (e.g. a
+    Subscribe animation or logo loop) positioned in a corner, or None if
+    Track 8 is not in video-loop mode / has no file.
+    """
+    if track8_payload.get("mode") != TRACK8_MODE_VIDEO:
+        return None
+
+    video = track8_payload.get("video", {}) or {}
+    path = video.get("path")
+    if not path or not os.path.exists(path):
+        return None
+
+    try:
+        w, h = target_size
+        size_pct = max(5, min(80, int(video.get("size_pct", 25)))) / 100.0
+        pip_w = int(w * size_pct)
+
+        clip = VideoFileClip(path, audio=False)
+        scale = pip_w / clip.w if clip.w else 1.0
+        pip_h = max(1, int(clip.h * scale))
+        clip = clip.resize((pip_w, pip_h))
+
+        if clip.duration < total_duration:
+            clip = clip.fx(vfx_loop, duration=total_duration)
+        else:
+            clip = clip.subclip(0, total_duration)
+
+        opacity = max(0.1, min(1.0, float(video.get("opacity", 0.85))))
+        clip = clip.set_opacity(opacity)
+
+        position_key = video.get("position", "Bottom-Right")
+        clip = clip.set_position(TRACK8_POSITION_MAP.get(position_key, ("right", "bottom")))
+        clip = clip.set_duration(total_duration)
+
+        _log(f"Track8 video-loop PIP banaya: pos={position_key} size={pip_w}x{pip_h} opacity={opacity}")
+        return clip
+    except Exception as e:
+        _log(f"WARNING: Track8 video loop overlay fail hui ({path}): {e}")
+        return None
+
+
+# ==========================================================================
 # (2) AUDIO MIX - with mantra loop + volume balancing
 # ==========================================================================
 def build_final_audio(payload, total_duration, options):
@@ -1070,6 +1235,9 @@ def build_final_audio(payload, total_duration, options):
 
     # --- 5. Track 6 SFX ---
     layers.extend(build_track6_sfx_layers(payload.get("track6", {})))
+
+    # --- 6. Track 8 music-loop layer(s) (independent of Track 3 / mantra) ---
+    layers.extend(build_track8_music_layers(payload.get("track8", {}), total_duration))
 
     if not layers:
         return None
@@ -1230,10 +1398,17 @@ def master_render_pipeline(
     if mantra_text_clip is not None:
         overlay_layers.append(mantra_text_clip)
 
+    # ---- (8) Track 8 video-loop PIP overlay (Subscribe animation / logo loop) ----
+    track8_video_clip = build_track8_video_loop_overlay(
+        payload.get("track8", {}), target_size, base_duration
+    )
+    if track8_video_clip is not None:
+        overlay_layers.append(track8_video_clip)
+
     if len(overlay_layers) > 1:
         main_video = CompositeVideoClip(overlay_layers, size=target_size).set_duration(base_duration)
 
-    # ---- (2) Audio mix (Track 3, 4, 5 voice, mantra loop, 6) ----
+    # ---- (2) Audio mix (Track 3, 4, 5 voice, mantra loop, 6, 8) ----
     final_audio = build_final_audio(payload, base_duration, options)
     if final_audio is not None:
         main_video = main_video.set_audio(final_audio)

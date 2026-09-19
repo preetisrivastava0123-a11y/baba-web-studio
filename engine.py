@@ -90,6 +90,33 @@ WHAT CHANGED IN THIS VERSION (1 / 2 / 3 / 4 / 5 / 6)
         sounds. Only royalty-free / properly licensed music is actually
         safe to use; app.py shows this disclaimer to the user directly.
 
+(9) TRACK 8 - CUSTOM DURATION + STANDALONE PREVIEW (this version):
+      - track8.loop_duration_seconds (from app.py) lets the loop run for
+        just the first N seconds of the video instead of always matching
+        the full length - see _resolve_track8_effective_duration().
+      - render_track8_loop_standalone() renders ONLY the Track 8 loop
+        (music .mp3 or video .mp4) on its own, so app.py can offer a
+        "preview & download just this loop" button without rendering
+        the whole main video.
+
+(10) REAL TRANSITIONS BETWEEN TRACK 1 CUTS (bug fix) - track7's
+    transition_mode/manual_transition were being collected by app.py's
+    UI but this module never actually used them; every cut between
+    images/clips was a hard cut with no effect. concatenate_with_
+    transitions() now applies a real transition at every cut: Zoom, Pan
+    and Glow Flash use crossfade dissolves (+ a slight zoom/pan on the
+    incoming clip); Slide is a hard slide-in with no dissolve; Glass
+    Shatter approximates the impact of a shatter cut with a fast
+    zoom-punch + quick flash (a literal shard-by-shard shatter needs
+    per-fragment masking beyond what plain MoviePy compositing can do
+    cheaply here - this is a stylized approximation, not a claim of a
+    true shatter simulation). Auto-Magic rotates between Zoom/Pan/Glow
+    Flash per cut for variety; Manual applies one chosen style
+    everywhere. NOTE: because cuts now overlap slightly (transition
+    duration), the final video is a touch shorter than the sum of each
+    clip's own duration - this is expected and matches how transitions
+    work in any video editor.
+
 NOTE ON MOVIEPY VERSION
 ----------------------------------------------------------------------
 This module targets MoviePy 1.x (`from moviepy.editor import ...`,
@@ -121,6 +148,7 @@ import asyncio
 import tempfile
 import traceback
 import uuid
+import random
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -527,7 +555,117 @@ def _build_visual_clip_for_file(file_entry, target_size, ken_burns):
         return clip
 
 
-def build_track1_timeline(track1_payload, target_size):
+# ==========================================================================
+# TRACK 7 - REAL TRANSITIONS BETWEEN TRACK 1 CUTS (previously missing -
+# track7.transition_mode/manual_transition were collected by app.py but
+# never actually applied; every cut was a hard cut with no effect at all)
+# ==========================================================================
+TRANSITION_STYLES = ["Zoom", "Pan", "Slide", "Glass Shatter", "Glow Flash"]
+DEFAULT_TRANSITION_OVERLAP = 0.6  # seconds of overlap at every cut
+_AUTO_MAGIC_ROTATION = ["Zoom", "Pan", "Glow Flash"]  # safe, always-good-looking mix
+
+
+def _build_transition_clip(clip, style, overlap, target_size):
+    """
+    Prepares the INCOMING clip of a cut so that, once concatenated with
+    the previous clip using negative padding (= -overlap) and
+    method="compose", the pair produces the chosen transition style.
+
+    Returns the prepared clip. `overlap` is a ceiling - each style caps
+    its own effect duration to at most `overlap` so every cut in the
+    video shares one consistent padding value (concatenate_videoclips
+    only accepts a single padding for the whole sequence).
+    """
+    w, h = target_size
+
+    if style == "Zoom":
+        d = overlap
+        c = clip.crossfadein(d)
+
+        def scale_at(t):
+            if t < d:
+                return 1.18 - 0.18 * (t / d)
+            return 1.0
+        return c.resize(scale_at).set_position(("center", "center"))
+
+    if style == "Pan":
+        d = overlap
+        c = clip.crossfadein(d)
+
+        def pos_at(t):
+            if t < d:
+                shift = int(w * 0.08 * (1 - t / d))
+                return (shift, 0)
+            return (0, 0)
+        return c.set_position(pos_at)
+
+    if style == "Slide":
+        # A hard slide-in (no dissolve) - the incoming clip slides from
+        # off-screen right to its normal position, progressively covering
+        # the outgoing clip underneath it during the overlap window.
+        d = overlap
+
+        def pos_at(t):
+            if t < d:
+                x = int(w * (1 - t / d))
+                return (x, 0)
+            return (0, 0)
+        return clip.set_position(pos_at)
+
+    if style == "Glow Flash":
+        d = min(overlap, 0.35)
+        return clip.crossfadein(d)
+
+    if style == "Glass Shatter":
+        # NOTE: a true shard-by-shard glass-shatter needs per-fragment
+        # masking well beyond what plain MoviePy compositing can do
+        # cheaply in a live render pipeline. This approximates the FEEL
+        # of an impact cut with a fast zoom-punch + quick flash instead -
+        # it is not a literal shattering-glass simulation.
+        d = min(overlap, 0.35)
+        c = clip.crossfadein(d)
+
+        def scale_at(t):
+            if t < d:
+                return 1.35 - 0.35 * (t / d)
+            return 1.0
+        return c.resize(scale_at).set_position(("center", "center"))
+
+    # Unknown/fallback style -> plain crossfade dissolve.
+    return clip.crossfadein(overlap)
+
+
+def concatenate_with_transitions(clips, track7_payload, target_size):
+    """
+    Concatenates Track 1's visual clips with an actual transition effect
+    at every cut (Auto-Magic rotates through a safe set of styles per
+    cut; Manual applies the one chosen style consistently everywhere),
+    instead of the previous hard cut between clips.
+    """
+    if not clips:
+        return None
+    if len(clips) == 1:
+        return clips[0]
+
+    track7_payload = track7_payload or {}
+    mode = track7_payload.get("transition_mode", "Auto-Magic")
+    manual_style = track7_payload.get("manual_transition") or "Zoom"
+
+    min_clip_duration = min(c.duration for c in clips if c.duration)
+    overlap = min(DEFAULT_TRANSITION_OVERLAP, max(0.15, min_clip_duration * 0.4))
+
+    prepared = [clips[0]]
+    styles_used = []
+    for i in range(1, len(clips)):
+        style = manual_style if mode == "Manual" else random.choice(_AUTO_MAGIC_ROTATION)
+        styles_used.append(style)
+        prepared.append(_build_transition_clip(clips[i], style, overlap, target_size))
+
+    _log(f"Transitions lagayi gayin: mode={mode} styles={styles_used} overlap={overlap:.2f}s")
+    return concatenate_videoclips(prepared, method="compose", padding=-overlap)
+
+
+def build_track1_timeline(track1_payload, target_size, track7_payload=None):
     files = track1_payload.get("files", [])
     ken_burns = bool(track1_payload.get("ken_burns", True))
     if not files:
@@ -543,7 +681,7 @@ def build_track1_timeline(track1_payload, target_size):
     if not clips:
         raise ValueError("Track 1 ki koi bhi file successfully load nahi hui.")
 
-    return concatenate_videoclips(clips, method="compose")
+    return concatenate_with_transitions(clips, track7_payload, target_size)
 
 
 def overlay_track2_clips(base_video, track2_payload, target_size):
@@ -1087,18 +1225,40 @@ def _loop_audio_to_duration(clip, total_duration):
     return clip.subclip(0, total_duration)
 
 
+def _resolve_track8_effective_duration(track8_payload, total_duration):
+    """
+    Track 8's loop can either match the full main-video duration (old
+    default: loop_duration_seconds is None/absent) or run for a shorter
+    user-chosen duration starting at t=0, after which it simply stops
+    (silence for audio, nothing shown for the video PIP) for the rest of
+    the video. Never longer than the main video itself.
+    """
+    custom = track8_payload.get("loop_duration_seconds")
+    if custom is None:
+        return total_duration
+    try:
+        custom = float(custom)
+    except (TypeError, ValueError):
+        return total_duration
+    if custom <= 0:
+        return total_duration
+    return min(custom, total_duration)
+
+
 def build_track8_music_layers(track8_payload, total_duration):
     """
     Returns a list of AudioClips: the main Track 8 music-loop file (with
     optional instrumental/vocal-removal applied) plus any extra
-    simultaneous layers the user added, each looped to the full video
-    duration and volume-adjusted independently.
+    simultaneous layers the user added, each looped to
+    track8_payload['loop_duration_seconds'] (or the full video duration
+    if that's not set) and volume-adjusted independently.
 
     Returns [] if Track 8 is not in music-loop mode or has no file.
     """
     if track8_payload.get("mode") != TRACK8_MODE_MUSIC:
         return []
 
+    effective_duration = _resolve_track8_effective_duration(track8_payload, total_duration)
     music = track8_payload.get("music", {}) or {}
     layers = []
 
@@ -1108,7 +1268,7 @@ def build_track8_music_layers(track8_payload, total_duration):
             main_clip = AudioFileClip(main_path)
             if music.get("instrumental_only"):
                 main_clip = _remove_vocals_center_channel(main_clip)
-            main_clip = _loop_audio_to_duration(main_clip, total_duration)
+            main_clip = _loop_audio_to_duration(main_clip, effective_duration)
             if main_clip is not None:
                 main_clip = main_clip.fx(volumex, float(music.get("volume", 0.75))).set_start(0)
                 layers.append(main_clip)
@@ -1121,7 +1281,7 @@ def build_track8_music_layers(track8_payload, total_duration):
             continue
         try:
             extra_clip = AudioFileClip(path)
-            extra_clip = _loop_audio_to_duration(extra_clip, total_duration)
+            extra_clip = _loop_audio_to_duration(extra_clip, effective_duration)
             if extra_clip is not None:
                 extra_clip = extra_clip.fx(volumex, float(extra.get("volume", 0.5))).set_start(0)
                 layers.append(extra_clip)
@@ -1130,15 +1290,18 @@ def build_track8_music_layers(track8_payload, total_duration):
 
     if layers:
         _log(f"Track8 music-loop: {len(layers)} simultaneous layer(s) mix ho rahi hain "
-             f"(instrumental_only={bool(music.get('instrumental_only'))}).")
+             f"(instrumental_only={bool(music.get('instrumental_only'))}, duration={effective_duration:.1f}s).")
     return layers
 
 
 def build_track8_video_loop_overlay(track8_payload, target_size, total_duration):
     """
     Returns a small looping picture-in-picture VideoClip (e.g. a
-    Subscribe animation or logo loop) positioned in a corner, or None if
-    Track 8 is not in video-loop mode / has no file.
+    Subscribe animation or logo loop) positioned in a corner, running for
+    track8_payload['loop_duration_seconds'] (or the full video duration
+    if that's not set) - after which it simply stops appearing for the
+    rest of the video. Returns None if Track 8 is not in video-loop mode
+    / has no file.
     """
     if track8_payload.get("mode") != TRACK8_MODE_VIDEO:
         return None
@@ -1147,6 +1310,8 @@ def build_track8_video_loop_overlay(track8_payload, target_size, total_duration)
     path = video.get("path")
     if not path or not os.path.exists(path):
         return None
+
+    effective_duration = _resolve_track8_effective_duration(track8_payload, total_duration)
 
     try:
         w, h = target_size
@@ -1158,23 +1323,97 @@ def build_track8_video_loop_overlay(track8_payload, target_size, total_duration)
         pip_h = max(1, int(clip.h * scale))
         clip = clip.resize((pip_w, pip_h))
 
-        if clip.duration < total_duration:
-            clip = clip.fx(vfx_loop, duration=total_duration)
+        if clip.duration < effective_duration:
+            clip = clip.fx(vfx_loop, duration=effective_duration)
         else:
-            clip = clip.subclip(0, total_duration)
+            clip = clip.subclip(0, effective_duration)
 
         opacity = max(0.1, min(1.0, float(video.get("opacity", 0.85))))
         clip = clip.set_opacity(opacity)
 
         position_key = video.get("position", "Bottom-Right")
         clip = clip.set_position(TRACK8_POSITION_MAP.get(position_key, ("right", "bottom")))
-        clip = clip.set_duration(total_duration)
+        clip = clip.set_duration(effective_duration)  # ends early if shorter than the main video
 
-        _log(f"Track8 video-loop PIP banaya: pos={position_key} size={pip_w}x{pip_h} opacity={opacity}")
+        _log(f"Track8 video-loop PIP banaya: pos={position_key} size={pip_w}x{pip_h} "
+             f"opacity={opacity} duration={effective_duration:.1f}s")
         return clip
     except Exception as e:
         _log(f"WARNING: Track8 video loop overlay fail hui ({path}): {e}")
         return None
+
+
+def render_track8_loop_standalone(track8_payload, target_size=(1080, 1920), duration=15.0) -> str:
+    """
+    Renders ONLY the Track 8 loop (music OR video, whichever mode is
+    active) as its own standalone output file, so it can be previewed
+    and downloaded without rendering the whole main video.
+
+    Music mode -> exports an .mp3 of the mixed loop (main track + any
+    extra simultaneous layers, instrumental-only applied if requested).
+    Video mode -> exports an .mp4 of the looping clip at full frame size
+    (NOT the small PIP - this is meant as a "what does my loop file
+    itself look like" preview, not a composited scene).
+
+    Raises ValueError with a clear message if there's nothing to render.
+    """
+    mode = track8_payload.get("mode")
+    duration = max(1.0, float(duration))
+
+    if mode == TRACK8_MODE_MUSIC:
+        # Force this preview call to always use exactly `duration`,
+        # regardless of any loop_duration_seconds already in the payload.
+        preview_payload = dict(track8_payload)
+        preview_payload["loop_duration_seconds"] = duration
+        layers = build_track8_music_layers(preview_payload, duration)
+        if not layers:
+            raise ValueError("Track 8: कोई music file अपलोड नहीं हुई - preview नहीं बन सकता।")
+        final_audio = CompositeAudioClip(layers).set_duration(duration)
+        out_path = os.path.join(OUTPUT_DIR, f"track8_loop_preview_{uuid.uuid4().hex}.mp3")
+        final_audio.write_audiofile(out_path, fps=44100, logger=None)
+        try:
+            final_audio.close()
+        except Exception:
+            pass
+        _log(f"Track8 standalone music preview likha gaya -> {out_path}")
+        return out_path
+
+    if mode == TRACK8_MODE_VIDEO:
+        video = track8_payload.get("video", {}) or {}
+        path = video.get("path")
+        if not path or not os.path.exists(path):
+            raise ValueError("Track 8: कोई video loop file अपलोड नहीं हुई - preview नहीं बन सकता।")
+
+        w, h = target_size
+        clip = VideoFileClip(path)
+        # Fit the loop file itself to the target frame (full-size, not
+        # the small PIP used inside the main video composite).
+        clip = clip.resize(height=h) if (clip.h / max(clip.w, 1)) > (h / max(w, 1)) else clip.resize(width=w)
+        clip = clip.set_position("center")
+        canvas = CompositeVideoClip([ColorClip(target_size, color=(0, 0, 0)).set_duration(duration), clip], size=target_size)
+
+        if clip.duration < duration:
+            canvas = canvas.fx(vfx_loop, duration=duration)
+        else:
+            canvas = canvas.subclip(0, duration)
+        canvas = canvas.set_duration(duration)
+
+        out_path = os.path.join(OUTPUT_DIR, f"track8_loop_preview_{uuid.uuid4().hex}.mp4")
+        has_audio = clip.audio is not None
+        canvas.write_videofile(
+            out_path, fps=24, codec="libx264",
+            audio_codec="aac" if has_audio else None,
+            audio=has_audio,
+            logger=None,
+        )
+        try:
+            canvas.close()
+        except Exception:
+            pass
+        _log(f"Track8 standalone video preview likha gaya -> {out_path}")
+        return out_path
+
+    raise ValueError("Track 8: कोई mode select नहीं हुआ (Music/Video)।")
 
 
 # ==========================================================================
@@ -1363,7 +1602,7 @@ def master_render_pipeline(
          f"draft={payload.get('is_draft')}")
 
     # ---- Track 1: mandatory visual base ----
-    main_video = build_track1_timeline(payload.get("track1", {}), target_size)
+    main_video = build_track1_timeline(payload.get("track1", {}), target_size, payload.get("track7", {}))
 
     # ---- Track 2: overlay/insert clips on top of the base timeline ----
     main_video = overlay_track2_clips(main_video, payload.get("track2", {}), target_size)

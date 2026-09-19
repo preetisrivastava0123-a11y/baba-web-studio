@@ -43,10 +43,24 @@ WHAT CHANGED IN THIS VERSION (found while reviewing the original file)
     live_engine.get_stream_status() instead of trusting the local
     session flag blindly (so a crashed engine doesn't keep showing
     "LIVE" forever).
+
+(6) HAD TO RETYPE THE FULL RTMP URL EVERY TIME - each destination now
+    only asks for the Stream Key; the platform's fixed RTMP prefix
+    (YouTube/Facebook/Instagram) is joined on automatically via
+    _effective_rtmp_url(). Custom RTMP still takes a full URL since it
+    has no fixed prefix.
+
+(7) DESTINATIONS DISAPPEARED ON BROWSER REFRESH - session_state does NOT
+    survive a real page refresh (that starts a brand-new session), so
+    destinations are now also persisted to a local JSON file
+    (.live_studio_data/destinations.json, gitignore this) and reloaded
+    on the next session. A "remember destinations" checkbox lets the
+    user turn this off if they'd rather not have keys sitting on disk.
 --------------------------------------------------------------------------
 """
 
 import os
+import json
 import tempfile
 from datetime import datetime
 
@@ -59,13 +73,63 @@ from live_engine import Destination, StreamConfig
 UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "live_studio_uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
 
-PLATFORM_RTMP_HINTS = {
-    "YouTube": "rtmp://a.rtmp.youtube.com/live2/YOUR-STREAM-KEY",
-    "Facebook": "rtmps://live-api-s.facebook.com:443/rtmp/YOUR-STREAM-KEY",
-    "Instagram": "rtmps://live-upload.instagram.com:443/rtmp/YOUR-STREAM-KEY",
-    "Custom RTMP": "rtmp://your-server/app/YOUR-STREAM-KEY",
+# Fixed RTMP prefixes per platform - the user only ever has to paste the
+# stream KEY, the prefix is joined on automatically. "Custom RTMP" has no
+# fixed prefix, so that one still takes a full URL.
+PLATFORM_RTMP_PREFIXES = {
+    "YouTube": "rtmp://a.rtmp.youtube.com/live2/",
+    "Facebook": "rtmps://live-api-s.facebook.com:443/rtmp/",
+    "Instagram": "rtmps://live-upload.instagram.com:443/rtmp/",
+    "Custom RTMP": "",
 }
-PLATFORM_OPTIONS = list(PLATFORM_RTMP_HINTS.keys())
+PLATFORM_OPTIONS = list(PLATFORM_RTMP_PREFIXES.keys())
+
+# --------------------------------------------------------------------------
+# Destinations are saved to a small local JSON file next to this script so
+# they survive a browser refresh (a refresh starts a brand-new Streamlit
+# session - session_state alone does NOT survive that).
+#
+# ⚠️ SECURITY NOTE: this stores RTMP stream keys in PLAIN TEXT on disk so
+# you don't have to retype them. Add this file/folder to .gitignore and
+# never commit it or share it - anyone with these keys can stream to your
+# channels. If you'd rather not persist keys at all, delete
+# `.live_studio_data/destinations.json` after each session, or turn off
+# the "remember destinations" checkbox in the UI.
+# --------------------------------------------------------------------------
+LIVE_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".live_studio_data")
+os.makedirs(LIVE_CONFIG_DIR, exist_ok=True)
+DESTINATIONS_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "destinations.json")
+
+
+def _load_saved_destinations():
+    try:
+        if os.path.exists(DESTINATIONS_STORE_PATH):
+            with open(DESTINATIONS_STORE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _save_destinations(destinations):
+    try:
+        with open(DESTINATIONS_STORE_PATH, "w", encoding="utf-8") as f:
+            json.dump(destinations, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _effective_rtmp_url(dest: dict) -> str:
+    """Builds the actual RTMP URL FFmpeg needs to push to: fixed prefix +
+    the key the user pasted, or the raw URL for Custom RTMP."""
+    platform = dest.get("platform", "")
+    if platform == "Custom RTMP":
+        return (dest.get("custom_full_url") or "").strip()
+    prefix = PLATFORM_RTMP_PREFIXES.get(platform, "")
+    key = (dest.get("stream_key") or "").strip()
+    return (prefix + key) if key else ""
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +137,9 @@ PLATFORM_OPTIONS = list(PLATFORM_RTMP_HINTS.keys())
 # ---------------------------------------------------------------------------
 
 DEFAULT_STATE = {
-    # Track 1 - Destinations (multi-platform, replaces the old single platform+key pair)
-    "destinations": [],  # [{platform, rtmp_url, enabled}]
+    # Track 1 - Destinations (multi-platform, prefix+key based)
+    "destinations": [],  # [{platform, stream_key, custom_full_url, enabled}]
+    "remember_destinations": True,
     # Camera / audio
     "webcam_on": True,
     "bg_removal": "None",
@@ -91,6 +156,7 @@ DEFAULT_STATE = {
     # Live state
     "is_live": False,
     "chat_messages": [],
+    "_last_start_error": None,
 }
 
 _POSITION_UI_TO_ENGINE = {
@@ -110,7 +176,13 @@ _BG_MODE_UI_TO_ENGINE = {
 def _init_session_state():
     """Ensure every config key exists in st.session_state before first use."""
     if "live_studio" not in st.session_state:
-        st.session_state["live_studio"] = {k: (v.copy() if isinstance(v, list) else v) for k, v in DEFAULT_STATE.items()}
+        state = {k: (v.copy() if isinstance(v, list) else v) for k, v in DEFAULT_STATE.items()}
+        # Restore destinations saved from a previous session (browser
+        # refresh loses session_state entirely, but the file on disk
+        # survives) - this is what makes "just paste the key" work even
+        # after an F5.
+        state["destinations"] = _load_saved_destinations()
+        st.session_state["live_studio"] = state
     else:
         for key, default_value in DEFAULT_STATE.items():
             st.session_state["live_studio"].setdefault(key, default_value)
@@ -144,42 +216,88 @@ def _render_stream_setup():
     st.subheader("🎥 Stream Setup — Destinations")
     st.caption(
         "एक से ज़्यादा platform एक साथ चुन सकते हैं — सबको एक ही स्ट्रीम एक साथ भेजी जाएगी "
-        "(single-encode, multi-destination push)।"
+        "(single-encode, multi-destination push)। हर platform का RTMP prefix अपने आप जुड़ जाता है — "
+        "आपको सिर्फ़ अपनी **Stream Key** पेस्ट करनी है, पूरा URL टाइप नहीं करना पड़ेगा।"
     )
 
     if not live_engine.check_ffmpeg_available():
         st.error("⚠️ `ffmpeg` इस सिस्टम के PATH में नहीं मिला — Live जाने से पहले इसे इंस्टॉल करें।")
 
+    st.session_state["live_studio"]["remember_destinations"] = st.checkbox(
+        "💾 Destinations याद रखें (refresh के बाद भी दोबारा टाइप न करना पड़े)",
+        value=_get("remember_destinations"), key="live_remember_dest_checkbox",
+    )
+    st.caption(
+        f"⚠️ याद रखने पर keys **plain text** में यहाँ save होती हैं: `{DESTINATIONS_STORE_PATH}` — "
+        "इस फ़ोल्डर को `.gitignore` में ज़रूर जोड़ें और किसी के साथ शेयर न करें।"
+    )
+
     if st.button("➕ नया Destination जोड़ें", key="live_add_dest_btn"):
         st.session_state["live_studio"]["destinations"].append(
-            {"platform": PLATFORM_OPTIONS[0], "rtmp_url": "", "enabled": True}
+            {"platform": PLATFORM_OPTIONS[0], "stream_key": "", "custom_full_url": "", "enabled": True}
         )
         st.rerun()
 
+    changed = False
     if not _get("destinations"):
         st.caption("ℹ️ अभी कोई destination नहीं जोड़ा गया — ऊपर बटन से एक जोड़ें (YouTube/Facebook/Instagram/Custom RTMP)।")
     else:
         for idx, dest in enumerate(_get("destinations")):
-            d_col1, d_col2, d_col3, d_col4 = st.columns([1.2, 3, 0.6, 0.6])
-            dest["platform"] = d_col1.selectbox(
-                "Platform", options=PLATFORM_OPTIONS, index=PLATFORM_OPTIONS.index(dest.get("platform", PLATFORM_OPTIONS[0])),
-                key=f"live_dest_platform_{idx}", label_visibility="collapsed",
-            )
-            dest["rtmp_url"] = d_col2.text_input(
-                "RTMP URL", value=dest.get("rtmp_url", ""), type="password",
-                placeholder=PLATFORM_RTMP_HINTS.get(dest["platform"], "rtmp://..."),
-                key=f"live_dest_url_{idx}", label_visibility="collapsed",
-            )
-            dest["enabled"] = d_col3.checkbox("On", value=dest.get("enabled", True), key=f"live_dest_enabled_{idx}")
-            if d_col4.button("🗑️", key=f"live_dest_remove_{idx}"):
-                st.session_state["live_studio"]["destinations"].pop(idx)
-                st.rerun()
+            with st.container(border=True):
+                top1, top2, top3 = st.columns([2, 0.7, 0.7])
+                dest["platform"] = top1.selectbox(
+                    "Platform", options=PLATFORM_OPTIONS,
+                    index=PLATFORM_OPTIONS.index(dest.get("platform", PLATFORM_OPTIONS[0])),
+                    key=f"live_dest_platform_{idx}",
+                )
+                dest["enabled"] = top2.checkbox("On", value=dest.get("enabled", True), key=f"live_dest_enabled_{idx}")
+                if top3.button("🗑️ हटाएं", key=f"live_dest_remove_{idx}"):
+                    st.session_state["live_studio"]["destinations"].pop(idx)
+                    _save_destinations(st.session_state["live_studio"]["destinations"])
+                    st.rerun()
 
-        enabled_count = sum(1 for d in _get("destinations") if d.get("enabled") and (d.get("rtmp_url") or "").strip())
-        if enabled_count == 0:
-            st.warning("⚠️ कम से कम एक destination को enable करें और उसका RTMP URL/key भरें।")
-        else:
-            st.success(f"✅ {enabled_count} destination(s) live जाने के लिए तैयार हैं।")
+                platform = dest["platform"]
+                if platform == "Custom RTMP":
+                    dest["custom_full_url"] = st.text_input(
+                        "पूरा RTMP URL (Custom सर्वर के लिए कोई फ़िक्स prefix नहीं है, इसलिए पूरा URL डालें)",
+                        value=dest.get("custom_full_url", ""), type="password",
+                        placeholder="rtmp://your-server/app/KEY", key=f"live_dest_url_{idx}",
+                    )
+                else:
+                    prefix = PLATFORM_RTMP_PREFIXES[platform]
+                    st.caption(f"Prefix (अपने आप जुड़ेगा): `{prefix}`")
+                    dest["stream_key"] = st.text_input(
+                        "सिर्फ़ Stream Key यहाँ पेस्ट करें",
+                        value=dest.get("stream_key", ""), type="password",
+                        placeholder="xxxx-xxxx-xxxx-xxxx", key=f"live_dest_key_{idx}",
+                    )
+                    final_url = _effective_rtmp_url(dest)
+                    if final_url:
+                        st.caption(f"✅ पूरा URL बन गया: `{prefix}{'•' * max(4, len(dest.get('stream_key', '')))}`")
+
+        changed = True
+
+    if changed and _get("remember_destinations"):
+        _save_destinations(st.session_state["live_studio"]["destinations"])
+    elif changed and not _get("remember_destinations"):
+        # user turned remembering off - don't leave old keys sitting on disk
+        _save_destinations([])
+
+    enabled_count = sum(
+        1 for d in _get("destinations") if d.get("enabled") and _effective_rtmp_url(d)
+    )
+    if enabled_count == 0:
+        st.warning("⚠️ कम से कम एक destination को enable करें और उसकी Stream Key/URL भरें।")
+    else:
+        st.success(f"✅ {enabled_count} destination(s) live जाने के लिए तैयार हैं।")
+
+    st.info(
+        "☁️ **Cloud पर चला रहे हैं?** Cloud/server के पास physical webcam या mic नहीं होता। "
+        "नीचे 'Camera & Audio' में **Webcam बंद रखें**, और 'Media & Overlay Settings' में "
+        "**Background Video Loop** + **Background Music Loop** अपलोड करें — इसके लिए किसी हार्डवेयर कैमरा/माइक की "
+        "ज़रूरत नहीं, सिर्फ़ server पर ffmpeg installed होना चाहिए। Webcam/Mic सिर्फ़ तभी चलेगा जब आप इसे अपने "
+        "local कंप्यूटर पर चलाएँगे (`streamlit run app.py`), जहाँ असली camera/mic लगा हो।"
+    )
 
 
 def _render_camera_audio_controls():
@@ -297,7 +415,7 @@ def _render_media_overlay_settings():
 
 def _build_stream_config() -> StreamConfig:
     destinations = [
-        Destination(platform=d["platform"], rtmp_url=d["rtmp_url"], enabled=d["enabled"])
+        Destination(platform=d["platform"], rtmp_url=_effective_rtmp_url(d), enabled=d["enabled"])
         for d in _get("destinations")
     ]
     return StreamConfig(
@@ -323,7 +441,7 @@ def _render_control_buttons():
     if _get("is_live") != actually_live:
         _set("is_live", actually_live)
 
-    enabled_dest_count = sum(1 for d in _get("destinations") if d.get("enabled") and (d.get("rtmp_url") or "").strip())
+    enabled_dest_count = sum(1 for d in _get("destinations") if d.get("enabled") and _effective_rtmp_url(d))
     col1, col2, col3 = st.columns([1, 1, 2])
 
     with col1:
@@ -333,13 +451,19 @@ def _render_control_buttons():
             started = live_engine.start_stream(config)
             if started:
                 _set("is_live", True)
+                _set("_last_start_error", None)
                 st.session_state["live_studio"]["_last_pushed_ticker"] = _get("ticker_text")
                 st.session_state["live_studio"]["chat_messages"].append("System: Broadcast started.")
             else:
+                reason = live_engine.get_last_error() or "अज्ञात वजह - console/terminal logs देखें।"
+                _set("_last_start_error", reason)
                 st.session_state["live_studio"]["chat_messages"].append(
-                    "System: ⚠️ Broadcast start नहीं हो पाया — logs देखें (ffmpeg / destinations चेक करें)."
+                    f"System: ⚠️ Broadcast start नहीं हो पाया — {reason}"
                 )
             st.rerun()
+
+    if _get("_last_start_error"):
+        st.error(f"❌ पिछली शुरुआत यहाँ फेल हुई:\n\n{_get('_last_start_error')}")
 
     with col2:
         if st.button("⏹️ STOP STREAM", disabled=not _get("is_live"), use_container_width=True):
@@ -395,7 +519,7 @@ def _render_config_summary():
         for d in state_copy.get("destinations", []):
             safe_destinations.append({
                 "platform": d.get("platform"),
-                "rtmp_url": ("•" * 10) if d.get("rtmp_url") else "",
+                "key_set": bool(_effective_rtmp_url(d)),
                 "enabled": d.get("enabled"),
             })
         state_copy["destinations"] = safe_destinations

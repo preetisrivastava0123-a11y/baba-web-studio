@@ -84,6 +84,7 @@ import threading
 import time
 import shutil
 import logging
+import collections
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
@@ -134,6 +135,26 @@ _DEVANAGARI_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # last resort, no Devanagari glyphs
 ]
+
+# ---------------------------------------------------------------------------
+# Last-start-error tracker - so the UI can show WHY start_stream() failed
+# instead of a generic "something went wrong" message.
+# ---------------------------------------------------------------------------
+_last_error: Optional[str] = None
+
+
+def _set_last_error(msg: Optional[str]):
+    global _last_error
+    _last_error = msg
+    if msg:
+        logger.error(msg)
+
+
+def get_last_error() -> Optional[str]:
+    """Returns the human-readable reason the most recent start_stream() call
+    failed, or None if the last attempt succeeded (or nothing has been
+    attempted yet)."""
+    return _last_error
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +207,7 @@ class TeeFFmpegPublisher:
         self._mic_thread: Optional[threading.Thread] = None
         self._mic_stop_event = threading.Event()
         self._audio_fifo_path: Optional[str] = None
+        self._stderr_tail = collections.deque(maxlen=50)
 
     # -- audio source selection ------------------------------------------------
     def _build_audio_input_args(self):
@@ -261,12 +283,20 @@ class TeeFFmpegPublisher:
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> bool:
         if shutil.which("ffmpeg") is None:
-            logger.error("ffmpeg binary PATH par nahi mila - streaming shuru nahi ho sakti.")
+            _set_last_error(
+                "ffmpeg आपके system के PATH में नहीं मिला। इसे install करें: "
+                "Windows पर https://ffmpeg.org/download.html से लाकर PATH में जोड़ें, "
+                "Mac पर `brew install ffmpeg`, Linux पर `sudo apt install ffmpeg`. "
+                "Install करने के बाद टर्मिनल में `ffmpeg -version` चलाकर पक्का करें कि दिखता है।"
+            )
             return False
 
         active = [d for d in self.config.destinations if d.enabled and (d.rtmp_url or "").strip()]
         if not active:
-            logger.error("Koi bhi enabled destination ke paas valid RTMP URL nahi hai - kuch bhi push nahi hoga.")
+            _set_last_error(
+                "कोई भी enabled destination के पास valid RTMP URL नहीं है। ऊपर 'Stream Setup' में कम से कम "
+                "एक destination को ✅ (On) करें और उसमें असली RTMP URL/Stream Key भरें।"
+            )
             return False
 
         audio_args = self._build_audio_input_args()
@@ -300,14 +330,42 @@ class TeeFFmpegPublisher:
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
         )
+        # Continuously drain stderr on a background thread so ffmpeg never
+        # blocks on a full pipe buffer, while keeping the last ~50 lines
+        # around for diagnostics if it dies unexpectedly.
+        self._stderr_tail = collections.deque(maxlen=50)
+        threading.Thread(target=self._drain_stderr, name="FFmpegStderrDrain", daemon=True).start()
 
         if self._audio_fifo_path:
             self._mic_stop_event.clear()
             self._start_mic_feeder()
 
+        # Give ffmpeg a brief moment to fail fast (bad RTMP URL, destination
+        # server rejected the connection, unsupported codec, etc.) instead
+        # of silently reporting "started" when it already died.
+        time.sleep(0.7)
+        if self.process.poll() is not None:
+            tail = "\n".join(self._stderr_tail) or "(ffmpeg se koi stderr output nahi mila)"
+            _set_last_error(
+                "FFmpeg turant band ho gaya - shaayad RTMP URL galat hai, stream key expire ho chuki hai, ya "
+                "destination server ne connection reject kar diya. FFmpeg ka aakhri output:\n" + tail
+            )
+            self.process = None
+            return False
+
+        _set_last_error(None)
         return True
+
+    def _drain_stderr(self):
+        if self.process is None or self.process.stderr is None:
+            return
+        try:
+            for line in iter(self.process.stderr.readline, b""):
+                self._stderr_tail.append(line.decode("utf-8", errors="ignore").rstrip())
+        except Exception:
+            pass
 
     def write_frame(self, frame_bytes: bytes):
         if self.process is None or self.process.stdin is None:
@@ -617,12 +675,15 @@ class LiveStreamEngine:
             logger.info("Engine already running.")
             return True
         if cv2 is None or np is None:
-            logger.error("OpenCV/NumPy not available — cannot start capture loop.")
+            _set_last_error(
+                "OpenCV/NumPy install nahi hai is environment mein - webcam capture/compositing kaam nahi "
+                "karega. `pip install opencv-python numpy` chalayein."
+            )
             self._notify("error: opencv/numpy missing")
             return False
 
         if not self._publisher.start():
-            logger.error("Publisher start nahi hui (ffmpeg missing ya koi valid destination nahi) - engine start nahi kiya ja raha.")
+            # _publisher.start() already set a specific _last_error message.
             self._notify("error: publisher failed to start")
             return False
 
@@ -631,7 +692,8 @@ class LiveStreamEngine:
             self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
             self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
             if not self._camera.isOpened():
-                logger.warning("Webcam open nahi hui - audio-only/blank-visual mode mein chalu rahega.")
+                logger.warning("Webcam open nahi hui - audio-only/blank-visual mode mein chalu rahega "
+                                "(agar yeh server/cloud par chal raha hai to wahan physical camera hota hi nahi).")
 
         if self.config.background_media_path:
             self._bg_media = cv2.VideoCapture(self.config.background_media_path)

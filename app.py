@@ -191,6 +191,7 @@ MANTRA_TEXT_STYLES = [
 TRACK8_MODES = ["🎵 म्यूज़िक लूप", "🎬 वीडियो लूप (PIP)"]
 TRACK8_VIDEO_POSITIONS = ["Top-Left", "Top-Right", "Bottom-Left", "Bottom-Right"]
 MAX_TRACK8_MUSIC_LAYERS = 3  # main track + this many extra simultaneous layers
+TRACK8_DURATION_MODES = ["🎬 पूरे वीडियो जितना (Match Full Video)", "⏱️ खुद की Duration (Custom Seconds)"]
 
 # --- QUALITY: Draft is always fast/low quality for speed. Final download
 # quality is chosen by the user (defaulting to 1080p Full HD). ---
@@ -277,6 +278,9 @@ DEFAULTS = {
     "track8_video_position": "Bottom-Right",
     "track8_video_size_pct": 25,
     "track8_video_opacity": 0.85,
+    "track8_duration_mode": TRACK8_DURATION_MODES[0],
+    "track8_custom_duration": 15,
+    "t8_preview_path": None,
     # Execution
     "is_rendering": False,
     "last_output_path": None,
@@ -1043,6 +1047,25 @@ if app_mode == "🎬 Video Generator":
             key="t8_mode_radio", horizontal=True,
         )
 
+        st.markdown("**⏱️ Loop कितनी देर चलेगा (Loop Duration)**")
+        st.session_state.track8_duration_mode = st.radio(
+            "Duration मोड", options=TRACK8_DURATION_MODES,
+            index=TRACK8_DURATION_MODES.index(st.session_state.track8_duration_mode),
+            key="t8_duration_mode_radio", horizontal=True,
+        )
+        if st.session_state.track8_duration_mode == TRACK8_DURATION_MODES[1]:
+            st.session_state.track8_custom_duration = st.number_input(
+                "Duration (सेकंड)", min_value=1, value=int(st.session_state.track8_custom_duration), step=1,
+                key="t8_custom_duration_in",
+                help="वीडियो के शुरू (0s) से इतनी सेकंड तक Loop चलेगा, फिर रुक जाएगा — अगर वीडियो की कुल लंबाई इससे ज़्यादा है तो बाकी हिस्से में यह Loop नहीं दिखेगा/नहीं बजेगा।",
+            )
+            st.caption(
+                f"ℹ️ यह Loop सिर्फ़ शुरू के **{int(st.session_state.track8_custom_duration)} सेकंड** तक चलेगा। "
+                "पूरे वीडियो जितना चाहिए तो ऊपर 'पूरे वीडियो जितना' चुनें।"
+            )
+        else:
+            st.caption("ℹ️ यह Loop पूरे वीडियो की लंबाई जितना अपने आप Match हो जाएगा (पुराना डिफ़ॉल्ट व्यवहार)।")
+
         # ========================================================================
         # MUSIC LOOP MODE
         # ========================================================================
@@ -1146,6 +1169,74 @@ if app_mode == "🎬 Video Generator":
                     )
             else:
                 st.caption("ℹ️ अभी कोई वीडियो लूप अपलोड नहीं हुआ है।")
+
+        # ========================================================================
+        # STANDALONE PREVIEW & DOWNLOAD - render just this Track 8 loop
+        # without needing to render the whole video (Track 1/3 mandatory
+        # tracks are NOT required for this).
+        # ========================================================================
+        st.markdown("---")
+        st.markdown("**🔁 सिर्फ़ यह Loop बनाएं और Download करें (Preview)**")
+        st.caption(
+            "पूरी वीडियो render किए बिना सिर्फ़ इस Loop (Music या Video) को अलग से बना और download कर सकते हैं — "
+            "जल्दी जाँचने के लिए कि यह कैसा लगेगा/सुनाई देगा।"
+        )
+        has_loop_source = (
+            (st.session_state.track8_mode == TRACK8_MODES[0] and st.session_state.track8_music_path)
+            or (st.session_state.track8_mode == TRACK8_MODES[1] and st.session_state.track8_video_path)
+        )
+        if st.button("🎬 Loop Preview बनाएं", key="t8_preview_btn", disabled=not has_loop_source):
+            preview_duration = (
+                float(st.session_state.track8_custom_duration)
+                if st.session_state.track8_duration_mode == TRACK8_DURATION_MODES[1]
+                else 15.0  # standalone preview default when "match full video" is selected
+            )
+            mini_track8_payload = {
+                "mode": st.session_state.track8_mode,
+                "music": {
+                    "path": st.session_state.track8_music_path,
+                    "instrumental_only": bool(st.session_state.track8_instrumental_only),
+                    "volume": float(st.session_state.track8_music_volume),
+                    "extra_layers": [
+                        {"path": layer["path"], "volume": float(layer.get("volume", 0.5))}
+                        for layer in st.session_state.track8_music_extra_layers
+                        if layer.get("path")
+                    ],
+                },
+                "video": {
+                    "path": st.session_state.track8_video_path,
+                    "position": st.session_state.track8_video_position,
+                    "size_pct": int(st.session_state.track8_video_size_pct),
+                    "opacity": float(st.session_state.track8_video_opacity),
+                },
+            }
+            preview_size = (1080, 1920) if st.session_state.ratio == "Shorts (9:16)" else (1920, 1080)
+            try:
+                with st.spinner("Loop preview बन रहा है..."):
+                    import importlib
+                    import engine as _engine_mod
+                    importlib.reload(_engine_mod)
+                    preview_path = _engine_mod.render_track8_loop_standalone(
+                        mini_track8_payload, target_size=preview_size, duration=preview_duration,
+                    )
+                st.session_state["t8_preview_path"] = preview_path
+                st.success("✅ Loop preview तैयार है!")
+            except Exception as e:
+                st.error(f"Preview बनाने में दिक्कत आई: {e}")
+
+        if st.session_state.get("t8_preview_path") and os.path.exists(st.session_state["t8_preview_path"]):
+            preview_path = st.session_state["t8_preview_path"]
+            if preview_path.endswith(".mp3") or preview_path.endswith(".wav"):
+                st.audio(preview_path)
+            else:
+                st.video(preview_path)
+            with open(preview_path, "rb") as f:
+                st.download_button(
+                    "⬇️ Loop Preview Download करें", data=f,
+                    file_name=os.path.basename(preview_path),
+                    mime="audio/mpeg" if preview_path.endswith((".mp3", ".wav")) else "video/mp4",
+                    key="t8_preview_download_btn",
+                )
 
     st.divider()
 
@@ -1316,6 +1407,11 @@ if app_mode == "🎬 Video Generator":
             },
             "track8": {
                 "mode": st.session_state.track8_mode,
+                "loop_duration_seconds": (
+                    float(st.session_state.track8_custom_duration)
+                    if st.session_state.track8_duration_mode == TRACK8_DURATION_MODES[1]
+                    else None  # None = match the full main-video duration (old default behaviour)
+                ),
                 "music": {
                     "path": st.session_state.track8_music_path,
                     "instrumental_only": bool(st.session_state.track8_instrumental_only),

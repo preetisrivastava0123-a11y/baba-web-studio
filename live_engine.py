@@ -1,83 +1,48 @@
 """
 live_engine.py
-Heavy-duty backend processing engine for multi-destination RTMP live streaming.
+Backend engine for the Live Broadcast Studio, restructured into 5 sections
+per the product spec:
 
-Responsibilities:
-    - Capture webcam / audio-only visuals via OpenCV.
-    - Apply AI background processing (blur, virtual background, green-screen key)
-      via MediaPipe Selfie Segmentation.
-    - Composite a Picture-in-Picture (PIP) layout: background media + webcam + ticker.
-    - Push the composited frames + audio to one or more RTMP destinations
-      simultaneously (YouTube, Facebook, Instagram, or any custom RTMP URL)
-      using a SINGLE non-blocking FFmpeg process with the `tee` muxer.
-    - Expose a clean start_stream(stream_configs) / stop_stream() API so that
-      live_app.py (the Streamlit UI) can drive it without knowing any internals.
-
-This module has no Streamlit dependency — it is a pure backend engine and can
-be imported and driven from live_app.py:
-
-    from live_engine import start_stream, stop_stream, StreamConfig, Destination
-
-    configs = StreamConfig(
-        destinations=[
-            Destination(platform="YouTube", rtmp_url="rtmp://a.rtmp.youtube.com/live2/KEY1", enabled=True),
-            Destination(platform="Facebook", rtmp_url="rtmps://live-api-s.facebook.com:443/rtmp/KEY2", enabled=True),
-        ],
-        webcam_on=True,
-        background_mode="blur",         # "none" | "blur" | "virtual" | "green_screen"
-        virtual_bg_path=None,
-        background_audio_path="/tmp/bhajan.mp3",  # looping music mixed into the stream
-        mic_enabled=True,               # capture real microphone audio
-        ticker_text="Breaking news...",
-        pip_position="bottom-right",
-    )
-    start_stream(configs)
-    ...
-    stop_stream()
-
-NOTE: Running this for real requires `ffmpeg` on PATH plus `opencv-python`
-and `mediapipe` installed. Import failures for optional deps (cv2, numpy,
-mediapipe, PIL, sounddevice) are handled gracefully so the module can still
-be imported (e.g. for unit testing the config/plumbing) on machines that
-don't have them installed yet.
+    Section 1 - Combined Background Media Canvas (video+image playlist,
+                single-image infinite loop, auto aspect detection)
+    Section 2 - Universal Audio Hub (song / instrumental / background-quiet)
+    Section 3 - Live Ticker (large input, adjustable font size)
+    Section 4 - Mantra Flash Hub (looping clip + animated flashing text PiP)
+    Section 5 - Story/Document Hub (PDF/DOCX or typed script, TTS or
+                voiceover, auto-generated background when Section 1 is empty)
 
 --------------------------------------------------------------------------
-WHAT CHANGED IN THIS VERSION (found while reviewing the original file)
+ARCHITECTURE NOTE - why this is NOT one static FFmpeg filter_complex
 --------------------------------------------------------------------------
-(1) AUDIO WAS ALWAYS SILENT - every push used `anullsrc` (pure silence),
-    with no way to send real audio at all. Now there are three audio
-    sources, picked automatically from the config:
-        - background_audio_path set -> FFmpeg loops that file itself
-          (`-stream_loop -1 -i <path>`) - e.g. a bhajan/music track for
-          audio-only broadcasts. No Python-side looping needed.
-        - mic_enabled=True (and `sounddevice` is installed) -> real
-          microphone audio is captured and streamed via a named pipe
-          (Unix only - gracefully falls back to silence on Windows or
-          when sounddevice isn't installed).
-        - neither -> falls back to the original silent `anullsrc`.
+The product spec suggested a single `-filter_complex` graph with 4 video
+layers (background / mantra / story / ticker) composited inside FFmpeg.
+That works well for STATIC inputs, but this spec also requires the ticker
+text, the mantra flash animation, and the story caption to all be
+adjustable WHILE LIVE. A static filter_complex graph is fixed the moment
+FFmpeg starts - changing it means restarting the encoder (a visible
+reconnect glitch on every platform).
 
-(2) ONE FFMPEG PROCESS PER DESTINATION WAS WASTEFUL - the original
-    MultiDestinationPublisher spawned a whole separate encoder per
-    platform, multiplying CPU usage and making a single shared audio
-    source impossible (multiple readers on one pipe corrupt each
-    other's stream). This is replaced by TeeFFmpegPublisher: ONE ffmpeg
-    process encodes video+audio once and fans out to every enabled
-    destination using FFmpeg's `tee` muxer. MultiDestinationPublisher is
-    kept as a thin backward-compatible wrapper around it.
+So the video side keeps the architecture this file already used before:
+Python (OpenCV + PIL) composites every frame - background canvas, webcam
+PiP, mantra flash PiP, story caption, ticker - and pushes the finished
+raw frame to FFmpeg over stdin. This is what makes ticker/mantra/story
+text updatable live with zero interruption.
 
-(3) TICKER TEXT WAS NOT DEVANAGARI-SAFE - cv2.putText() cannot shape
-    Hindi/Devanagari conjuncts/matras at all (same limitation noted in
-    engine.py for the main video pipeline). TickerOverlay now pre-renders
-    the ticker text once via PIL (+ RAQM when available) into a scrolling
-    strip, the same technique engine.py uses for the ticker in the
-    generated video, then blends a scrolling window of that strip onto
-    each live frame with OpenCV (fast - no per-frame PIL rendering).
+The AUDIO side is different: audio sources here are FILES (background
+music, story voice-over/TTS), not something that needs live text updates
+inside the render loop. So audio mixing uses a REAL FFmpeg
+`-filter_complex ... amix` graph, per the product spec, via
+TeeFFmpegPublisher._build_audio_pipeline().
 --------------------------------------------------------------------------
 """
 
 from __future__ import annotations
 
 import os
+import io
+import math
+import json
+import asyncio
 import tempfile
 import subprocess
 import threading
@@ -85,6 +50,7 @@ import time
 import shutil
 import logging
 import collections
+import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
@@ -92,13 +58,13 @@ logger = logging.getLogger("live_engine")
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s %(name)s: %(message)s")
 
 # ---------------------------------------------------------------------------
-# Optional heavy dependencies (OpenCV / MediaPipe / NumPy / PIL / sounddevice)
+# Optional heavy dependencies
 # ---------------------------------------------------------------------------
 try:
     import cv2
 except ImportError:  # pragma: no cover
     cv2 = None
-    logger.warning("OpenCV (cv2) not installed — camera capture / compositing will be unavailable.")
+    logger.warning("OpenCV (cv2) not installed — camera/media capture will be unavailable.")
 
 try:
     import numpy as np
@@ -116,29 +82,72 @@ try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:  # pragma: no cover
     Image = ImageDraw = ImageFont = None
-    logger.warning("Pillow not installed — Devanagari-safe ticker rendering will be unavailable "
-                    "(ticker will be skipped rather than shown broken).")
+    logger.warning("Pillow not installed — text overlays (ticker/mantra/story) will be unavailable.")
 
 try:
     import sounddevice as sd
 except ImportError:  # pragma: no cover
     sd = None
-    logger.warning("sounddevice not installed — mic audio capture will be unavailable "
-                    "(mic_enabled will silently fall back to no mic audio).")
+    logger.warning("sounddevice not installed — mic audio capture will be unavailable.")
+
+try:
+    import pypdf as _pypdf
+except ImportError:  # pragma: no cover
+    _pypdf = None
+
+try:
+    import docx as _docx  # python-docx
+except ImportError:  # pragma: no cover
+    _docx = None
+
+try:
+    import edge_tts as _edge_tts
+except ImportError:  # pragma: no cover
+    _edge_tts = None
+    logger.warning("edge_tts not installed — Section 5 AI voice (TTS) will be unavailable.")
 
 
-_DEVANAGARI_FONT_CANDIDATES = [
-    "C:\\Windows\\Fonts\\Nirmala.ttf",
-    "C:\\Windows\\Fonts\\Mangal.ttf",
+# ---------------------------------------------------------------------------
+# Hardcoded Devanagari + emoji fonts (per spec: must not render as boxes)
+# ---------------------------------------------------------------------------
+DEVANAGARI_FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf",
+    "C:\\Windows\\Fonts\\Nirmala.ttf",
+    "C:\\Windows\\Fonts\\Mangal.ttf",
     "/usr/share/fonts/truetype/lohit-devanagari/Lohit-Devanagari.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # last resort, no Devanagari glyphs
 ]
+EMOJI_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    "C:\\Windows\\Fonts\\seguiemj.ttf",
+]
+
+
+def _resolve_font(size: int, want_emoji: bool = False):
+    """Returns a PIL ImageFont, trying Devanagari (or emoji) fonts first."""
+    if ImageFont is None:
+        return None
+    candidates = EMOJI_FONT_CANDIDATES if want_emoji else DEVANAGARI_FONT_CANDIDATES
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            return ImageFont.truetype(path, size, layout_engine=ImageFont.LAYOUT_RAQM)
+        except Exception:
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
 
 # ---------------------------------------------------------------------------
-# Last-start-error tracker - so the UI can show WHY start_stream() failed
-# instead of a generic "something went wrong" message.
+# Last-start-error tracker
 # ---------------------------------------------------------------------------
 _last_error: Optional[str] = None
 
@@ -151,9 +160,6 @@ def _set_last_error(msg: Optional[str]):
 
 
 def get_last_error() -> Optional[str]:
-    """Returns the human-readable reason the most recent start_stream() call
-    failed, or None if the last attempt succeeded (or nothing has been
-    attempted yet)."""
     return _last_error
 
 
@@ -163,44 +169,153 @@ def get_last_error() -> Optional[str]:
 
 @dataclass
 class Destination:
-    """A single RTMP push target."""
-    platform: str            # "YouTube" | "Facebook" | "Instagram" | "Custom RTMP"
-    rtmp_url: str            # full RTMP URL including stream key
+    platform: str
+    rtmp_url: str
     enabled: bool = True
 
 
 @dataclass
+class MediaItem:
+    """Section 1: one entry of the combined video/image playlist."""
+    path: str
+    media_type: str  # "video" | "image"
+    order: int = 0
+
+
+AUDIO_MODE_SONG = "song"
+AUDIO_MODE_INSTRUMENTAL = "instrumental"
+AUDIO_MODE_BACKGROUND = "background"
+
+# Section 2: real FFmpeg audio filters per mode (applied to the background
+# music input specifically before it goes into the amix graph).
+AUDIO_MODE_FILTERS = {
+    AUDIO_MODE_SONG: None,
+    # Standard center-channel-cancellation trick: mostly cancels whatever
+    # is panned dead-center (often the lead vocal) - an approximation,
+    # not true AI stem separation.
+    AUDIO_MODE_INSTRUMENTAL: "pan=stereo|c0=0.5*c0+-0.5*c1|c1=-0.5*c0+0.5*c1",
+    AUDIO_MODE_BACKGROUND: "volume=0.2",
+}
+
+MANTRA_TEXT_STYLES = ["Flash Pop", "Rainbow Cycle", "Neon Glow", "Bounce Scale"]
+
+
+@dataclass
 class StreamConfig:
-    """Full configuration bundle handed in from live_app.py."""
     destinations: List[Destination] = field(default_factory=list)
-    webcam_on: bool = True
+
+    # Webcam (kept from before - optional, composited as its own PiP)
+    webcam_on: bool = False
     background_mode: str = "none"          # none | blur | virtual | green_screen
     virtual_bg_path: Optional[str] = None
-    background_media_path: Optional[str] = None   # looping VIDEO when webcam is off
-    background_audio_path: Optional[str] = None   # looping AUDIO (music/bhajan) mixed in
-    mic_enabled: bool = False                      # capture real microphone audio
+    mic_enabled: bool = False
+
+    # Section 1 - Combined Background Media Canvas
+    media_items: List[MediaItem] = field(default_factory=list)
+    image_hold_seconds: float = 6.0        # how long each image shows before advancing
+
+    # Section 2 - Universal Audio Hub
+    background_audio_path: Optional[str] = None
+    audio_mode: str = AUDIO_MODE_SONG
+
+    # Section 3 - Live Ticker
     ticker_text: str = ""
-    pip_position: str = "bottom-right"     # bottom-right | bottom-left | top-right
+    ticker_font_size: int = 32
+    ticker_bg_color: str = "#141414"
+
+    # Section 4 - Mantra Flash Hub
+    mantra_clip_path: Optional[str] = None     # small looping video/PiP clip
+    mantra_text: str = ""
+    mantra_text_style: str = "Flash Pop"
+
+    # Section 5 - Story / Document Hub
+    story_text: str = ""                        # resolved (typed or extracted)
+    story_voice_path: Optional[str] = None       # TTS output or uploaded voiceover
+
+    pip_position: str = "bottom-right"     # webcam PiP position
     width: int = 1280
     height: int = 720
     fps: int = 30
 
 
 # ---------------------------------------------------------------------------
-# (2) SINGLE-ENCODE, MULTI-DESTINATION PUBLISHER (FFmpeg `tee` muxer)
+# Section 5 helper - PDF/DOCX extraction + TTS generation (standalone
+# functions so live_app.py can call them directly for a "generate voice
+# now" button, without needing a running engine).
+# ---------------------------------------------------------------------------
+
+def extract_text_from_pdf(path: str) -> str:
+    if _pypdf is None:
+        logger.warning("pypdf install nahi hai - PDF text extract nahi ho sakta.")
+        return ""
+    try:
+        reader = _pypdf.PdfReader(path)
+        return "\n".join((p.extract_text() or "") for p in reader.pages).strip()
+    except Exception:
+        logger.exception("PDF text extract fail hui.")
+        return ""
+
+
+def extract_text_from_docx(path: str) -> str:
+    if _docx is None:
+        logger.warning("python-docx install nahi hai - DOCX text extract nahi ho sakta.")
+        return ""
+    try:
+        doc = _docx.Document(path)
+        return "\n".join(p.text for p in doc.paragraphs).strip()
+    except Exception:
+        logger.exception("DOCX text extract fail hui.")
+        return ""
+
+
+def resolve_story_text(typed_text: str, file_path: Optional[str]) -> str:
+    """Direct-typed text always wins; else extract from the uploaded file."""
+    typed_text = (typed_text or "").strip()
+    if typed_text:
+        return typed_text
+    if not file_path or not os.path.exists(file_path):
+        return ""
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == ".pdf":
+        return extract_text_from_pdf(file_path)
+    if ext == ".docx":
+        return extract_text_from_docx(file_path)
+    return ""
+
+
+async def _edge_tts_save(text: str, voice_short: str, out_path: str):
+    communicate = _edge_tts.Communicate(text, voice_short)
+    await communicate.save(out_path)
+
+
+def generate_story_tts(text: str, voice_short: str = "hi-IN-MadhurNeural") -> Optional[str]:
+    """
+    Generates a one-off TTS audio file for the story text (called once
+    when the user clicks "voice बनाएं" in the UI - NOT regenerated per
+    frame). Returns the output path, or None on failure/unavailability.
+    """
+    if _edge_tts is None:
+        _set_last_error("edge_tts install nahi hai - AI आवाज़ (TTS) generate nahi ho sakti. `pip install edge-tts` chalayein.")
+        return None
+    if not text or not text.strip():
+        return None
+    try:
+        out_path = os.path.join(tempfile.gettempdir(), f"story_tts_{uuid.uuid4().hex}.mp3")
+        asyncio.run(_edge_tts_save(text, voice_short, out_path))
+        if os.path.exists(out_path):
+            return out_path
+    except Exception as e:
+        logger.exception("Story TTS generation fail hui.")
+        _set_last_error(f"AI आवाज़ (TTS) generate karne mein error: {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# TeeFFmpegPublisher — single-encode, multi-destination push, with a REAL
+# ffmpeg `amix` audio graph (Section 2 background music + Section 5
+# story voice, per the product spec) plus mic/silence.
 # ---------------------------------------------------------------------------
 class TeeFFmpegPublisher:
-    """
-    Owns ONE FFmpeg subprocess that reads raw BGR video frames from stdin,
-    reads audio from whichever source is configured (looping background
-    file, live mic, or silence), encodes ONCE, and fans the resulting
-    stream out to every enabled destination via the `tee` muxer.
-
-    This replaces spawning one full encoder per destination: cheaper on
-    CPU, and it means there is exactly one audio source to manage instead
-    of needing to duplicate a live mic feed across N separate processes.
-    """
-
     def __init__(self, config: StreamConfig):
         self.config = config
         self.process: Optional[subprocess.Popen] = None
@@ -209,57 +324,85 @@ class TeeFFmpegPublisher:
         self._audio_fifo_path: Optional[str] = None
         self._stderr_tail = collections.deque(maxlen=50)
 
-    # -- audio source selection ------------------------------------------------
-    def _build_audio_input_args(self):
+    # -- Section 2 + Section 5 audio pipeline (real ffmpeg amix) -----------
+    def _build_audio_pipeline(self):
         """
-        Returns a list of FFmpeg args for the audio INPUT, and sets
-        self._audio_fifo_path if a mic FIFO needs to be fed by a
-        background thread after the process starts.
+        Builds however many audio file/device inputs are active
+        (background music, mic-or-silence, story voice/TTS) and an
+        `amix` filter_complex combining them into a single [aout]
+        stream. Returns (input_args, filter_complex_str_or_None,
+        output_audio_label).
         """
+        input_args: List[str] = []
+        stream_labels: List[tuple] = []
+        idx = 1  # ffmpeg input index 0 is the raw video on stdin
+
         if self.config.background_audio_path and os.path.exists(self.config.background_audio_path):
-            logger.info("Audio source: looping background file (%s).", self.config.background_audio_path)
-            return ["-stream_loop", "-1", "-i", self.config.background_audio_path]
+            input_args += ["-stream_loop", "-1", "-i", self.config.background_audio_path]
+            stream_labels.append((f"{idx}:a", AUDIO_MODE_FILTERS.get(self.config.audio_mode)))
+            idx += 1
 
-        if self.config.mic_enabled:
-            if sd is None:
-                logger.warning("mic_enabled=True lekin sounddevice installed nahi hai - silence use hogi.")
-            elif not hasattr(os, "mkfifo"):
-                logger.warning("mic_enabled=True lekin is OS par named pipes (mkfifo) support nahi hai "
-                                "(Windows?) - silence use hogi.")
+        if self.config.mic_enabled and sd is not None and hasattr(os, "mkfifo"):
+            fifo_path = os.path.join(tempfile.gettempdir(), f"live_mic_{os.getpid()}.pcm")
+            try:
+                if os.path.exists(fifo_path):
+                    os.remove(fifo_path)
+                os.mkfifo(fifo_path)
+                self._audio_fifo_path = fifo_path
+                input_args += ["-f", "s16le", "-ar", "44100", "-ac", "2", "-i", fifo_path]
+                stream_labels.append((f"{idx}:a", None))
+                idx += 1
+            except OSError as e:
+                logger.warning("Mic FIFO banane mein fail (%s) - mic skip kiya ja raha hai.", e)
+
+        if self.config.story_voice_path and os.path.exists(self.config.story_voice_path):
+            input_args += ["-stream_loop", "-1", "-i", self.config.story_voice_path]
+            stream_labels.append((f"{idx}:a", None))
+            idx += 1
+
+        if not stream_labels:
+            input_args += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            stream_labels.append((f"{idx}:a", None))
+            idx += 1
+
+        if len(stream_labels) == 1 and not stream_labels[0][1]:
+            # Single plain source, nothing to filter/mix - map it directly.
+            return input_args, None, stream_labels[0][0]
+
+        filter_parts = []
+        mix_inputs = []
+        for i, (label, flt) in enumerate(stream_labels):
+            out_label = f"aud{i}"
+            if flt:
+                filter_parts.append(f"[{label}]{flt}[{out_label}]")
             else:
-                fifo_path = os.path.join(tempfile.gettempdir(), f"live_mic_{os.getpid()}.pcm")
-                try:
-                    if os.path.exists(fifo_path):
-                        os.remove(fifo_path)
-                    os.mkfifo(fifo_path)
-                    self._audio_fifo_path = fifo_path
-                    logger.info("Audio source: live microphone via FIFO %s.", fifo_path)
-                    return ["-f", "s16le", "-ar", "44100", "-ac", "2", "-i", fifo_path]
-                except OSError as e:
-                    logger.warning("Mic FIFO banane mein fail (%s) - silence use hogi.", e)
+                filter_parts.append(f"[{label}]anull[{out_label}]")
+            mix_inputs.append(f"[{out_label}]")
 
-        logger.info("Audio source: silence (koi mic/background audio configure nahi kiya gaya).")
-        return ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        if len(mix_inputs) == 1:
+            filter_complex = filter_parts[0]
+            final_label = "aud0"
+        else:
+            filter_parts.append(
+                f"{''.join(mix_inputs)}amix=inputs={len(mix_inputs)}:duration=longest:dropout_transition=2[aout]"
+            )
+            filter_complex = ";".join(filter_parts)
+            final_label = "aout"
+
+        return input_args, filter_complex, final_label
 
     def _start_mic_feeder(self):
-        """Background thread: captures mic audio via sounddevice and writes
-        raw PCM into the FIFO that FFmpeg is reading as its audio input."""
         if not self._audio_fifo_path or sd is None:
             return
 
         def _worker():
             try:
-                # Opening the FIFO for writing blocks until FFmpeg opens it
-                # for reading (that's how named pipes work) - fine, it's a
-                # background thread.
                 fifo_fd = open(self._audio_fifo_path, "wb")
             except Exception:
                 logger.exception("Mic FIFO open (write mode) fail hui.")
                 return
 
             def _callback(indata, frames, time_info, status):
-                if status:
-                    logger.debug("sounddevice status: %s", status)
                 try:
                     fifo_fd.write(indata.tobytes())
                 except Exception:
@@ -280,84 +423,6 @@ class TeeFFmpegPublisher:
         self._mic_thread = threading.Thread(target=_worker, name="LiveMicFeeder", daemon=True)
         self._mic_thread.start()
 
-    # -- lifecycle ---------------------------------------------------------
-    def start(self) -> bool:
-        if shutil.which("ffmpeg") is None:
-            _set_last_error(
-                "ffmpeg आपके system के PATH में नहीं मिला। इसे install करें: "
-                "Windows पर https://ffmpeg.org/download.html से लाकर PATH में जोड़ें, "
-                "Mac पर `brew install ffmpeg`, Linux पर `sudo apt install ffmpeg`. "
-                "Install करने के बाद टर्मिनल में `ffmpeg -version` चलाकर पक्का करें कि दिखता है।"
-            )
-            return False
-
-        active = [d for d in self.config.destinations if d.enabled and (d.rtmp_url or "").strip()]
-        if not active:
-            _set_last_error(
-                "कोई भी enabled destination के पास valid RTMP URL नहीं है। ऊपर 'Stream Setup' में कम से कम "
-                "एक destination को ✅ (On) करें और उसमें असली RTMP URL/Stream Key भरें।"
-            )
-            return False
-
-        audio_args = self._build_audio_input_args()
-        tee_targets = "|".join(f"[f=flv]{d.rtmp_url}" for d in active)
-
-        command = [
-            "ffmpeg", "-y",
-            "-f", "rawvideo",
-            "-vcodec", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{self.config.width}x{self.config.height}",
-            "-r", str(self.config.fps),
-            "-i", "-",                 # video frames from stdin
-            *audio_args,                # audio: background file loop, mic FIFO, or silence
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac",
-            "-b:a", "128k",
-            "-map", "0:v",
-            "-map", "1:a",
-            "-shortest",
-            "-f", "tee",
-            tee_targets,
-        ]
-
-        logger.info("Single-encode FFmpeg push shuru: %d destination(s) -> %s",
-                    len(active), [d.platform for d in active])
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-        # Continuously drain stderr on a background thread so ffmpeg never
-        # blocks on a full pipe buffer, while keeping the last ~50 lines
-        # around for diagnostics if it dies unexpectedly.
-        self._stderr_tail = collections.deque(maxlen=50)
-        threading.Thread(target=self._drain_stderr, name="FFmpegStderrDrain", daemon=True).start()
-
-        if self._audio_fifo_path:
-            self._mic_stop_event.clear()
-            self._start_mic_feeder()
-
-        # Give ffmpeg a brief moment to fail fast (bad RTMP URL, destination
-        # server rejected the connection, unsupported codec, etc.) instead
-        # of silently reporting "started" when it already died.
-        time.sleep(0.7)
-        if self.process.poll() is not None:
-            tail = "\n".join(self._stderr_tail) or "(ffmpeg se koi stderr output nahi mila)"
-            _set_last_error(
-                "FFmpeg turant band ho gaya - shaayad RTMP URL galat hai, stream key expire ho chuki hai, ya "
-                "destination server ne connection reject kar diya. FFmpeg ka aakhri output:\n" + tail
-            )
-            self.process = None
-            return False
-
-        _set_last_error(None)
-        return True
-
     def _drain_stderr(self):
         if self.process is None or self.process.stderr is None:
             return
@@ -367,13 +432,75 @@ class TeeFFmpegPublisher:
         except Exception:
             pass
 
+    # -- lifecycle -----------------------------------------------------------
+    def start(self) -> bool:
+        if shutil.which("ffmpeg") is None:
+            _set_last_error(
+                "ffmpeg PATH mein nahi mila. Install karein: Windows -> ffmpeg.org se laakar PATH mein "
+                "jodein; Mac -> `brew install ffmpeg`; Linux -> `sudo apt install ffmpeg`."
+            )
+            return False
+
+        active = [d for d in self.config.destinations if d.enabled and (d.rtmp_url or "").strip()]
+        if not active:
+            _set_last_error("Koi bhi enabled destination ke paas valid RTMP URL nahi hai.")
+            return False
+
+        audio_inputs, filter_complex, audio_label = self._build_audio_pipeline()
+        tee_targets = "|".join(f"[f=flv]{d.rtmp_url}" for d in active)
+
+        command = [
+            "ffmpeg", "-y",
+            "-f", "rawvideo", "-vcodec", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{self.config.width}x{self.config.height}",
+            "-r", str(self.config.fps),
+            "-i", "-",
+            *audio_inputs,
+        ]
+        if filter_complex:
+            command += ["-filter_complex", filter_complex]
+        command += [
+            "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k",
+            "-map", "0:v",
+            "-map", f"[{audio_label}]" if filter_complex else audio_label,
+            "-shortest",
+            "-f", "tee",
+            tee_targets,
+        ]
+
+        logger.info("Single-encode FFmpeg push shuru: %d destination(s), audio_label=%s",
+                    len(active), audio_label)
+        self.process = subprocess.Popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        self._stderr_tail = collections.deque(maxlen=50)
+        threading.Thread(target=self._drain_stderr, name="FFmpegStderrDrain", daemon=True).start()
+
+        if self._audio_fifo_path:
+            self._mic_stop_event.clear()
+            self._start_mic_feeder()
+
+        time.sleep(0.7)
+        if self.process.poll() is not None:
+            tail = "\n".join(self._stderr_tail) or "(ffmpeg se koi stderr output nahi mila)"
+            _set_last_error(
+                "FFmpeg turant band ho gaya - RTMP URL galat ho sakta hai, stream key expire ho chuki "
+                "ho sakti hai, ya destination server ne connection reject kar diya. Aakhri output:\n" + tail
+            )
+            self.process = None
+            return False
+
+        _set_last_error(None)
+        return True
+
     def write_frame(self, frame_bytes: bytes):
         if self.process is None or self.process.stdin is None:
             return
         try:
             self.process.stdin.write(frame_bytes)
         except (BrokenPipeError, OSError):
-            logger.warning("Publisher pipe toot gayi - stream stop kiya ja raha hai.")
+            logger.warning("Publisher pipe toot gayi - stop kiya ja raha hai.")
             self.stop()
 
     def stop(self):
@@ -381,7 +508,6 @@ class TeeFFmpegPublisher:
         if self._mic_thread is not None:
             self._mic_thread.join(timeout=3)
             self._mic_thread = None
-
         if self.process is not None:
             try:
                 if self.process.stdin:
@@ -392,58 +518,39 @@ class TeeFFmpegPublisher:
                 self.process.kill()
             finally:
                 self.process = None
-
         if self._audio_fifo_path and os.path.exists(self._audio_fifo_path):
             try:
                 os.remove(self._audio_fifo_path)
             except OSError:
                 pass
         self._audio_fifo_path = None
-        logger.info("TeeFFmpegPublisher stopped.")
 
     @property
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
     def update_destinations(self, destinations: List[Destination]):
-        """
-        The `tee` target list is fixed at FFmpeg process start, so
-        changing destinations means restarting the encoder. This causes
-        a brief (sub-second) reconnect glitch on every enabled platform,
-        which is an acceptable trade-off for a much cheaper single-encode
-        pipeline the rest of the time.
-        """
         was_running = self.is_running
         if was_running:
-            logger.info("Destinations badal rahe hain - encoder restart ho raha hai.")
             self.stop()
         self.config.destinations = destinations
         if was_running:
             self.start()
 
 
-# Backward-compatible alias: earlier versions of this module exposed
-# MultiDestinationPublisher (one-encoder-per-destination). Keep the name
-# importable so any external code doesn't break, but back it with the
-# cheaper single-encode implementation.
-MultiDestinationPublisher = TeeFFmpegPublisher
+MultiDestinationPublisher = TeeFFmpegPublisher  # backward-compat alias
 
 
 # ---------------------------------------------------------------------------
-# AI background processing (MediaPipe Selfie Segmentation)
+# AI background processing (webcam only)
 # ---------------------------------------------------------------------------
-
 class BackgroundProcessor:
-    """Applies blur / virtual-background / green-screen keying to a webcam frame."""
-
     def __init__(self, mode: str = "none", virtual_bg_path: Optional[str] = None):
         self.mode = mode
         self.virtual_bg_image = None
         self._segmenter = None
-
         if mp is not None and mode in ("blur", "virtual", "green_screen"):
             self._segmenter = mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
-
         if mode == "virtual" and virtual_bg_path and cv2 is not None:
             self.virtual_bg_image = cv2.imread(virtual_bg_path)
 
@@ -455,19 +562,15 @@ class BackgroundProcessor:
             self.virtual_bg_image = cv2.imread(virtual_bg_path)
 
     def process(self, frame):
-        """Return a processed copy of `frame` according to self.mode."""
         if self.mode == "none" or self._segmenter is None or cv2 is None or np is None:
             return frame
-
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self._segmenter.process(rgb)
         mask = result.segmentation_mask
         condition = np.stack((mask,) * 3, axis=-1) > 0.5
-
         if self.mode == "blur":
             blurred = cv2.GaussianBlur(frame, (55, 55), 0)
             return np.where(condition, frame, blurred)
-
         if self.mode == "virtual":
             bg = self.virtual_bg_image
             if bg is None:
@@ -475,38 +578,365 @@ class BackgroundProcessor:
             elif bg.shape[:2] != frame.shape[:2]:
                 bg = cv2.resize(bg, (frame.shape[1], frame.shape[0]))
             return np.where(condition, frame, bg)
-
         if self.mode == "green_screen":
             green = np.zeros_like(frame)
-            green[:] = (0, 255, 0)  # pure green (BGR)
+            green[:] = (0, 255, 0)
             return np.where(condition, frame, green)
-
         return frame
 
 
 # ---------------------------------------------------------------------------
-# (3) TICKER OVERLAY — now Devanagari-safe (PIL/RAQM strip, scrolled via numpy)
+# SECTION 1 — Combined Background Media Canvas
 # ---------------------------------------------------------------------------
+class MediaCanvas:
+    """
+    Combined video+image playlist forming the base layer of the stream.
 
+    Rule from the spec: if there is only ONE item and it is a single
+    image, it becomes an infinite static loop canvas (every other section
+    - mantra flash, story, ticker - keeps running on top of it forever).
+    A single video behaves the same way (loops back to frame 0 forever).
+    Multiple items cycle through in `order`, each image held for
+    `image_hold_seconds` before advancing; videos play to their natural
+    end before advancing.
+    """
+
+    def __init__(self, media_items: List[MediaItem], width: int, height: int,
+                image_hold_seconds: float = 6.0):
+        self.items = sorted(media_items, key=lambda m: m.order)
+        self.width = width
+        self.height = height
+        self.image_hold_seconds = image_hold_seconds
+        self._current_idx = 0
+        self._video_cap = None
+        self._static_image = None
+        self._item_start_time = None
+        if self.items:
+            self._load_current()
+
+    @staticmethod
+    def detect_orientation(first_item_path: str) -> str:
+        """Returns 'shorts' (9:16) or 'long' (16:9) from the first file's
+        own dimensions - used to auto-set the canvas mode."""
+        if cv2 is None or not first_item_path or not os.path.exists(first_item_path):
+            return "shorts"
+        try:
+            ext = os.path.splitext(first_item_path)[1].lower()
+            if ext in (".mp4", ".mov", ".avi", ".mkv"):
+                cap = cv2.VideoCapture(first_item_path)
+                w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                cap.release()
+            else:
+                img = cv2.imread(first_item_path)
+                if img is None:
+                    return "shorts"
+                h, w = img.shape[:2]
+            return "long" if w > h else "shorts"
+        except Exception:
+            return "shorts"
+
+    def _load_current(self):
+        item = self.items[self._current_idx]
+        if item.media_type == "image":
+            self._static_image = cv2.imread(item.path) if cv2 is not None else None
+            self._video_cap = None
+        else:
+            self._video_cap = cv2.VideoCapture(item.path) if cv2 is not None else None
+            self._static_image = None
+        self._item_start_time = time.time()
+
+    def _advance(self):
+        if len(self.items) <= 1:
+            # Single item -> infinite loop of the same item.
+            if self._video_cap is not None:
+                self._video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            self._item_start_time = time.time()
+            return
+        self._current_idx = (self._current_idx + 1) % len(self.items)
+        self._load_current()
+
+    def next_frame(self):
+        if np is None:
+            return None
+        blank = np.zeros((self.height, self.width, 3), dtype="uint8")
+        if not self.items or cv2 is None:
+            return blank
+
+        item = self.items[self._current_idx]
+        if item.media_type == "image":
+            if self._static_image is None:
+                self._advance()
+                return blank
+            elapsed = time.time() - (self._item_start_time or time.time())
+            if elapsed >= self.image_hold_seconds and len(self.items) > 1:
+                self._advance()
+            frame = self._static_image
+        else:
+            ok, frame = (self._video_cap.read() if self._video_cap is not None else (False, None))
+            if not ok:
+                self._advance()
+                ok, frame = (self._video_cap.read() if self._video_cap is not None else (False, None))
+            if not ok or frame is None:
+                return blank
+
+        return cv2.resize(frame, (self.width, self.height))
+
+    def release(self):
+        if self._video_cap is not None:
+            self._video_cap.release()
+
+
+def generate_default_background(width: int, height: int, theme_hex: str = "#1B1B2F"):
+    """
+    Section 5's "auto-screen generator": a clean solid/gradient themed
+    background used when the user hasn't uploaded anything to Section 1,
+    so the story text still has somewhere nice to sit.
+    """
+    if np is None:
+        return None
+    base = tuple(int(theme_hex.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))  # RGB
+    top = np.array(base, dtype=np.float32)
+    bottom = np.array([max(0, c - 40) for c in base], dtype=np.float32)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    for y in range(height):
+        t = y / max(1, height - 1)
+        row_color = (top * (1 - t) + bottom * t).astype(np.uint8)
+        canvas[y, :, :] = row_color[::-1]  # RGB -> BGR
+    return canvas
+
+
+# ---------------------------------------------------------------------------
+# SECTION 4 — Mantra Flash Hub (looping clip + animated flashing text PiP)
+# ---------------------------------------------------------------------------
+class MantraFlashOverlay:
+    """
+    Box A: a small looping clip (video) shown as a PiP box.
+    Box B: mantra text, rendered once via PIL (Devanagari+emoji fonts)
+    then animated live every frame according to `style` - no per-frame
+    PIL re-rendering, just cheap numpy/OpenCV transforms of the
+    pre-rendered text image, so this is fast enough for real-time.
+    """
+
+    def __init__(self, clip_path: Optional[str] = None, text: str = "",
+                style: str = "Flash Pop", canvas_width: int = 1280, canvas_height: int = 720,
+                pip_size_pct: float = 0.30):
+        self.clip_path = clip_path
+        self.text = text
+        self.style = style if style in MANTRA_TEXT_STYLES else MANTRA_TEXT_STYLES[0]
+        self.pip_w = int(canvas_width * pip_size_pct)
+        self.pip_h = int(self.pip_w * 0.62)
+        self._cap = cv2.VideoCapture(clip_path) if (clip_path and cv2 is not None and os.path.exists(clip_path)) else None
+        self._text_rgb = None   # np array (h, w, 3) - white silhouette
+        self._text_alpha = None  # np array (h, w) 0-255
+        self._start_time = time.time()
+        self._rebuild_text()
+
+    def set_text(self, text: str):
+        if text != self.text:
+            self.text = text
+            self._rebuild_text()
+
+    def set_style(self, style: str):
+        if style in MANTRA_TEXT_STYLES:
+            self.style = style
+
+    def _rebuild_text(self):
+        self._text_rgb = None
+        self._text_alpha = None
+        if not self.text or Image is None or np is None:
+            return
+        font_size = max(18, int(self.pip_h * 0.28))
+        font = _resolve_font(font_size, want_emoji=False)
+        if font is None:
+            return
+        canvas_w, canvas_h = self.pip_w, int(self.pip_h * 0.4)
+        img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        bbox = draw.textbbox((0, 0), self.text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = max(0, (canvas_w - tw) // 2)
+        y = max(0, (canvas_h - th) // 2)
+        draw.text((x, y), self.text, font=font, fill=(255, 255, 255, 255),
+                  stroke_width=max(1, font_size // 16), stroke_fill=(0, 0, 0, 255))
+        arr = np.array(img)
+        self._text_rgb = arr[:, :, 2::-1].copy()  # RGB->BGR (drop alpha for the color plane)
+        self._text_alpha = arr[:, :, 3].copy()
+
+    def _next_clip_frame(self):
+        if self._cap is None:
+            return None
+        ok, frame = self._cap.read()
+        if not ok:
+            self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame = self._cap.read()
+        if not ok or frame is None:
+            return None
+        return cv2.resize(frame, (self.pip_w, self.pip_h))
+
+    def _animated_text_layer(self, t: float):
+        """Returns (rgb, alpha) animated per `self.style`, or (None, None)."""
+        if self._text_rgb is None:
+            return None, None
+        rgb = self._text_rgb
+        alpha = self._text_alpha.astype(np.float32)
+
+        if self.style == "Flash Pop":
+            flash = abs(math.sin(t * 2 * math.pi * 1.2))  # ~1.2 Hz flash
+            alpha = alpha * (0.35 + 0.65 * flash)
+
+        elif self.style == "Rainbow Cycle":
+            hue = int((t * 60) % 180)
+            hsv_color = np.uint8([[[hue, 255, 255]]])
+            bgr_color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2BGR)[0, 0]
+            mask = (alpha > 10)
+            rgb = rgb.copy()
+            rgb[mask] = bgr_color
+
+        elif self.style == "Neon Glow":
+            glow_strength = 0.5 + 0.5 * abs(math.sin(t * 2 * math.pi * 0.8))
+            blurred = cv2.GaussianBlur(rgb, (15, 15), 0)
+            rgb = cv2.addWeighted(rgb, 1.0, blurred, glow_strength, 0)
+
+        elif self.style == "Bounce Scale":
+            scale = 1.0 + 0.15 * abs(math.sin(t * 2 * math.pi * 1.0))
+            h, w = rgb.shape[:2]
+            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+            rgb = cv2.resize(rgb, (new_w, new_h))
+            alpha = cv2.resize(alpha, (new_w, new_h))
+            canvas_rgb = np.zeros((h, w, 3), dtype=rgb.dtype)
+            canvas_alpha = np.zeros((h, w), dtype=alpha.dtype)
+            y0 = max(0, (new_h - h) // 2)
+            x0 = max(0, (new_w - w) // 2)
+            y1 = min(new_h, y0 + h)
+            x1 = min(new_w, x0 + w)
+            oy = max(0, (h - new_h) // 2)
+            ox = max(0, (w - new_w) // 2)
+            ch, cw = y1 - y0, x1 - x0
+            canvas_rgb[oy:oy + ch, ox:ox + cw] = rgb[y0:y1, x0:x1]
+            canvas_alpha[oy:oy + ch, ox:ox + cw] = alpha[y0:y1, x0:x1]
+            rgb, alpha = canvas_rgb, canvas_alpha
+
+        return rgb, alpha
+
+    def apply(self, frame):
+        if not self.text and self._cap is None:
+            return frame
+        if cv2 is None or np is None:
+            return frame
+
+        h, w = frame.shape[:2]
+        x = w - self.pip_w - 20
+        y = 20
+        if x < 0 or y + self.pip_h > h:
+            return frame  # canvas too small for this PiP - skip rather than crash
+
+        frame = frame.copy()
+        pip_bg = self._next_clip_frame()
+        if pip_bg is not None:
+            frame[y:y + self.pip_h, x:x + self.pip_w] = pip_bg
+        cv2.rectangle(frame, (x - 2, y - 2), (x + self.pip_w + 2, y + self.pip_h + 2), (255, 255, 255), 2)
+
+        t = time.time() - self._start_time
+        text_rgb, text_alpha = self._animated_text_layer(t)
+        if text_rgb is not None:
+            th, tw = text_rgb.shape[:2]
+            ty = y + self.pip_h - th - 6
+            tx = x + max(0, (self.pip_w - tw) // 2)
+            if ty >= 0 and tx >= 0 and ty + th <= h and tx + tw <= w:
+                region = frame[ty:ty + th, tx:tx + tw].astype(np.float32)
+                a = (text_alpha[:, :, None] / 255.0)
+                blended = region * (1 - a) + text_rgb.astype(np.float32) * a
+                frame[ty:ty + th, tx:tx + tw] = blended.astype(np.uint8)
+
+        return frame
+
+    def release(self):
+        if self._cap is not None:
+            self._cap.release()
+
+
+# ---------------------------------------------------------------------------
+# SECTION 5 — Story / Document caption overlay
+# ---------------------------------------------------------------------------
+class StoryOverlay:
+    """Renders the resolved story/script text as a readable on-screen
+    caption block (word-wrapped, Devanagari-safe)."""
+
+    def __init__(self, text: str = "", canvas_width: int = 1280, canvas_height: int = 720):
+        self.text = text
+        self.canvas_width = canvas_width
+        self.canvas_height = canvas_height
+        self._strip = None
+        self._strip_pos = (0, 0)
+        self._rebuild()
+
+    def set_text(self, text: str):
+        if text != self.text:
+            self.text = text
+            self._rebuild()
+
+    def _rebuild(self):
+        self._strip = None
+        if not self.text or Image is None or np is None:
+            return
+        font_size = max(16, int(self.canvas_height * 0.035))
+        font = _resolve_font(font_size)
+        if font is None:
+            return
+
+        import textwrap
+        max_chars = max(10, int(self.canvas_width / max(1, int(font_size * 0.55))))
+        lines = textwrap.wrap(self.text, width=max_chars)[:4]
+        wrapped = "\n".join(lines)
+        if not wrapped:
+            return
+
+        dummy = Image.new("RGB", (10, 10))
+        d = ImageDraw.Draw(dummy)
+        bbox = d.multiline_textbbox((0, 0), wrapped, font=font, align="center", spacing=6)
+        band_w = min(self.canvas_width - 40, bbox[2] - bbox[0] + 40)
+        band_h = bbox[3] - bbox[1] + 30
+
+        img = Image.new("RGBA", (band_w, band_h), (0, 0, 0, 140))
+        draw = ImageDraw.Draw(img)
+        draw.multiline_text((20, 15), wrapped, font=font, fill=(255, 255, 255, 255), align="center", spacing=6)
+        arr = np.array(img)
+        self._strip = arr[:, :, [2, 1, 0, 3]]  # RGBA -> BGRA
+        x = max(0, (self.canvas_width - band_w) // 2)
+        y = max(0, self.canvas_height - band_h - 90)  # sits above the ticker band
+        self._strip_pos = (x, y)
+
+    def apply(self, frame):
+        if self._strip is None or cv2 is None or np is None:
+            return frame
+        h, w = frame.shape[:2]
+        x, y = self._strip_pos
+        sh, sw = self._strip.shape[:2]
+        if y + sh > h or x + sw > w or x < 0 or y < 0:
+            return frame
+        frame = frame.copy()
+        region = frame[y:y + sh, x:x + sw].astype(np.float32)
+        alpha = (self._strip[:, :, 3:4].astype(np.float32) / 255.0)
+        rgb = self._strip[:, :, :3].astype(np.float32)
+        blended = region * (1 - alpha) + rgb * alpha
+        frame[y:y + sh, x:x + sw] = blended.astype(np.uint8)
+        return frame
+
+
+# ---------------------------------------------------------------------------
+# SECTION 3 — Live Ticker (Devanagari+emoji safe, adjustable font size)
+# ---------------------------------------------------------------------------
 class TickerOverlay:
-    """
-    Renders a horizontally scrolling ticker banner at the bottom of a frame.
-
-    Hindi/Devanagari text is pre-rendered ONCE (whenever the text changes)
-    into a wide strip image using PIL (+RAQM shaping when available) - the
-    same approach engine.py uses for the generated video's ticker. Each
-    live frame then just blends a scrolling window of that pre-rendered
-    strip via numpy/OpenCV, which is fast enough for real-time use (no
-    per-frame text shaping).
-    """
-
-    def __init__(self, text: str = "", speed_px_per_frame: int = 4, bar_height: int = 50,
-                canvas_width: int = 1280):
+    def __init__(self, text: str = "", speed_px_per_frame: int = 4, font_size: int = 32,
+                canvas_width: int = 1280, bg_color_hex: str = "#141414"):
         self.text = text
         self.speed = speed_px_per_frame
-        self.bar_height = bar_height
+        self.font_size = font_size
+        self.bar_height = max(36, int(font_size * 1.8))
         self.canvas_width = canvas_width
-        self._strip = None       # np.ndarray (bar_height, strip_w, 3) BGR, or None
+        self.bg_color = tuple(int(bg_color_hex.lstrip("#")[i:i + 2], 16) for i in (4, 2, 0)) if bg_color_hex else (20, 20, 20)
+        self._strip = None
         self._strip_w = 0
         self._scroll_x = 0
         self._rebuild_strip()
@@ -517,60 +947,41 @@ class TickerOverlay:
             self._scroll_x = 0
             self._rebuild_strip()
 
-    @staticmethod
-    def _resolve_font(size):
-        if ImageFont is None:
-            return None
-        for path in _DEVANAGARI_FONT_CANDIDATES:
-            if not os.path.exists(path):
-                continue
-            try:
-                return ImageFont.truetype(path, size, layout_engine=ImageFont.LAYOUT_RAQM)
-            except Exception:
-                try:
-                    return ImageFont.truetype(path, size)
-                except Exception:
-                    continue
-        try:
-            return ImageFont.load_default()
-        except Exception:
-            return None
+    def set_font_size(self, size: int):
+        if size != self.font_size:
+            self.font_size = size
+            self.bar_height = max(36, int(size * 1.8))
+            self._rebuild_strip()
 
     def _rebuild_strip(self):
         self._strip = None
         self._strip_w = 0
         if not self.text or Image is None or np is None:
             return
-
-        font_size = max(14, int(self.bar_height * 0.55))
-        font = self._resolve_font(font_size)
+        font = _resolve_font(self.font_size)
         if font is None:
-            logger.warning("Koi font resolve nahi hua - ticker skip kiya ja raha hai.")
             return
 
         spacer = "      •      "
         repeated = (self.text + spacer) * 4
-
         dummy = Image.new("RGB", (10, 10))
         draw = ImageDraw.Draw(dummy)
         bbox = draw.textbbox((0, 0), repeated, font=font)
         text_w = max(1, bbox[2] - bbox[0])
         strip_w = max(self.canvas_width * 2, text_w + 40)
 
-        img = Image.new("RGB", (strip_w, self.bar_height), (20, 20, 20))
+        img = Image.new("RGB", (strip_w, self.bar_height), self.bg_color)
         draw = ImageDraw.Draw(img)
         text_h = bbox[3] - bbox[1]
         y = max(0, (self.bar_height - text_h) // 2)
         draw.text((20, y), repeated, font=font, fill=(255, 255, 255))
 
-        # PIL is RGB, OpenCV frames are BGR.
         self._strip = np.array(img)[:, :, ::-1].copy()
         self._strip_w = strip_w
 
     def apply(self, frame):
         if self._strip is None or cv2 is None or np is None:
             return frame
-
         h, w = frame.shape[:2]
         bar_top = max(0, h - self.bar_height)
         band_h = min(self.bar_height, h - bar_top)
@@ -587,18 +998,15 @@ class TickerOverlay:
 
         frame = frame.copy()
         region = frame[bar_top:bar_top + band_h, 0:w]
-        frame[bar_top:bar_top + band_h, 0:w] = cv2.addWeighted(window, 0.85, region, 0.15, 0)
+        frame[bar_top:bar_top + band_h, 0:w] = cv2.addWeighted(window, 0.9, region, 0.1, 0)
         return frame
 
 
 # ---------------------------------------------------------------------------
-# PIP compositor
+# Webcam PiP compositor (kept from before - optional, separate corner
+# from the Section 4 mantra PiP which defaults to top-right)
 # ---------------------------------------------------------------------------
-
 class Compositor:
-    """Combines a full-frame background (video loop or virtual backdrop) with a
-    smaller webcam feed placed in a corner (Picture-in-Picture)."""
-
     _POSITION_MAP = {
         "bottom-right": lambda w, h, pw, ph: (w - pw - 20, h - ph - 20),
         "bottom-left": lambda w, h, pw, ph: (20, h - ph - 20),
@@ -613,77 +1021,66 @@ class Compositor:
     def set_position(self, position: str):
         self.pip_position = position
 
-    def composite(self, background_frame, webcam_frame=None, pip_scale: float = 0.3):
-        """
-        background_frame: full-canvas-sized frame (looping video, static image,
-                           or black canvas in audio-only mode).
-        webcam_frame: optional smaller feed to overlay as PIP. If None, the
-                      background frame is returned as-is (audio-only mode).
-        """
+    def composite(self, background_frame, webcam_frame=None, pip_scale: float = 0.28):
         if cv2 is None or np is None:
             return background_frame
-
         canvas = cv2.resize(background_frame, (self.canvas_width, self.canvas_height))
-
         if webcam_frame is None:
             return canvas
-
         pip_w = int(self.canvas_width * pip_scale)
         pip_h = int(self.canvas_height * pip_scale)
         pip_frame = cv2.resize(webcam_frame, (pip_w, pip_h))
-
         position_fn = self._POSITION_MAP.get(self.pip_position, self._POSITION_MAP["bottom-right"])
         x, y = position_fn(self.canvas_width, self.canvas_height, pip_w, pip_h)
-
-        # Simple border around the PIP window for visual separation.
         cv2.rectangle(canvas, (x - 2, y - 2), (x + pip_w + 2, y + pip_h + 2), (255, 255, 255), 2)
         canvas[y:y + pip_h, x:x + pip_w] = pip_frame
         return canvas
 
 
 # ---------------------------------------------------------------------------
-# Main capture / processing loop
+# Main capture / composite / publish loop
 # ---------------------------------------------------------------------------
-
 class LiveStreamEngine:
-    """
-    Owns the capture -> process -> composite -> publish loop and runs it on
-    a background thread so it never blocks the calling UI (live_app.py).
-    """
-
     def __init__(self, config: StreamConfig):
         self.config = config
         self._running = False
         self._thread: Optional[threading.Thread] = None
-
         self._camera = None
-        self._bg_media = None  # looping background video capture, if provided
+
+        # Section 1 base canvas
+        if not config.media_items:
+            self._canvas = None
+            self._default_bg = generate_default_background(config.width, config.height)
+        else:
+            self._canvas = MediaCanvas(config.media_items, config.width, config.height, config.image_hold_seconds)
+            self._default_bg = None
 
         self._bg_processor = BackgroundProcessor(config.background_mode, config.virtual_bg_path)
-        self._ticker = TickerOverlay(config.ticker_text, canvas_width=config.width)
         self._compositor = Compositor(config.width, config.height, config.pip_position)
+        self._mantra = MantraFlashOverlay(
+            config.mantra_clip_path, config.mantra_text, config.mantra_text_style,
+            config.width, config.height,
+        )
+        self._story = StoryOverlay(config.story_text, config.width, config.height)
+        self._ticker = TickerOverlay(
+            config.ticker_text, font_size=config.ticker_font_size,
+            canvas_width=config.width, bg_color_hex=config.ticker_bg_color,
+        )
         self._publisher = TeeFFmpegPublisher(config)
 
         self._frames_pushed = 0
         self._start_time: Optional[float] = None
         self.on_status_change: Optional[Callable[[str], None]] = None
 
-    # -- lifecycle ----------------------------------------------------------
-
     def start(self) -> bool:
         if self._running:
-            logger.info("Engine already running.")
             return True
         if cv2 is None or np is None:
-            _set_last_error(
-                "OpenCV/NumPy install nahi hai is environment mein - webcam capture/compositing kaam nahi "
-                "karega. `pip install opencv-python numpy` chalayein."
-            )
+            _set_last_error("OpenCV/NumPy install nahi hai - capture loop start nahi ho sakta.")
             self._notify("error: opencv/numpy missing")
             return False
 
         if not self._publisher.start():
-            # _publisher.start() already set a specific _last_error message.
             self._notify("error: publisher failed to start")
             return False
 
@@ -692,11 +1089,7 @@ class LiveStreamEngine:
             self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
             self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
             if not self._camera.isOpened():
-                logger.warning("Webcam open nahi hui - audio-only/blank-visual mode mein chalu rahega "
-                                "(agar yeh server/cloud par chal raha hai to wahan physical camera hota hi nahi).")
-
-        if self.config.background_media_path:
-            self._bg_media = cv2.VideoCapture(self.config.background_media_path)
+                logger.warning("Webcam open nahi hui - is server/cloud par physical camera nahi hoga to yeh expected hai.")
 
         self._running = True
         self._frames_pushed = 0
@@ -704,7 +1097,6 @@ class LiveStreamEngine:
         self._thread = threading.Thread(target=self._run_loop, name="LiveStreamEngineLoop", daemon=True)
         self._thread.start()
         self._notify("live")
-        logger.info("Live stream engine started.")
         return True
 
     def stop(self):
@@ -712,18 +1104,14 @@ class LiveStreamEngine:
         if self._thread is not None:
             self._thread.join(timeout=5)
             self._thread = None
-
         if self._camera is not None:
             self._camera.release()
             self._camera = None
-
-        if self._bg_media is not None:
-            self._bg_media.release()
-            self._bg_media = None
-
+        if self._canvas is not None:
+            self._canvas.release()
+        self._mantra.release()
         self._publisher.stop()
         self._notify("stopped")
-        logger.info("Live stream engine stopped. Frames pushed: %d", self._frames_pushed)
 
     def _notify(self, status: str):
         if self.on_status_change:
@@ -732,8 +1120,6 @@ class LiveStreamEngine:
             except Exception:
                 logger.exception("on_status_change callback raised.")
 
-    # -- status ---------------------------------------------------------------
-
     def get_status(self) -> dict:
         uptime = (time.time() - self._start_time) if (self._running and self._start_time) else 0
         return {
@@ -741,13 +1127,23 @@ class LiveStreamEngine:
             "publisher_alive": self._publisher.is_running,
             "frames_pushed": self._frames_pushed,
             "uptime_sec": round(uptime, 1),
-            "webcam_active": self._camera is not None and self._camera.isOpened() if self._camera else False,
         }
 
-    # -- dynamic updates (called live from the UI) ---------------------------
-
+    # -- live updates (Section 3/4/5 text can change without restarting) ----
     def update_ticker(self, text: str):
         self._ticker.set_text(text)
+
+    def update_ticker_font_size(self, size: int):
+        self._ticker.set_font_size(size)
+
+    def update_mantra_text(self, text: str):
+        self._mantra.set_text(text)
+
+    def update_mantra_style(self, style: str):
+        self._mantra.set_style(style)
+
+    def update_story_text(self, text: str):
+        self._story.set_text(text)
 
     def update_background_mode(self, mode: str, virtual_bg_path: Optional[str] = None):
         self._bg_processor.set_mode(mode, virtual_bg_path)
@@ -756,28 +1152,19 @@ class LiveStreamEngine:
         self._compositor.set_position(position)
 
     def update_destinations(self, destinations: List[Destination]):
-        """Enable/disable individual platforms (YouTube/Facebook/Instagram) live.
-        Note: this briefly restarts the encoder (see TeeFFmpegPublisher.update_destinations)."""
         self._publisher.update_destinations(destinations)
 
-    # -- internals ------------------------------------------------------------
-
     def _next_background_frame(self):
-        """Fetch the next frame of the looping background media, image, or a blank canvas."""
-        blank = np.zeros((self.config.height, self.config.width, 3), dtype="uint8")
-
-        if self._bg_media is not None:
-            ok, frame = self._bg_media.read()
-            if not ok:  # loop back to start
-                self._bg_media.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                ok, frame = self._bg_media.read()
-            return frame if ok else blank
-
-        return blank
+        if self._canvas is not None:
+            frame = self._canvas.next_frame()
+            if frame is not None:
+                return frame
+        if self._default_bg is not None:
+            return self._default_bg
+        return np.zeros((self.config.height, self.config.width, 3), dtype="uint8")
 
     def _run_loop(self):
         frame_interval = 1.0 / max(self.config.fps, 1)
-
         while self._running:
             loop_start = time.time()
 
@@ -788,10 +1175,12 @@ class LiveStreamEngine:
                     webcam_frame = self._bg_processor.process(raw)
 
             background_frame = self._next_background_frame()
-            composited = self._compositor.composite(background_frame, webcam_frame)
-            final_frame = self._ticker.apply(composited)
+            frame = self._compositor.composite(background_frame, webcam_frame)
+            frame = self._mantra.apply(frame)
+            frame = self._story.apply(frame)
+            frame = self._ticker.apply(frame)
 
-            self._publisher.write_frame(final_frame.tobytes())
+            self._publisher.write_frame(frame.tobytes())
             self._frames_pushed += 1
 
             elapsed = time.time() - loop_start
@@ -801,24 +1190,17 @@ class LiveStreamEngine:
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton API — what live_app.py actually calls
+# Module-level singleton API
 # ---------------------------------------------------------------------------
-
 _engine: Optional[LiveStreamEngine] = None
 _engine_lock = threading.Lock()
 
 
 def start_stream(stream_configs: StreamConfig) -> bool:
-    """
-    Start (or restart) the live stream engine with the given configuration.
-    Non-blocking — returns immediately once the background thread is launched.
-    Returns True if the engine was started, False if one was already running
-    or if startup failed (e.g. ffmpeg missing, no valid destination).
-    """
     global _engine
     with _engine_lock:
         if _engine is not None:
-            logger.warning("A stream is already running. Call stop_stream() first.")
+            _set_last_error("Ek stream pehle se chal rahi hai. Pehle stop_stream() call karein.")
             return False
         engine = LiveStreamEngine(stream_configs)
         if not engine.start():
@@ -828,11 +1210,9 @@ def start_stream(stream_configs: StreamConfig) -> bool:
 
 
 def stop_stream() -> bool:
-    """Stop the currently-running stream engine, if any."""
     global _engine
     with _engine_lock:
         if _engine is None:
-            logger.info("No active stream to stop.")
             return False
         _engine.stop()
         _engine = None
@@ -840,25 +1220,41 @@ def stop_stream() -> bool:
 
 
 def update_live_ticker(text: str):
-    """Update the scrolling ticker text on an already-running stream."""
     if _engine is not None:
         _engine.update_ticker(text)
 
 
+def update_live_ticker_font_size(size: int):
+    if _engine is not None:
+        _engine.update_ticker_font_size(size)
+
+
+def update_live_mantra_text(text: str):
+    if _engine is not None:
+        _engine.update_mantra_text(text)
+
+
+def update_live_mantra_style(style: str):
+    if _engine is not None:
+        _engine.update_mantra_style(style)
+
+
+def update_live_story_text(text: str):
+    if _engine is not None:
+        _engine.update_story_text(text)
+
+
 def update_live_destinations(destinations: List[Destination]):
-    """Enable/disable individual platform destinations on an already-running stream."""
     if _engine is not None:
         _engine.update_destinations(destinations)
 
 
 def update_live_background(mode: str, virtual_bg_path: Optional[str] = None):
-    """Change AI background mode (none/blur/virtual/green_screen) live."""
     if _engine is not None:
         _engine.update_background_mode(mode, virtual_bg_path)
 
 
 def get_stream_status() -> Optional[dict]:
-    """Returns a status dict (running/frames_pushed/uptime/...) or None if offline."""
     if _engine is not None:
         return _engine.get_status()
     return None
@@ -869,25 +1265,15 @@ def is_streaming() -> bool:
 
 
 def check_ffmpeg_available() -> bool:
-    """Quick pre-flight check the UI can call before even trying to start."""
     return shutil.which("ffmpeg") is not None
 
 
-# ---------------------------------------------------------------------------
-# Manual smoke test (does not require a real camera or ffmpeg to import)
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     demo_config = StreamConfig(
-        destinations=[
-            Destination(platform="YouTube", rtmp_url="rtmp://a.rtmp.youtube.com/live2/REPLACE_ME", enabled=True),
-            Destination(platform="Facebook", rtmp_url="rtmps://live-api-s.facebook.com:443/rtmp/REPLACE_ME", enabled=False),
-        ],
-        webcam_on=True,
-        background_mode="blur",
-        ticker_text="This is a live demo ticker...",
-        pip_position="bottom-right",
+        destinations=[Destination(platform="YouTube", rtmp_url="rtmp://a.rtmp.youtube.com/live2/REPLACE_ME", enabled=True)],
+        webcam_on=False,
+        ticker_text="Demo ticker...",
+        mantra_text="ॐ नमः शिवाय",
     )
     print("StreamConfig built successfully:", demo_config)
     print("ffmpeg available:", check_ffmpeg_available())
-    print("Run start_stream(demo_config) with real RTMP keys, a webcam, and ffmpeg installed to go live.")

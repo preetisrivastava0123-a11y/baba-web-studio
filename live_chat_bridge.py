@@ -1,75 +1,394 @@
-import streamlit as st
+"""
+live_chat_bridge.py
+Real YouTube Live Chat integration for the Live Broadcast Studio:
+  - Polls the live chat of your currently active YouTube broadcast
+  - Auto-detects first-time commenters (tracked locally, per channel)
+    and auto-posts a customizable welcome-template reply into the chat
+  - Optionally translates incoming comments to Hindi for display
+
+--------------------------------------------------------------------------
+WHY A SEPARATE LOGIN FROM youtube_dashboard.py
+--------------------------------------------------------------------------
+Posting chat messages needs the broader `youtube.force-ssl` (read+write)
+OAuth scope. youtube_dashboard.py only ever needs read-only analytics
+scopes. Keeping them as separate logins follows least-privilege - you
+don't have to grant write access to your channel just to view analytics,
+and vice versa.
+
+--------------------------------------------------------------------------
+LIMITATIONS - please read before relying on this
+--------------------------------------------------------------------------
+- YouTube has NO chat push/websocket API - this POLLS on the interval
+  YouTube itself suggests (a few seconds), so there is always a small
+  delay, never instant like a native chat client.
+- "First-time commenter" is tracked ONLY within what THIS app has seen
+  (stored in a local file) - it has no way to know someone's full
+  YouTube-wide history, only whether they've commented in a chat this
+  feature was monitoring since you turned it on.
+- Hindi translation uses a free, UNOFFICIAL library (no Google Cloud
+  Translation API key needed) - it's usually fine for casual text, but
+  is not a paid/guaranteed service and can occasionally mistranslate
+  slang or mixed Hindi-English (Hinglish) text.
+- YouTube Data API has a daily quota. Heavy chat traffic + frequent
+  polling can use it up faster than you'd expect - the polling interval
+  below has a safety floor for this reason.
+
+SETUP: same steps as youtube_dashboard.py's docstring (Google Cloud
+project, enable "YouTube Data API v3"), but you can reuse the SAME
+Client ID/Secret - the app will ask for the extra write scope on login.
+"""
+
+import os
+import json
 import time
+import logging
+import threading
+from typing import Optional, List
 
-# आपका नया सुंदर और भक्तिमय डिफ़ॉल्ट स्वागत संदेश टेम्पलेट (100% मुफ़्त)
-# आपका नया सुंदर देवनागरी और भक्तिमय डिफ़ॉल्ट स्वागत संदेश टेम्पलेट (100% मुफ़्त)
-DEFAULT_WELCOME_TEMPLATE = "🌺 DIVINE DIL CHANNEL में आपका स्वागत है! 🌺\nहमारे चैनल में जुड़ने व सपोर्ट के लिए आपको हृदय से धन्यवाद। 🙏✨\nचैनल को लाइक, सब्सक्राइब ज़रूर करें और कमेंट में 🚩 हर हर महादेव 🔱 लिखना न भूलें। ❤️"
+logger = logging.getLogger("live_chat_bridge")
+
+try:
+    from google_auth_oauthlib.flow import Flow
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    _GOOGLE_LIBS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _GOOGLE_LIBS_AVAILABLE = False
+
+try:
+    from deep_translator import GoogleTranslator
+    _TRANSLATOR_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _TRANSLATOR_AVAILABLE = False
+    logger.warning("deep-translator install nahi hai - Hindi translation unavailable. `pip install deep-translator` chalayein.")
 
 
-class LiveChatBridge:
-    def __init__(self):
-        if "chat_connected" not in st.session_state:
-            st.session_state.chat_connected = False
-        if "mock_comments" not in st.session_state:
-            st.session_state.mock_comments = [
-                {"user": "रमेश कुमार", "text": "Jay Mahakal 🙏", "time": "04:01 PM"},
-                {"user": "सुनीता शर्मा", "text": "Very peaceful katha bhabhi", "time": "04:03 PM"},
-                {"user": "Rahul_99", "text": "Aarti kab shuru hogi babaji?", "time": "04:05 PM"}
-            ]
+SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 
-    def render_chat_ui(self):
-        st.subheader("💬 YouTube Live Chat Control Room (100% Free)")
-        
-        st.info("💡 प्रो-टिप: लाइव कमेंट्स को मुफ़्त में हिंदी में पढ़ने के लिए अपने 'YouTube Studio ➔ Live Control Room' में जाकर 'Automatic chat translation' को ON कर दें।")
-        
-        # 🎯 दूसरा काम: आपका संपादन योग्य बॉक्स (Editable Welcome Template Box)
-        # इसमें आप ज़रूरत पड़ने पर इस संदेश को मिटाकर दूसरा कुछ भी लिख सकते हैं!
-        current_welcome_msg = st.text_area(
-            "📝 लाइव स्वागत संदेश टेम्पलेट (यहाँ क्लिक करके कभी भी बदलें):", 
-            value=DEFAULT_WELCOME_TEMPLATE,
-            height=100
+CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".live_chat_data")
+os.makedirs(CONFIG_DIR, exist_ok=True)
+OAUTH_CONFIG_PATH = os.path.join(CONFIG_DIR, "oauth_config.json")
+SEEN_COMMENTERS_PATH = os.path.join(CONFIG_DIR, "seen_commenters.json")
+
+DEFAULT_WELCOME_TEMPLATE = (
+    "🙏 Welcome to my channel! हमारे चैनल में जुड़ने व सपोर्ट के लिए आपको हृदय से धन्यवाद 🙏 "
+    "चैनल को Like, Subscribe करें और कमेंट में हर हर महादेव 🔱 ज़रूर लिखें 🌺"
+)
+
+MIN_POLL_INTERVAL_SEC = 5.0  # safety floor regardless of what YouTube suggests, to protect your API quota
+
+
+# ---------------------------------------------------------------------------
+# OAuth (separate credentials/session key from youtube_dashboard.py)
+# ---------------------------------------------------------------------------
+def _load_oauth_config():
+    try:
+        if os.path.exists(OAUTH_CONFIG_PATH):
+            with open(OAUTH_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_oauth_config(client_id, client_secret, redirect_uri):
+    try:
+        with open(OAUTH_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}, f)
+    except Exception:
+        pass
+
+
+def _get_flow(client_id, client_secret, redirect_uri):
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+    return Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri=redirect_uri)
+
+
+def is_available() -> bool:
+    return _GOOGLE_LIBS_AVAILABLE
+
+
+def render_oauth_and_get_youtube_client(st):
+    """
+    Renders the (collapsed-by-default) setup expander + Login button, and
+    returns a ready `youtube` API client once logged in, or None while
+    still waiting on setup/login. `st` is passed in so this stays
+    Streamlit-import-free at module load (mirrors youtube_dashboard.py).
+    """
+    if not _GOOGLE_LIBS_AVAILABLE:
+        st.error("⚠️ ज़रूरी libraries install नहीं हैं। `pip install google-auth-oauthlib google-api-python-client`")
+        return None
+
+    saved = _load_oauth_config()
+    with st.expander("⚙️ Live Chat के लिए Google Setup (लिखने की permission सहित)", expanded=not saved):
+        st.caption(
+            f"⚠️ plain text में `{OAUTH_CONFIG_PATH}` में save होता है — `.gitignore` में ज़रूर जोड़ें। "
+            "Dashboard वाला Client ID/Secret भी इस्तेमाल कर सकते हैं (बस login अलग से करना होगा, permission ज़्यादा चाहिए)।"
         )
-        
-        # सेव स्टेटस दिखाने के लिए
-        if current_welcome_msg != DEFAULT_WELCOME_TEMPLATE:
-            st.caption("✨ *नोट: आपने संदेश में बदलाव किया है। अब नए दर्शकों को यही बदला हुआ संदेश जाएगा।*")
-        
-        # बिना किसी Paid API के मुफ़्त लोकल ऑथेंटिकेशन डेमो
-        if not st.session_state.chat_connected:
-            if st.button("🔗 YouTube Chat से मुफ़्त में जोड़ें (OAuth Login)"):
-                with st.spinner("यूट्यूब सुरक्षित कनेक्शन बना रहा है..."):
-                    time.sleep(1.5)
-                    st.session_state.chat_connected = True
-                    st.success("✅ असली YouTube Chat सफलतापूर्वक जुड़ चुकी है! (100% मुफ़्त)")
-                    st.rerun()
-        else:
-            st.success("🟢 YouTube Chat लाइव कनेक्टेड है")
-            if st.button("🔴 कनेक्शन बंद करें"):
-                st.session_state.chat_connected = False
-                st.rerun()
-                
-            # कमेंट्स और मुफ़्त अनुवाद का प्रदर्शन बॉक्स
-            st.markdown("### 📥 लाइव कमेंट्स फ़ीड (Live Comments)")
-            for comment in st.session_state.mock_comments:
-                with st.container():
-                    st.markdown(f"**👤 {comment['user']}** <span style='color:gray; font-size:12px;'>({comment['time']})</span>", unsafe_allow_html=True)
-                    st.markdown(f"💬 *मूल कमेंट:* {comment['text']}")
-                    
-                    # मुफ़्त अनऑफिशियल अनुवाद लॉजिक का प्रदर्शन
-                    translated_text = comment['text']
-                    if "peaceful" in comment['text'].lower():
-                        translated_text = "बहुत शांतिपूर्ण कथा है भाभी"
-                    elif "kab shuru" in comment['text'].lower():
-                        translated_text = "आरती कब शुरू होगी बाबा जी?"
-                        
-                    st.markdown(f"🧡 🚩 *मुफ़्त हिंदी अनुवाद:* {translated_text}")
-                    st.markdown("---")
-                    
-            # नया कमेंट भेजने का बॉक्स
-            new_reply = st.text_input("✍️ अपनी तरफ से लाइव चैट में कमेंट भेजें:")
-            if st.button("🚀 कमेंट भेजें"):
-                if new_reply:
-                    st.success(f"✅ आपका कमेंट लाइव स्ट्रीम पर भेज दिया गया है: '{new_reply}'")
+        client_id = st.text_input("Client ID", value=saved.get("client_id", ""), key="chat_client_id")
+        client_secret = st.text_input("Client Secret", value=saved.get("client_secret", ""), type="password", key="chat_client_secret")
+        redirect_uri = st.text_input(
+            "Redirect URI (Cloud Console में हूबहू यही)", value=saved.get("redirect_uri", ""),
+            key="chat_redirect_uri", placeholder="https://your-app.streamlit.app/",
+        )
+        if st.button("💾 Save Setup", key="chat_oauth_save_btn"):
+            _save_oauth_config(client_id, client_secret, redirect_uri)
+            st.success("✅ Save हो गया।")
+            st.rerun()
 
-def get_chat_bridge():
-    return LiveChatBridge()
+    if not (saved.get("client_id") and saved.get("client_secret") and saved.get("redirect_uri")):
+        st.info("ℹ️ ऊपर Setup भरकर Save करें, फिर Login का बटन दिखेगा।")
+        return None
+
+    client_id, client_secret, redirect_uri = saved["client_id"], saved["client_secret"], saved["redirect_uri"]
+
+    if "chat_credentials_json" in st.session_state:
+        try:
+            creds = Credentials.from_authorized_user_info(json.loads(st.session_state["chat_credentials_json"]), SCOPES)
+            return build("youtube", "v3", credentials=creds)
+        except Exception:
+            del st.session_state["chat_credentials_json"]
+
+    query_params = st.query_params
+    if "code" in query_params:
+        try:
+            flow = _get_flow(client_id, client_secret, redirect_uri)
+            flow.fetch_token(code=query_params["code"])
+            st.session_state["chat_credentials_json"] = flow.credentials.to_json()
+            st.query_params.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Login fail हुआ: {e}")
+            return None
+
+    flow = _get_flow(client_id, client_secret, redirect_uri)
+    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+    st.link_button("🔓 Live Chat के लिए Login करें (लिखने की permission सहित)", auth_url)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Seen-commenters persistence (for "first-time" detection)
+# ---------------------------------------------------------------------------
+def _load_seen_commenters() -> set:
+    try:
+        if os.path.exists(SEEN_COMMENTERS_PATH):
+            with open(SEEN_COMMENTERS_PATH, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+    except Exception:
+        pass
+    return set()
+
+
+def _save_seen_commenters(seen: set):
+    try:
+        with open(SEEN_COMMENTERS_PATH, "w", encoding="utf-8") as f:
+            json.dump(list(seen), f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def reset_seen_commenters():
+    """Wipes the 'first-time commenter' memory - useful for testing, or
+    if you want everyone treated as new again for a fresh event."""
+    _save_seen_commenters(set())
+
+
+# ---------------------------------------------------------------------------
+# Translation (free, unofficial - see limitations in module docstring)
+# ---------------------------------------------------------------------------
+def translate_to_hindi(text: str) -> str:
+    if not text or not text.strip():
+        return text
+    if not _TRANSLATOR_AVAILABLE:
+        return text
+    try:
+        return GoogleTranslator(source="auto", target="hi").translate(text)
+    except Exception:
+        return text  # translation failed - show the original rather than lose the message
+
+
+# ---------------------------------------------------------------------------
+# Live chat monitor - background thread, independent of Streamlit reruns
+# ---------------------------------------------------------------------------
+class LiveChatMonitor:
+    def __init__(self, youtube, welcome_template: str, auto_welcome_enabled: bool, translate_enabled: bool):
+        self.youtube = youtube
+        self.welcome_template = welcome_template
+        self.auto_welcome_enabled = auto_welcome_enabled
+        self.translate_enabled = translate_enabled
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._live_chat_id: Optional[str] = None
+        self._page_token: Optional[str] = None
+        self._seen_commenters = _load_seen_commenters()
+        self._messages: List[dict] = []
+        self._lock = threading.Lock()
+        self._last_error: Optional[str] = None
+        self.welcomed_count = 0
+
+    def _resolve_live_chat_id(self) -> Optional[str]:
+        resp = self.youtube.liveBroadcasts().list(part="snippet", broadcastStatus="active", broadcastType="all").execute()
+        items = resp.get("items", [])
+        if not items:
+            return None
+        return items[0]["snippet"].get("liveChatId")
+
+    def start(self) -> bool:
+        if self._running:
+            return True
+        try:
+            self._live_chat_id = self._resolve_live_chat_id()
+        except Exception as e:
+            self._last_error = f"Active live broadcast nahi mila: {e}"
+            return False
+        if not self._live_chat_id:
+            self._last_error = "Koi active live broadcast nahi mila is channel par. Pehle YouTube par live shuru karein, phir yahan connect karein."
+            return False
+        self._running = True
+        self._thread = threading.Thread(target=self._run_loop, name="LiveChatMonitor", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self):
+        self._running = False
+
+    def _post_message(self, text: str) -> bool:
+        try:
+            self.youtube.liveChatMessages().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "liveChatId": self._live_chat_id,
+                        "type": "textMessageEvent",
+                        "textMessageDetails": {"messageText": text},
+                    }
+                },
+            ).execute()
+            return True
+        except Exception as e:
+            logger.exception("Chat message post karne mein fail hui.")
+            self._last_error = str(e)
+            return False
+
+    def post_message(self, text: str) -> bool:
+        """Public: send any message into the live chat (not just the
+        auto-welcome) - e.g. a manual reply typed by you in the UI."""
+        return self._post_message(text)
+
+    def _run_loop(self):
+        interval = MIN_POLL_INTERVAL_SEC
+        while self._running:
+            try:
+                resp = self.youtube.liveChatMessages().list(
+                    liveChatId=self._live_chat_id, part="snippet,authorDetails",
+                    pageToken=self._page_token,
+                ).execute()
+                suggested = resp.get("pollingIntervalMillis", 5000) / 1000.0
+                interval = max(MIN_POLL_INTERVAL_SEC, suggested)
+                self._page_token = resp.get("nextPageToken")
+
+                for item in resp.get("items", []):
+                    author = item.get("authorDetails", {})
+                    snippet = item.get("snippet", {})
+                    display_name = author.get("displayName", "Viewer")
+                    channel_id = author.get("channelId", "")
+                    original_text = snippet.get("displayMessage", "")
+                    shown_text = translate_to_hindi(original_text) if self.translate_enabled else original_text
+
+                    with self._lock:
+                        self._messages.append({
+                            "author": display_name,
+                            "text": shown_text,
+                            "original_text": original_text,
+                            "translated": self.translate_enabled and shown_text != original_text,
+                        })
+                        if len(self._messages) > 200:
+                            self._messages = self._messages[-200:]
+
+                    if self.auto_welcome_enabled and channel_id and channel_id not in self._seen_commenters:
+                        self._seen_commenters.add(channel_id)
+                        _save_seen_commenters(self._seen_commenters)
+                        if self._post_message(self.welcome_template):
+                            self.welcomed_count += 1
+
+            except Exception as e:
+                logger.exception("Chat poll mein error.")
+                self._last_error = str(e)
+                time.sleep(MIN_POLL_INTERVAL_SEC)
+                continue
+
+            time.sleep(interval)
+
+    def get_messages(self) -> List[dict]:
+        with self._lock:
+            return list(self._messages)
+
+    def get_last_error(self) -> Optional[str]:
+        return self._last_error
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+
+_monitor: Optional[LiveChatMonitor] = None
+_monitor_lock = threading.Lock()
+
+
+def start_chat_monitor(youtube, welcome_template: str, auto_welcome_enabled: bool, translate_enabled: bool) -> bool:
+    global _monitor
+    with _monitor_lock:
+        if _monitor is not None and _monitor.is_running:
+            return False
+        m = LiveChatMonitor(youtube, welcome_template, auto_welcome_enabled, translate_enabled)
+        if not m.start():
+            _last = m.get_last_error()
+            logger.error(_last)
+            return False
+        _monitor = m
+        return True
+
+
+def stop_chat_monitor():
+    global _monitor
+    with _monitor_lock:
+        if _monitor is not None:
+            _monitor.stop()
+            _monitor = None
+
+
+def get_chat_messages() -> List[dict]:
+    if _monitor is not None:
+        return _monitor.get_messages()
+    return []
+
+
+def send_chat_message(text: str) -> bool:
+    if _monitor is not None:
+        return _monitor.post_message(text)
+    return False
+
+
+def is_monitoring() -> bool:
+    return _monitor is not None and _monitor.is_running
+
+
+def get_monitor_error() -> Optional[str]:
+    if _monitor is not None:
+        return _monitor.get_last_error()
+    return None
+
+
+def get_welcomed_count() -> int:
+    if _monitor is not None:
+        return _monitor.welcomed_count
+    return 0

@@ -16,13 +16,18 @@ Call render_live_studio_ui() from app.py to display this whole UI.
 
 import os
 import json
+import shutil
+import subprocess
+import uuid
 import tempfile
-from datetime import datetime
+from datetime import datetime, date, time as dtime
+from typing import Optional
 
 import streamlit as st
 
 import live_engine
 from live_engine import Destination, StreamConfig, MediaItem
+import live_chat_bridge
 
 
 UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "live_studio_uploads")
@@ -93,10 +98,11 @@ DEFAULT_STATE = {
     "media_items": [],  # [{path, name, media_type, order}]
     "canvas_mode": None,  # auto-detected: "shorts" | "long"
 
-    # Section 2 - Universal Audio Hub
-    "audio_source_path": None,
-    "audio_source_name": None,
+    # Section 2 - Universal Audio Hub (multi-upload playlist, like Section 1)
+    "audio_items": [],  # [{path, name, order}]
     "audio_mode_label": list(AUDIO_MODE_OPTIONS.keys())[0],
+    "_audio_playlist_resolved_path": None,   # cached concatenated-playlist file
+    "_audio_playlist_resolved_signature": None,  # to know when to rebuild it
 
     # Webcam / mic (kept, optional)
     "webcam_on": False,
@@ -104,6 +110,9 @@ DEFAULT_STATE = {
     "custom_bg_image_path": None,
     "custom_bg_image_name": None,
     "mic_enabled": False,
+
+    # Live Handover - keep the SAME RTMP connection open, switch source
+    "enable_handover": False,
 
     # Section 4 - Mantra Flash Hub
     "mantra_clip_path": None,
@@ -133,6 +142,19 @@ DEFAULT_STATE = {
     "_last_pushed_ticker": None,
     "_last_pushed_mantra": None,
     "_last_pushed_story": None,
+
+    # Schedule (auto start/stop, independent of browser being open)
+    "schedule_enabled": False,
+    "schedule_start_date": None,
+    "schedule_start_time": None,
+    "schedule_has_stop": False,
+    "schedule_stop_date": None,
+    "schedule_stop_time": None,
+
+    # Live Chat Bridge (real YouTube chat, first-time-commenter auto-welcome)
+    "chat_welcome_template": live_chat_bridge.DEFAULT_WELCOME_TEMPLATE,
+    "chat_auto_welcome_enabled": True,
+    "chat_translate_to_hindi": True,
 }
 
 
@@ -190,7 +212,7 @@ def _render_section1_media_canvas():
             media_type = "video" if ext in (".mp4", ".mov") else "image"
             path = _save_uploaded_file(uf, "s1_media")
             st.session_state["live_studio"]["media_items"].append(
-                {"path": path, "name": uf.name, "media_type": media_type, "order": next_order}
+                {"path": path, "name": uf.name, "media_type": media_type, "order": next_order, "use_own_audio": True}
             )
             next_order += 1
             if _get("canvas_mode") is None:
@@ -204,14 +226,25 @@ def _render_section1_media_canvas():
         )
     else:
         st.markdown("**क्रम व्यवस्था (Sequence)**")
+        st.caption(
+            "🎵 अगर किसी वीडियो में उसका अपना गाना/music है, तो नीचे उसका टॉगल **ON रखें** (डिफ़ॉल्ट ON है) — "
+            "वह music अपने आप live स्ट्रीम में बजेगा, Section 2 में अलग से दोबारा अपलोड करने की ज़रूरत नहीं।"
+        )
         for idx, item in enumerate(_get("media_items")):
-            c1, c2, c3 = st.columns([3, 1, 0.6])
+            c1, c2, c3, c4 = st.columns([2.6, 0.8, 1.2, 0.6])
             c1.write(f"{item['name']} `({item['media_type']})`")
             item["order"] = c2.number_input(
                 "क्रम", min_value=1, value=int(item["order"]), step=1,
                 key=f"s1_order_{idx}", label_visibility="collapsed",
             )
-            if c3.button("🗑️", key=f"s1_remove_{idx}"):
+            if item["media_type"] == "video":
+                item["use_own_audio"] = c3.checkbox(
+                    "🎵 अपना Music बजे", value=item.get("use_own_audio", True),
+                    key=f"s1_own_audio_{idx}",
+                )
+            else:
+                c3.caption("—")
+            if c4.button("🗑️", key=f"s1_remove_{idx}"):
                 st.session_state["live_studio"]["media_items"].pop(idx)
                 if not st.session_state["live_studio"]["media_items"]:
                     _set("canvas_mode", None)
@@ -221,13 +254,24 @@ def _render_section1_media_canvas():
             st.info("📌 सिर्फ़ एक इमेज है — यह अपने-आप एक **अनंत लूप कैनवास** बन जाएगी, बाकी सारे "
                     "सेक्शन (मंत्र फ़्लैश, कहानी, टिकर) इसी के ऊपर लगातार चलते रहेंगे।")
 
+        video_count_with_audio = sum(1 for m in _get("media_items") if m["media_type"] == "video" and m.get("use_own_audio", True))
+        if video_count_with_audio > 1:
+            st.caption(
+                f"⚠️ {video_count_with_audio} वीडियो का 'अपना Music' ON है — ये सभी एक साथ मिक्स होकर बजेंगे "
+                "(जिस वीडियो का visual अभी चल रहा है, ज़रूरी नहीं कि सिर्फ़ उसी का music सुनाई दे — यह एक "
+                "known सीमा है; अगर सिर्फ़ एक का ही music चाहिए, तो बाकी का टॉगल OFF कर दें)।"
+            )
+
         mode_label = "Shorts (9:16)" if _get("canvas_mode") == "shorts" else "Long (16:9)"
         st.success(f"🖥️ स्मार्ट मोड डिटेक्शन: कैनवास **{mode_label}** पर सेट है (पहली फ़ाइल के हिसाब से)।")
 
 
 def _get_media_item_objects() -> list:
     return [
-        MediaItem(path=m["path"], media_type=m["media_type"], order=int(m["order"]))
+        MediaItem(
+            path=m["path"], media_type=m["media_type"], order=int(m["order"]),
+            use_own_audio=bool(m.get("use_own_audio", True)),
+        )
         for m in _get("media_items")
     ]
 
@@ -239,43 +283,113 @@ def _get_canvas_size():
 
 
 # ---------------------------------------------------------------------------
-# Section 2 — Universal Audio Hub
+# Section 2 — Universal Audio Hub (multi-upload playlist, like Section 1)
 # ---------------------------------------------------------------------------
 def _render_section2_audio_hub():
     st.subheader("📦 सेक्शन 2: यूनिवर्सल ऑडियो/म्यूज़िक हब")
     st.caption(
-        "यह लाइव स्ट्रीम के बैकग्राउंड साउंड को नियंत्रित करता है — पूरी तरह वैकल्पिक। MP4 दिया तो सिर्फ़ "
-        "उसका म्यूज़िक इस्तेमाल होगा।"
+        "यह लाइव स्ट्रीम के बैकग्राउंड साउंड को नियंत्रित करता है — पूरी तरह वैकल्पिक। एक से ज़्यादा ट्रैक "
+        "अपलोड करके उनका क्रम तय करें (Section 1 जैसा ही) — सब मिलकर एक playlist की तरह क्रम से बजेंगे, "
+        "फिर से शुरू से loop होंगे। MP4 दिया तो सिर्फ़ उसका music इस्तेमाल होगा।"
     )
 
-    audio_file = st.file_uploader(
-        "म्यूज़िक (MP3) या वीडियो (MP4 — सिर्फ़ music निकाला जाएगा) अपलोड करें",
-        type=["mp3", "wav", "m4a", "mp4"], key="s2_audio_uploader",
+    audio_files = st.file_uploader(
+        "म्यूज़िक (MP3/WAV) या वीडियो (MP4 — सिर्फ़ music निकाला जाएगा) अपलोड करें (एक साथ कई फ़ाइलें चुन सकते हैं)",
+        type=["mp3", "wav", "m4a", "mp4"], accept_multiple_files=True, key="s2_audio_uploader",
     )
-    if audio_file is not None:
-        path = _save_uploaded_file(audio_file, "s2_audio")
-        _set("audio_source_path", path)
-        _set("audio_source_name", audio_file.name)
+    if audio_files:
+        existing_names = {a["name"] for a in _get("audio_items")}
+        next_order = len(_get("audio_items")) + 1
+        for af in audio_files:
+            if af.name in existing_names:
+                continue
+            path = _save_uploaded_file(af, "s2_audio")
+            st.session_state["live_studio"]["audio_items"].append(
+                {"path": path, "name": af.name, "order": next_order}
+            )
+            next_order += 1
 
-    if _get("audio_source_path"):
-        ac1, ac2 = st.columns([3, 1])
-        ac1.success(f"✅ ऑडियो सेट है: {_get('audio_source_name')}")
-        if ac2.button("हटाएं", key="s2_audio_remove_btn"):
-            _set("audio_source_path", None)
-            _set("audio_source_name", None)
+    if not _get("audio_items"):
+        st.caption("ℹ️ अभी कोई ऑडियो अपलोड नहीं हुआ (वैकल्पिक)।")
+        return
+
+    st.markdown("**क्रम व्यवस्था (Playlist Sequence)**")
+    for idx, item in enumerate(_get("audio_items")):
+        c1, c2, c3 = st.columns([3, 1, 0.6])
+        c1.write(item["name"])
+        item["order"] = c2.number_input(
+            "क्रम", min_value=1, value=int(item["order"]), step=1,
+            key=f"s2_order_{idx}", label_visibility="collapsed",
+        )
+        if c3.button("🗑️", key=f"s2_remove_{idx}"):
+            st.session_state["live_studio"]["audio_items"].pop(idx)
             st.rerun()
 
-        _set("audio_mode_label", st.selectbox(
-            "ऑडियो प्रोसेसिंग मोड", options=list(AUDIO_MODE_OPTIONS.keys()),
-            index=list(AUDIO_MODE_OPTIONS.keys()).index(_get("audio_mode_label")),
-            key="s2_audio_mode_select",
-        ))
-        if AUDIO_MODE_OPTIONS[_get("audio_mode_label")] == live_engine.AUDIO_MODE_INSTRUMENTAL:
-            st.caption("ℹ️ FFmpeg का center-channel cancellation filter गायक की आवाज़ को कम करेगा (सटीक AI stem-separation नहीं)।")
-        elif AUDIO_MODE_OPTIONS[_get("audio_mode_label")] == live_engine.AUDIO_MODE_BACKGROUND:
-            st.caption("ℹ️ Volume अपने आप 0.2x पर आ जाएगा ताकि मुख्य आवाज़ (mic/story voice) साफ़ सुनाई दे।")
-    else:
-        st.caption("ℹ️ अभी कोई ऑडियो अपलोड नहीं हुआ (वैकल्पिक)।")
+    if len(_get("audio_items")) > 1:
+        st.caption(
+            f"📌 {len(_get('audio_items'))} ट्रैक — Start Live दबाते ही ये सब क्रम से एक साथ जोड़कर "
+            "(concatenate) एक playlist बनाई जाएगी, फिर वह पूरी playlist loop होगी।"
+        )
+
+    _set("audio_mode_label", st.selectbox(
+        "ऑडियो प्रोसेसिंग मोड (पूरी playlist पर लागू होगा)", options=list(AUDIO_MODE_OPTIONS.keys()),
+        index=list(AUDIO_MODE_OPTIONS.keys()).index(_get("audio_mode_label")),
+        key="s2_audio_mode_select",
+    ))
+    if AUDIO_MODE_OPTIONS[_get("audio_mode_label")] == live_engine.AUDIO_MODE_INSTRUMENTAL:
+        st.caption("ℹ️ FFmpeg का center-channel cancellation filter गायक की आवाज़ को कम करेगा (सटीक AI stem-separation नहीं)।")
+    elif AUDIO_MODE_OPTIONS[_get("audio_mode_label")] == live_engine.AUDIO_MODE_BACKGROUND:
+        st.caption("ℹ️ Volume अपने आप 0.2x पर आ जाएगा ताकि मुख्य आवाज़ (mic/story voice) साफ़ सुनाई दे।")
+
+
+def _resolve_section2_playlist_path() -> Optional[str]:
+    """
+    Section 2 supports multiple uploaded tracks (a playlist), but the
+    underlying engine (like Section 5's story voice) just takes ONE
+    looping audio file path. So when there's more than one track, they
+    get concatenated (in order) into a single file via ffmpeg's concat
+    demuxer ONCE here, and that combined file is what actually gets
+    passed to StreamConfig.background_audio_path. Cached by a signature
+    of (paths, orders) so repeated reruns don't re-run ffmpeg needlessly.
+    """
+    items = sorted(_get("audio_items"), key=lambda a: a["order"])
+    if not items:
+        return None
+    if len(items) == 1:
+        return items[0]["path"]
+
+    signature = tuple((i["path"], i["order"]) for i in items)
+    if _get("_audio_playlist_resolved_signature") == signature and _get("_audio_playlist_resolved_path"):
+        cached = _get("_audio_playlist_resolved_path")
+        if os.path.exists(cached):
+            return cached
+
+    if shutil.which("ffmpeg") is None:
+        return items[0]["path"]  # fallback: just the first track
+
+    concat_list_path = os.path.join(tempfile.gettempdir(), f"s2_concat_{uuid.uuid4().hex}.txt")
+    try:
+        with open(concat_list_path, "w", encoding="utf-8") as f:
+            for item in items:
+                escaped = item["path"].replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        out_path = os.path.join(tempfile.gettempdir(), f"s2_playlist_{uuid.uuid4().hex}.mp3")
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path,
+             "-c:a", "libmp3lame", "-q:a", "4", out_path],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180,
+        )
+        _set("_audio_playlist_resolved_path", out_path)
+        _set("_audio_playlist_resolved_signature", signature)
+        return out_path
+    except Exception:
+        return items[0]["path"]  # fallback: just the first track
+    finally:
+        try:
+            os.remove(concat_list_path)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -470,13 +584,19 @@ def _render_stream_setup():
     else:
         for idx, dest in enumerate(_get("destinations")):
             with st.container(border=True):
-                top1, top2, top3 = st.columns([2, 0.7, 0.7])
+                top1, top2, top3 = st.columns([2, 1.1, 0.7])
                 dest["platform"] = top1.selectbox(
                     "Platform", options=PLATFORM_OPTIONS,
                     index=PLATFORM_OPTIONS.index(dest.get("platform", PLATFORM_OPTIONS[0])),
                     key=f"live_dest_platform_{idx}",
                 )
-                dest["enabled"] = top2.checkbox("On", value=dest.get("enabled", True), key=f"live_dest_enabled_{idx}")
+                on_off_options = ["🟢 ON", "🔴 OFF"]
+                current_choice = on_off_options[0] if dest.get("enabled", True) else on_off_options[1]
+                chosen = top2.radio(
+                    "स्थिति", options=on_off_options, index=on_off_options.index(current_choice),
+                    key=f"live_dest_onoff_{idx}", horizontal=True, label_visibility="collapsed",
+                )
+                dest["enabled"] = (chosen == "🟢 ON")
                 if top3.button("🗑️ हटाएं", key=f"live_dest_remove_{idx}"):
                     st.session_state["live_studio"]["destinations"].pop(idx)
                     _save_destinations(st.session_state["live_studio"]["destinations"])
@@ -494,6 +614,9 @@ def _render_stream_setup():
                         "सिर्फ़ Stream Key यहाँ पेस्ट करें", value=dest.get("stream_key", ""), type="password",
                         placeholder="xxxx-xxxx-xxxx-xxxx", key=f"live_dest_key_{idx}",
                     )
+
+                if not dest["enabled"]:
+                    st.caption("🔴 यह destination पूरी तरह OFF है — बैकएंड इसे पूरी तरह इग्नोर करेगा, इससे कोई connection attempt भी नहीं होगी।")
 
         if _get("remember_destinations"):
             _save_destinations(st.session_state["live_studio"]["destinations"])
@@ -530,6 +653,41 @@ def _render_camera_controls():
                     _set("custom_bg_image_path", path)
                     _set("custom_bg_image_name", bg_file.name)
 
+    st.markdown("---")
+    st.markdown("**🔁 Live Handover**")
+    st.caption(
+        "जब चालू करेंगे, तो Start Live पर ही camera को गर्म (warm-up) करके तैयार रखा जाएगा, ताकि Handover के "
+        "समय कोई देरी न हो। यह सुविधा सिर्फ़ **इसी ऐप के अपने webcam/mic** के लिए काम करती है — OBS या YouTube "
+        "Studio के अलग webcam को सीधे जोड़ना YouTube की तरफ़ से संभव नहीं है (देखें ऊपर की चेतावनी)।"
+    )
+    _set("enable_handover", st.checkbox(
+        "🟢 Handover के लिए तैयार रखें (Enable Handover Standby)",
+        value=_get("enable_handover"), key="live_enable_handover_checkbox",
+        help="Cloud सर्वर पर physical camera नहीं होता — यह टॉगल तभी काम करेगा जब यह ऐप किसी ऐसी मशीन पर चल रहा हो जहाँ असली webcam/mic लगा हो।",
+    ))
+
+    if live_engine.is_streaming():
+        handed_over = live_engine.is_handed_over()
+        hc1, hc2, hc3 = st.columns([1.3, 1, 2])
+        with hc1:
+            if st.button("🎥 अभी Handover करें (Go to Webcam+Mic)", disabled=handed_over, key="live_handover_btn"):
+                if live_engine.perform_live_handover():
+                    st.session_state["live_studio"]["chat_messages"].append("System: 🎥 Handover हो गया — अब असली webcam/mic live है।")
+                    st.success("✅ Handover सफल! RTMP connection वही पुराना चल रहा है, stream नहीं टूटी।")
+                else:
+                    st.error(f"❌ Handover नहीं हो पाया: {live_engine.get_last_error()}")
+                st.rerun()
+        with hc2:
+            if st.button("↩️ वापस Media पर जाएँ", disabled=not handed_over, key="live_revert_handover_btn"):
+                live_engine.revert_live_handover()
+                st.session_state["live_studio"]["chat_messages"].append("System: ↩️ वापस media/bhajan पर आ गए।")
+                st.rerun()
+        with hc3:
+            if handed_over:
+                st.success("🎥 अभी LIVE HANDOVER मोड में है — असली webcam/mic चल रहा है।")
+            else:
+                st.info("⚪ अभी Media/Bhajan मोड में है।")
+
 
 # ---------------------------------------------------------------------------
 # Build StreamConfig + Controls + Chat + Summary
@@ -552,8 +710,9 @@ def _build_stream_config() -> StreamConfig:
         background_mode=_BG_MODE_UI_TO_ENGINE.get(_get("bg_removal"), "none"),
         virtual_bg_path=_get("custom_bg_image_path"),
         mic_enabled=_get("mic_enabled"),
+        enable_handover=_get("enable_handover"),
         media_items=_get_media_item_objects(),
-        background_audio_path=_get("audio_source_path"),
+        background_audio_path=_resolve_section2_playlist_path(),
         audio_mode=AUDIO_MODE_OPTIONS.get(_get("audio_mode_label"), live_engine.AUDIO_MODE_SONG),
         ticker_text=_get("ticker_text"),
         ticker_font_size=int(_get("ticker_font_size")),
@@ -565,6 +724,82 @@ def _build_stream_config() -> StreamConfig:
         story_voice_path=_get_story_voice_path(),
         width=width, height=height,
     )
+
+
+# ---------------------------------------------------------------------------
+# Schedule — sab kuch bharke, samay tay karke, browser band kar sakein
+# ---------------------------------------------------------------------------
+def _render_schedule_section():
+    st.subheader("⏰ Schedule (तय समय पर अपने-आप Live शुरू/बंद)")
+    st.caption(
+        "ऊपर के सभी Section (Media, Audio, Mantra, Story, Ticker, Destinations) पहले भर दें, फिर यहाँ समय तय "
+        "करके 'Schedule लगाएं' दबाएं — उसके बाद browser/laptop/mobile बंद कर सकते हैं, तय समय पर अपने आप "
+        "live शुरू और बंद हो जाएगा (जब तक server/cloud process चालू है — नीचे की चेतावनी ज़रूर पढ़ें)।"
+    )
+    st.warning(
+        "⚠️ Free **Streamlit Community Cloud** पर ऐप लंबे समय बिना visitor के sleep में चला जाता है — अगर "
+        "schedule का समय आने से पहले ही ऐप sleep हो गया, तो वह कभी नहीं चलेगा। भरोसेमंद unattended scheduling "
+        "के लिए किसी free service (जैसे UptimeRobot, cron-job.org) से अपने ऐप के URL पर हर 5-10 मिनट ping भेजते "
+        "रहें, ताकि ऐप कभी sleep न हो।"
+    )
+
+    schedule_status = live_engine.get_schedule_status()
+    is_armed = bool(schedule_status and schedule_status.get("armed"))
+
+    if is_armed:
+        start_at = schedule_status.get("start_at")
+        stop_at = schedule_status.get("stop_at")
+        start_str = datetime.fromtimestamp(start_at).strftime("%d-%b %H:%M") if start_at else "अभी"
+        stop_str = datetime.fromtimestamp(stop_at).strftime("%d-%b %H:%M") if stop_at else "मैनुअल तक (कोई तय समय नहीं)"
+        st.success(f"🟢 Schedule ARMED है — Start: **{start_str}**, Stop: **{stop_str}**")
+        if st.button("❌ Schedule रद्द करें", key="schedule_cancel_btn"):
+            live_engine.cancel_schedule()
+            st.rerun()
+        return
+
+    now = datetime.now()
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        start_date = st.date_input("शुरू होने की तारीख़", value=_get("schedule_start_date") or now.date(), key="sched_start_date")
+        start_time_val = st.time_input("शुरू होने का समय", value=_get("schedule_start_time") or now.time().replace(second=0, microsecond=0), key="sched_start_time")
+        _set("schedule_start_date", start_date)
+        _set("schedule_start_time", start_time_val)
+
+    with sc2:
+        has_stop = st.checkbox("एक तय समय पर बंद भी हो जाए", value=_get("schedule_has_stop"), key="sched_has_stop")
+        _set("schedule_has_stop", has_stop)
+        if has_stop:
+            stop_date = st.date_input("बंद होने की तारीख़", value=_get("schedule_stop_date") or now.date(), key="sched_stop_date")
+            stop_time_val = st.time_input("बंद होने का समय", value=_get("schedule_stop_time") or now.time().replace(second=0, microsecond=0), key="sched_stop_time")
+            _set("schedule_stop_date", stop_date)
+            _set("schedule_stop_time", stop_time_val)
+        else:
+            st.caption("ℹ️ कोई stop समय नहीं — जब तक आप या YouTube Studio से मैनुअल बंद न करें, तब तक चलता रहेगा।")
+
+    enabled_dest_count = sum(1 for d in _get("destinations") if d.get("enabled") and _effective_rtmp_url(d))
+    schedule_disabled = enabled_dest_count == 0 or _get("is_live") or not live_engine.check_ffmpeg_available()
+
+    if st.button("📅 Schedule लगाएं", type="primary", disabled=schedule_disabled, key="schedule_set_btn"):
+        start_dt = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"))
+        start_epoch = start_dt.timestamp()
+        stop_epoch = None
+        if _get("schedule_has_stop"):
+            stop_dt = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"))
+            stop_epoch = stop_dt.timestamp()
+            if stop_epoch <= start_epoch:
+                st.error("❌ Stop समय, Start समय के बाद का होना चाहिए।")
+                return
+
+        with st.spinner("तैयारी हो रही है..."):
+            config = _build_stream_config()
+        if live_engine.schedule_stream(config, start_epoch, stop_epoch):
+            st.success("✅ Schedule लग गया! अब आप laptop/mobile बंद कर सकते हैं।")
+            st.rerun()
+        else:
+            st.error(f"❌ Schedule नहीं लग पाया: {live_engine.get_last_error()}")
+
+    if schedule_disabled and enabled_dest_count == 0:
+        st.caption("⚠️ पहले ऊपर कम से कम एक destination enable करें और key भरें।")
 
 
 def _render_control_buttons():
@@ -580,7 +815,8 @@ def _render_control_buttons():
     with col1:
         start_disabled = _get("is_live") or enabled_dest_count == 0 or not live_engine.check_ffmpeg_available()
         if st.button("🔴 START LIVE BROADCAST", type="primary", disabled=start_disabled, use_container_width=True):
-            config = _build_stream_config()
+            with st.spinner("तैयारी हो रही है (playlist जोड़ी जा रही है अगर ज़रूरत हो)..."):
+                config = _build_stream_config()
             started = live_engine.start_stream(config)
             if started:
                 _set("is_live", True)
@@ -609,7 +845,8 @@ def _render_control_buttons():
         if _get("is_live"):
             uptime = engine_status.get("uptime_sec", 0) if engine_status else 0
             frames = engine_status.get("frames_pushed", 0) if engine_status else 0
-            st.success(f"🟢 LIVE — {uptime:.0f}s, {frames} frames")
+            handover_tag = " · 🎥 Handover ON" if live_engine.is_handed_over() else " · 📺 Media मोड"
+            st.success(f"🟢 LIVE — {uptime:.0f}s, {frames} frames{handover_tag}")
         else:
             st.info("⚪ Offline")
 
@@ -618,21 +855,89 @@ def _render_control_buttons():
 
 
 def _render_live_chat_feed():
-    st.subheader("💬 Live Chat Feed")
-    st.caption("ℹ️ यह एक लोकल डेमो चैट है — असली YouTube/Facebook कमेंट्स के लिए उन platforms के API/OAuth चाहिए (इस scope से बाहर)।")
-    chat_container = st.container(height=200, border=True)
-    with chat_container:
-        messages = st.session_state["live_studio"]["chat_messages"]
-        if not messages:
-            st.caption("No messages yet.")
-        else:
-            for msg in messages:
-                st.write(msg)
-    with st.form(key="live_chat_form", clear_on_submit=True):
-        new_message = st.text_input("Send a message", key="live_chat_input")
-        if st.form_submit_button("Send") and new_message:
-            st.session_state["live_studio"]["chat_messages"].append(f"You: {new_message}")
+    st.subheader("💬 Live Chat")
+    st.caption(
+        "यहाँ आप YouTube की असली Live Chat से जुड़ सकते हैं — पहली बार comment करने वालों को अपने-आप "
+        "welcome-template भेजा जा सकता है, और चाहें तो comments इसी ऐप में Hindi में दिखेंगे।"
+    )
+    st.info(
+        "💡 सिर्फ़ comments पढ़ने के लिए Hindi चाहिए (auto-welcome नहीं चाहिए) तो इसकी ज़रूरत नहीं — "
+        "YouTube Studio का अपना Live Control Room खोलकर वहाँ account की भाषा Hindi रखें और "
+        "'Automatic chat translation' ON करें, वह मुफ़्त में अपने-आप हो जाता है।"
+    )
+
+    if not live_chat_bridge.is_available():
+        st.warning("⚠️ Terminal में चलाएँ: `pip install google-auth-oauthlib google-api-python-client deep-translator`")
+        return
+
+    if not live_chat_bridge.is_monitoring():
+        youtube = live_chat_bridge.render_oauth_and_get_youtube_client(st)
+        if youtube is None:
+            return
+
+        st.markdown("**पहली बार Comment करने वालों के लिए Welcome Template**")
+        _set("chat_welcome_template", st.text_area(
+            "Welcome Template (अपने मन से लिखें, symbols भी डाल सकते हैं 🙏🌺🔱)",
+            value=_get("chat_welcome_template"), height=100, key="chat_welcome_template_input",
+        ))
+        cw1, cw2 = st.columns(2)
+        with cw1:
+            _set("chat_auto_welcome_enabled", st.checkbox(
+                "🙏 पहली बार comment करने वालों को Auto-Welcome भेजें",
+                value=_get("chat_auto_welcome_enabled"), key="chat_auto_welcome_checkbox",
+            ))
+        with cw2:
+            _set("chat_translate_to_hindi", st.checkbox(
+                "🇮🇳 Comments इसी ऐप में Hindi में दिखाएं (Auto-Translate)",
+                value=_get("chat_translate_to_hindi"), key="chat_translate_checkbox",
+            ))
+
+        if st.button("🔌 Live Chat से जुड़ें", key="chat_connect_btn"):
+            started = live_chat_bridge.start_chat_monitor(
+                youtube, _get("chat_welcome_template"),
+                _get("chat_auto_welcome_enabled"), _get("chat_translate_to_hindi"),
+            )
+            if started:
+                st.success("✅ Live Chat से जुड़ गया!")
+            else:
+                st.error(f"❌ नहीं जुड़ पाया: {live_chat_bridge.get_monitor_error()}")
             st.rerun()
+        return
+
+    # -- connected: show live messages + controls --
+    cc1, cc2, cc3 = st.columns([1, 1, 2])
+    with cc1:
+        if st.button("🔌 Disconnect", key="chat_disconnect_btn"):
+            live_chat_bridge.stop_chat_monitor()
+            st.rerun()
+    with cc2:
+        if st.button("♻️ 'पहली बार' याददाश्त रीसेट करें", key="chat_reset_seen_btn"):
+            live_chat_bridge.reset_seen_commenters()
+            st.success("✅ अब सबको फिर से 'पहली बार' माना जाएगा।")
+    with cc3:
+        st.success(f"🟢 Live Chat से जुड़ा है — अब तक {live_chat_bridge.get_welcomed_count()} लोगों को Welcome भेजा गया।")
+
+    err = live_chat_bridge.get_monitor_error()
+    if err:
+        st.caption(f"⚠️ आख़िरी warning: {err}")
+
+    chat_container = st.container(height=280, border=True)
+    with chat_container:
+        messages = live_chat_bridge.get_chat_messages()
+        if not messages:
+            st.caption("अभी कोई comment नहीं आया।")
+        else:
+            for msg in messages[-100:]:
+                tag = " *(translated)*" if msg.get("translated") else ""
+                st.write(f"**{msg['author']}:** {msg['text']}{tag}")
+
+    with st.form(key="chat_manual_send_form", clear_on_submit=True):
+        manual_text = st.text_input("Chat में मैनुअल मैसेज भेजें", key="chat_manual_send_input")
+        if st.form_submit_button("भेजें") and manual_text:
+            if live_chat_bridge.send_chat_message(manual_text):
+                st.success("✅ भेज दिया।")
+            else:
+                st.error("❌ नहीं भेज पाया।")
 
 
 def _render_config_summary():
@@ -678,6 +983,9 @@ def render_live_studio_ui():
 
     st.divider()
     _render_section3_ticker()
+
+    st.divider()
+    _render_schedule_section()
 
     st.divider()
     _render_control_buttons()

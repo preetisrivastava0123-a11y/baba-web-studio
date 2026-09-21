@@ -51,6 +51,7 @@ import shutil
 import logging
 import collections
 import uuid
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable
 
@@ -147,6 +148,120 @@ def _resolve_font(size: int, want_emoji: bool = False):
 
 
 # ---------------------------------------------------------------------------
+# Mixed Devanagari + emoji text rendering.
+#
+# WHY THIS WAS NEEDED: a single PIL font has ONE glyph set. Rendering the
+# whole string with only the Devanagari font shows emoji as boxes (no
+# glyph for those code points in that font) - EMOJI_FONT_CANDIDATES was
+# defined but never actually used anywhere. The fix is to split the
+# string into runs (emoji vs everything else), render each run with the
+# matching font, and paste the runs side by side - this is what "font
+# fallback" means in real text-shaping engines, done manually here.
+# ---------------------------------------------------------------------------
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002B00-\U00002BFF"
+    "\U0001F900-\U0001F9FF"
+    "\U0001FA70-\U0001FAFF"
+    "\U00002190-\U000021FF"
+    "\U0000FE0F"  # variation selector (emoji presentation)
+    "]",
+    flags=re.UNICODE,
+)
+
+
+def _split_text_runs(text: str):
+    """Splits text into consecutive (segment, is_emoji) runs."""
+    runs = []
+    current = ""
+    current_is_emoji = None
+    for ch in text:
+        is_emoji = bool(_EMOJI_PATTERN.match(ch))
+        if current_is_emoji is None:
+            current_is_emoji = is_emoji
+            current = ch
+        elif is_emoji == current_is_emoji:
+            current += ch
+        else:
+            runs.append((current, current_is_emoji))
+            current = ch
+            current_is_emoji = is_emoji
+    if current:
+        runs.append((current, current_is_emoji))
+    return runs
+
+
+def render_mixed_text_image(text: str, font_size: int, color_rgb, emoji_font_size: Optional[int] = None):
+    """
+    Renders one line of text with automatic per-character font fallback:
+    Devanagari font for regular text, the dedicated color-emoji font for
+    emoji runs (with Pillow's embedded_color=True where supported).
+    Returns an RGBA PIL Image sized to fit the string, or None if there
+    is nothing to render.
+
+    NOTE: color-emoji rendering depends on Pillow's build having color
+    font support (Pillow >= 9.2 AND a color-capable font file like
+    NotoColorEmoji.ttf actually present at one of EMOJI_FONT_CANDIDATES).
+    Without both, emoji fall back to whatever plain outline glyph the
+    font provides - never a box, but not always colorful.
+    """
+    if not text or Image is None or ImageDraw is None:
+        return None
+
+    dev_font = _resolve_font(font_size, want_emoji=False)
+    emoji_font = _resolve_font(emoji_font_size or font_size, want_emoji=True)
+    if dev_font is None:
+        return None
+
+    runs = _split_text_runs(text)
+    dummy = Image.new("RGB", (10, 10))
+    ddraw = ImageDraw.Draw(dummy)
+
+    segments = []  # (seg_text, font, is_emoji, w, h)
+    total_w = 0
+    max_h = font_size + 10
+    for seg_text, is_emoji in runs:
+        font = emoji_font if (is_emoji and emoji_font is not None) else dev_font
+        try:
+            bbox = ddraw.textbbox((0, 0), seg_text, font=font)
+            w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            w, h = len(seg_text) * font_size, font_size
+        w = max(w, 1)
+        segments.append((seg_text, font, is_emoji, w, h))
+        total_w += w
+        max_h = max(max_h, h)
+
+    if not segments:
+        return None
+
+    canvas = Image.new("RGBA", (total_w + 20, max_h + 20), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    x = 10
+    for seg_text, font, is_emoji, w, h in segments:
+        try:
+            if is_emoji:
+                draw.text((x, 5), seg_text, font=font, embedded_color=True)
+            else:
+                draw.text((x, 5), seg_text, font=font, fill=color_rgb + (255,),
+                          stroke_width=max(1, font_size // 20), stroke_fill=(0, 0, 0, 255))
+        except TypeError:
+            # This Pillow build doesn't support embedded_color= - fall
+            # back to a plain (monochrome) glyph draw instead of crashing.
+            try:
+                draw.text((x, 5), seg_text, font=font, fill=color_rgb + (255,))
+            except Exception:
+                pass
+        except Exception:
+            pass
+        x += w
+    return canvas
+
+
+# ---------------------------------------------------------------------------
 # Last-start-error tracker
 # ---------------------------------------------------------------------------
 _last_error: Optional[str] = None
@@ -180,6 +295,11 @@ class MediaItem:
     path: str
     media_type: str  # "video" | "image"
     order: int = 0
+    # When True (default for video items) and media_type == "video", this
+    # item's own embedded audio track is mixed into the live stream's
+    # audio automatically - no need to separately re-upload the same
+    # music in Section 2. Ignored for images (no audio track to use).
+    use_own_audio: bool = True
 
 
 AUDIO_MODE_SONG = "song"
@@ -209,6 +329,12 @@ class StreamConfig:
     background_mode: str = "none"          # none | blur | virtual | green_screen
     virtual_bg_path: Optional[str] = None
     mic_enabled: bool = False
+
+    # Live Handover - keeps the SAME FFmpeg/RTMP connection open the whole
+    # time and just switches which video/audio SOURCE feeds it (media
+    # canvas -> this device's own webcam+mic), instead of stopping one
+    # encoder and starting another. See LiveStreamEngine.perform_handover().
+    enable_handover: bool = False
 
     # Section 1 - Combined Background Media Canvas
     media_items: List[MediaItem] = field(default_factory=list)
@@ -323,6 +449,18 @@ class TeeFFmpegPublisher:
         self._mic_stop_event = threading.Event()
         self._audio_fifo_path: Optional[str] = None
         self._stderr_tail = collections.deque(maxlen=50)
+        # Live Handover: the mic branch, once present, is ALWAYS feeding
+        # ffmpeg something (real audio or silence) - this flag decides
+        # which, and can be flipped mid-stream with zero ffmpeg restart.
+        self._mic_live_active = threading.Event()
+        if config.mic_enabled:
+            self._mic_live_active.set()
+
+    def set_mic_active(self, active: bool):
+        if active:
+            self._mic_live_active.set()
+        else:
+            self._mic_live_active.clear()
 
     # -- Section 2 + Section 5 audio pipeline (real ffmpeg amix) -----------
     def _build_audio_pipeline(self):
@@ -332,6 +470,12 @@ class TeeFFmpegPublisher:
         `amix` filter_complex combining them into a single [aout]
         stream. Returns (input_args, filter_complex_str_or_None,
         output_audio_label).
+
+        The mic branch is created whenever mic_enabled OR
+        enable_handover is set - even if mic starts OFF, having the
+        pipe already open means Live Handover can switch it on later
+        with zero ffmpeg restart (the feeder thread just starts writing
+        real samples instead of silence into the same pipe).
         """
         input_args: List[str] = []
         stream_labels: List[tuple] = []
@@ -342,7 +486,23 @@ class TeeFFmpegPublisher:
             stream_labels.append((f"{idx}:a", AUDIO_MODE_FILTERS.get(self.config.audio_mode)))
             idx += 1
 
-        if self.config.mic_enabled and sd is not None and hasattr(os, "mkfifo"):
+        # Section 1 - any video item whose own soundtrack is toggled ON
+        # gets pulled in as its own additional audio input, looped from
+        # its own file. NOTE: since the playlist visual advance is timed
+        # separately from these audio loops, if MULTIPLE videos in the
+        # playlist all have use_own_audio=True, all of their soundtracks
+        # play simultaneously mixed together (not swapped in sync with
+        # whichever one is currently visible) - for a single-video
+        # Section 1 playlist (the common case) this is exactly "its own
+        # music auto-plays", with no extra upload needed in Section 2.
+        for item in self.config.media_items:
+            if item.media_type == "video" and item.use_own_audio and os.path.exists(item.path):
+                input_args += ["-stream_loop", "-1", "-i", item.path]
+                stream_labels.append((f"{idx}:a", None))
+                idx += 1
+
+        want_mic_branch = self.config.mic_enabled or self.config.enable_handover
+        if want_mic_branch and sd is not None and hasattr(os, "mkfifo"):
             fifo_path = os.path.join(tempfile.gettempdir(), f"live_mic_{os.getpid()}.pcm")
             try:
                 if os.path.exists(fifo_path):
@@ -353,7 +513,7 @@ class TeeFFmpegPublisher:
                 stream_labels.append((f"{idx}:a", None))
                 idx += 1
             except OSError as e:
-                logger.warning("Mic FIFO banane mein fail (%s) - mic skip kiya ja raha hai.", e)
+                logger.warning("Mic FIFO banane mein fail (%s) - mic/handover audio skip kiya ja raha hai.", e)
 
         if self.config.story_voice_path and os.path.exists(self.config.story_voice_path):
             input_args += ["-stream_loop", "-1", "-i", self.config.story_voice_path]
@@ -404,7 +564,15 @@ class TeeFFmpegPublisher:
 
             def _callback(indata, frames, time_info, status):
                 try:
-                    fifo_fd.write(indata.tobytes())
+                    if self._mic_live_active.is_set():
+                        fifo_fd.write(indata.tobytes())
+                    else:
+                        # Keep ffmpeg fed with silence (same byte shape) so
+                        # the pipe never starves - this is what lets mic be
+                        # switched ON later (Live Handover) with zero
+                        # ffmpeg restart, instead of the branch not
+                        # existing at all until a reconnect.
+                        fifo_fd.write(b"\x00" * (frames * 2 * 2))  # 2 channels * 16-bit
                 except Exception:
                     pass
 
@@ -442,6 +610,9 @@ class TeeFFmpegPublisher:
             return False
 
         active = [d for d in self.config.destinations if d.enabled and (d.rtmp_url or "").strip()]
+        skipped = [d.platform for d in self.config.destinations if not d.enabled or not (d.rtmp_url or "").strip()]
+        if skipped:
+            logger.info("OFF/incomplete destinations puri tarah skip ki gayin (koi connection attempt nahi): %s", skipped)
         if not active:
             _set_last_error("Koi bhi enabled destination ke paas valid RTMP URL nahi hai.")
             return False
@@ -747,18 +918,20 @@ class MantraFlashOverlay:
         if not self.text or Image is None or np is None:
             return
         font_size = max(18, int(self.pip_h * 0.28))
-        font = _resolve_font(font_size, want_emoji=False)
-        if font is None:
-            return
         canvas_w, canvas_h = self.pip_w, int(self.pip_h * 0.4)
+
+        rendered = render_mixed_text_image(self.text, font_size, (255, 255, 255))
+        if rendered is None:
+            return
+
+        # Center the rendered (auto-sized) text image onto the fixed PiP
+        # text canvas so positioning stays consistent regardless of length.
         img = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        bbox = draw.textbbox((0, 0), self.text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = max(0, (canvas_w - tw) // 2)
-        y = max(0, (canvas_h - th) // 2)
-        draw.text((x, y), self.text, font=font, fill=(255, 255, 255, 255),
-                  stroke_width=max(1, font_size // 16), stroke_fill=(0, 0, 0, 255))
+        rw, rh = rendered.size
+        x = max(0, (canvas_w - rw) // 2)
+        y = max(0, (canvas_h - rh) // 2)
+        img.paste(rendered, (x, y), rendered)
+
         arr = np.array(img)
         self._text_rgb = arr[:, :, 2::-1].copy()  # RGB->BGR (drop alpha for the color plane)
         self._text_alpha = arr[:, :, 3].copy()
@@ -881,26 +1054,31 @@ class StoryOverlay:
         if not self.text or Image is None or np is None:
             return
         font_size = max(16, int(self.canvas_height * 0.035))
-        font = _resolve_font(font_size)
-        if font is None:
-            return
 
         import textwrap
         max_chars = max(10, int(self.canvas_width / max(1, int(font_size * 0.55))))
         lines = textwrap.wrap(self.text, width=max_chars)[:4]
-        wrapped = "\n".join(lines)
-        if not wrapped:
+        if not lines:
             return
 
-        dummy = Image.new("RGB", (10, 10))
-        d = ImageDraw.Draw(dummy)
-        bbox = d.multiline_textbbox((0, 0), wrapped, font=font, align="center", spacing=6)
-        band_w = min(self.canvas_width - 40, bbox[2] - bbox[0] + 40)
-        band_h = bbox[3] - bbox[1] + 30
+        line_images = [render_mixed_text_image(line, font_size, (255, 255, 255)) for line in lines]
+        line_images = [img for img in line_images if img is not None]
+        if not line_images:
+            return
+
+        line_gap = 6
+        max_w = max(img.width for img in line_images)
+        total_h = sum(img.height for img in line_images) + line_gap * (len(line_images) - 1)
+        band_w = min(self.canvas_width - 40, max_w + 40)
+        band_h = total_h + 30
 
         img = Image.new("RGBA", (band_w, band_h), (0, 0, 0, 140))
-        draw = ImageDraw.Draw(img)
-        draw.multiline_text((20, 15), wrapped, font=font, fill=(255, 255, 255, 255), align="center", spacing=6)
+        y = 15
+        for line_img in line_images:
+            x = max(0, (band_w - line_img.width) // 2)
+            img.paste(line_img, (x, y), line_img)
+            y += line_img.height + line_gap
+
         arr = np.array(img)
         self._strip = arr[:, :, [2, 1, 0, 3]]  # RGBA -> BGRA
         x = max(0, (self.canvas_width - band_w) // 2)
@@ -958,25 +1136,27 @@ class TickerOverlay:
         self._strip_w = 0
         if not self.text or Image is None or np is None:
             return
-        font = _resolve_font(self.font_size)
-        if font is None:
-            return
 
         spacer = "      •      "
-        repeated = (self.text + spacer) * 4
-        dummy = Image.new("RGB", (10, 10))
-        draw = ImageDraw.Draw(dummy)
-        bbox = draw.textbbox((0, 0), repeated, font=font)
-        text_w = max(1, bbox[2] - bbox[0])
-        strip_w = max(self.canvas_width * 2, text_w + 40)
+        one_cycle_text = self.text + spacer
+        segment_img = render_mixed_text_image(one_cycle_text, self.font_size, (255, 255, 255))
+        if segment_img is None:
+            return
 
-        img = Image.new("RGB", (strip_w, self.bar_height), self.bg_color)
-        draw = ImageDraw.Draw(img)
-        text_h = bbox[3] - bbox[1]
-        y = max(0, (self.bar_height - text_h) // 2)
-        draw.text((20, y), repeated, font=font, fill=(255, 255, 255))
+        seg_w, seg_h = segment_img.size
+        band_h = self.bar_height
+        y = max(0, (band_h - seg_h) // 2)
 
-        self._strip = np.array(img)[:, :, ::-1].copy()
+        cycle_img = Image.new("RGB", (max(seg_w, 1), band_h), self.bg_color)
+        cycle_img.paste(segment_img, (0, y), segment_img)
+
+        repeat_count = max(2, (self.canvas_width * 2) // max(1, seg_w) + 2)
+        strip_w = seg_w * repeat_count
+        strip_img = Image.new("RGB", (strip_w, band_h), self.bg_color)
+        for i in range(repeat_count):
+            strip_img.paste(cycle_img, (i * seg_w, 0))
+
+        self._strip = np.array(strip_img)[:, :, ::-1].copy()
         self._strip_w = strip_w
 
     def apply(self, frame):
@@ -1046,6 +1226,12 @@ class LiveStreamEngine:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._camera = None
+        # Live Handover: "media" = Section 1 canvas (+ optional webcam PiP
+        # if webcam_on); "webcam_full" = full-screen webcam takeover, the
+        # actual handover moment. Overlays (mantra/story/ticker) still run
+        # on top either way - only the base visual source changes.
+        self._visual_source = "media"
+        self._handed_over = False
 
         # Section 1 base canvas
         if not config.media_items:
@@ -1084,7 +1270,10 @@ class LiveStreamEngine:
             self._notify("error: publisher failed to start")
             return False
 
-        if self.config.webcam_on:
+        # Open the camera up-front whenever webcam is on OR handover is
+        # enabled, so it's already warmed up and ready the instant the
+        # user triggers the handover (no cold-start delay mid-stream).
+        if self.config.webcam_on or self.config.enable_handover:
             self._camera = cv2.VideoCapture(0)
             self._camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
             self._camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
@@ -1127,6 +1316,8 @@ class LiveStreamEngine:
             "publisher_alive": self._publisher.is_running,
             "frames_pushed": self._frames_pushed,
             "uptime_sec": round(uptime, 1),
+            "handed_over": self._handed_over,
+            "visual_source": self._visual_source,
         }
 
     # -- live updates (Section 3/4/5 text can change without restarting) ----
@@ -1154,6 +1345,39 @@ class LiveStreamEngine:
     def update_destinations(self, destinations: List[Destination]):
         self._publisher.update_destinations(destinations)
 
+    # -- Live Handover: switch source WITHOUT touching the RTMP connection --
+    def perform_handover(self):
+        """
+        The actual "handover" moment: switches the base visual layer from
+        the Section 1 media canvas to this device's own full-screen
+        webcam, and turns the mic on - all while the SAME ffmpeg process
+        keeps pushing to YouTube/etc the entire time, so the platform
+        never sees a disconnect (no "stream interrupted", no chat/viewer
+        drop). Requires enable_handover=True (so the camera + mic pipe
+        were already warmed up at stream start) and a working webcam.
+        """
+        if not self.config.enable_handover:
+            _set_last_error("Handover enable nahi kiya gaya tha (enable_handover=False) - stream start karte waqt yeh chalu karna zaroori hai.")
+            return False
+        if self._camera is None or not self._camera.isOpened():
+            _set_last_error("Webcam available nahi hai is machine par - handover nahi ho sakta. (Cloud server par physical camera nahi hota.)")
+            return False
+        self._visual_source = "webcam_full"
+        self._publisher.set_mic_active(True)
+        self._handed_over = True
+        logger.info("LIVE HANDOVER ho gaya: visual source ab webcam hai, mic ON hai - RTMP connection wahi purana chal raha hai.")
+        return True
+
+    def revert_handover(self):
+        """Switches back to the Section 1 media canvas / mic off, same
+        persistent connection - the reverse of perform_handover()."""
+        self._visual_source = "media"
+        self._publisher.set_mic_active(self.config.mic_enabled)
+        self._handed_over = False
+
+    def is_handed_over(self) -> bool:
+        return self._handed_over
+
     def _next_background_frame(self):
         if self._canvas is not None:
             frame = self._canvas.next_frame()
@@ -1167,21 +1391,35 @@ class LiveStreamEngine:
         frame_interval = 1.0 / max(self.config.fps, 1)
         while self._running:
             loop_start = time.time()
+            try:
+                webcam_frame = None
+                if self._camera is not None and self._camera.isOpened() and (
+                    self.config.webcam_on or self._visual_source == "webcam_full"
+                ):
+                    ok, raw = self._camera.read()
+                    if ok:
+                        webcam_frame = self._bg_processor.process(raw)
 
-            webcam_frame = None
-            if self.config.webcam_on and self._camera is not None and self._camera.isOpened():
-                ok, raw = self._camera.read()
-                if ok:
-                    webcam_frame = self._bg_processor.process(raw)
+                if self._visual_source == "webcam_full" and webcam_frame is not None:
+                    # Handover mode: the real camera feed IS the base
+                    # layer (full screen), not a small PiP.
+                    frame = cv2.resize(webcam_frame, (self.config.width, self.config.height))
+                else:
+                    background_frame = self._next_background_frame()
+                    frame = self._compositor.composite(background_frame, webcam_frame)
 
-            background_frame = self._next_background_frame()
-            frame = self._compositor.composite(background_frame, webcam_frame)
-            frame = self._mantra.apply(frame)
-            frame = self._story.apply(frame)
-            frame = self._ticker.apply(frame)
+                frame = self._mantra.apply(frame)
+                frame = self._story.apply(frame)
+                frame = self._ticker.apply(frame)
 
-            self._publisher.write_frame(frame.tobytes())
-            self._frames_pushed += 1
+                self._publisher.write_frame(frame.tobytes())
+                self._frames_pushed += 1
+            except Exception:
+                # A single bad frame must NEVER kill this background
+                # thread (that would silently end the whole broadcast
+                # even though the process is still alive) - log and
+                # keep going.
+                logger.exception("Frame compose/push mein error - skip karke agle frame par jaa rahe hain.")
 
             elapsed = time.time() - loop_start
             sleep_time = frame_interval - elapsed
@@ -1222,6 +1460,28 @@ def stop_stream() -> bool:
 def update_live_ticker(text: str):
     if _engine is not None:
         _engine.update_ticker(text)
+
+
+def perform_live_handover() -> bool:
+    """The actual handover trigger - switches to real webcam+mic on the
+    SAME running RTMP connection. Returns False (with get_last_error()
+    explaining why) if handover wasn't enabled at start or no camera is
+    available on this machine."""
+    if _engine is None:
+        _set_last_error("Koi stream chal hi nahi rahi - pehle Start Live karein.")
+        return False
+    return _engine.perform_handover()
+
+
+def revert_live_handover():
+    if _engine is not None:
+        _engine.revert_handover()
+
+
+def is_handed_over() -> bool:
+    if _engine is not None:
+        return _engine.is_handed_over()
+    return False
 
 
 def update_live_ticker_font_size(size: int):
@@ -1266,6 +1526,100 @@ def is_streaming() -> bool:
 
 def check_ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
+
+
+# ---------------------------------------------------------------------------
+# SCHEDULER — arms a background thread (independent of any browser
+# session/tab) that automatically start_stream()'s at a future time and
+# stop_stream()'s at another future time.
+#
+# IMPORTANT: this thread lives inside THIS Python server process. It
+# keeps running whether or not any browser is connected - but if the
+# underlying process itself is restarted or put to sleep (e.g. Streamlit
+# Community Cloud's "sleep after inactivity" policy) BEFORE the
+# scheduled time, the thread dies with it and the schedule silently
+# never fires. Use an external uptime-ping service (UptimeRobot,
+# cron-job.org, etc.) hitting the app's URL every few minutes if you
+# need unattended scheduling to be reliable on a free host.
+# ---------------------------------------------------------------------------
+_scheduler_thread: Optional[threading.Thread] = None
+_scheduler_stop_event = threading.Event()
+_scheduler_info: dict = {}
+_scheduler_lock = threading.Lock()
+
+
+def schedule_stream(config: StreamConfig, start_at_epoch: Optional[float],
+                    stop_at_epoch: Optional[float]) -> bool:
+    """
+    Arms the scheduler: waits (if needed) until start_at_epoch, then
+    calls start_stream(config); if stop_at_epoch is given, later calls
+    stop_stream() at that time too. Pass start_at_epoch=None to start
+    immediately, and stop_at_epoch=None to run until manually stopped.
+    Returns False (with get_last_error() explaining why) if a schedule
+    is already armed.
+    """
+    global _scheduler_thread
+    with _scheduler_lock:
+        if _scheduler_thread is not None and _scheduler_thread.is_alive():
+            _set_last_error("Ek schedule pehle se armed hai - pehle use cancel karein.")
+            return False
+
+        _scheduler_stop_event.clear()
+        _scheduler_info.clear()
+        _scheduler_info.update({
+            "start_at": start_at_epoch,
+            "stop_at": stop_at_epoch,
+            "armed": True,
+            "fired_start": False,
+            "fired_stop": False,
+        })
+
+        def _worker():
+            try:
+                if start_at_epoch:
+                    while time.time() < start_at_epoch and not _scheduler_stop_event.is_set():
+                        time.sleep(1)
+                if _scheduler_stop_event.is_set():
+                    return
+
+                logger.info("Scheduler: start time aa gaya - stream start kar rahe hain.")
+                start_stream(config)
+                _scheduler_info["fired_start"] = True
+
+                if stop_at_epoch:
+                    while time.time() < stop_at_epoch and not _scheduler_stop_event.is_set():
+                        time.sleep(1)
+                    if not _scheduler_stop_event.is_set():
+                        logger.info("Scheduler: stop time aa gaya - stream stop kar rahe hain.")
+                        stop_stream()
+                        _scheduler_info["fired_stop"] = True
+            except Exception:
+                logger.exception("Scheduler thread mein error aayi.")
+            finally:
+                _scheduler_info["armed"] = False
+
+        _scheduler_thread = threading.Thread(target=_worker, name="LiveScheduler", daemon=True)
+        _scheduler_thread.start()
+        return True
+
+
+def cancel_schedule() -> bool:
+    """Cancels a pending (not-yet-fired) schedule. If the start already
+    fired and the stream is live, this only cancels the scheduled STOP -
+    stop the stream manually via stop_stream() instead."""
+    global _scheduler_thread
+    with _scheduler_lock:
+        if _scheduler_thread is None or not _scheduler_thread.is_alive():
+            return False
+        _scheduler_stop_event.set()
+        _scheduler_info["armed"] = False
+        return True
+
+
+def get_schedule_status() -> Optional[dict]:
+    if not _scheduler_info:
+        return None
+    return dict(_scheduler_info)
 
 
 if __name__ == "__main__":

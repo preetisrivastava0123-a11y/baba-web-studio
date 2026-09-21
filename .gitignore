@@ -1,2 +1,11 @@
 .live_studio_data/
 .streamlit/secrets.toml
+
+
+# Add these lines to your project's .gitignore so RTMP keys, app
+# password, and Google OAuth secrets never get committed:
+
+.live_studio_data/
+.streamlit/secrets.toml
+.dashboard_data/
+.live_chat_data/

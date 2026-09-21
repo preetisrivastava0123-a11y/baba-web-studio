@@ -27,7 +27,7 @@ import streamlit as st
 
 import live_engine
 from live_engine import Destination, StreamConfig, MediaItem
-import live_chat_bridge
+#import live_chat_bridge
 
 
 UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "live_studio_uploads")

@@ -170,17 +170,32 @@ def _get_credentials():
 
     query_params = st.query_params
     if "code" in query_params:
+        code = query_params["code"]
+        already_processed = st.session_state.get("yt_oauth_processed_code")
+        if code == already_processed:
+            # Streamlit re-ran the script with the same ?code= still in the
+            # URL (this happens easily) - a Google auth code is single-use,
+            # so re-submitting it fails with "invalid_grant: Bad Request".
+            # We've already handled this exact code - just clear the URL.
+            st.query_params.clear()
+            st.rerun()
         try:
             code_verifier = st.session_state.get("yt_oauth_code_verifier")
             flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
-            flow.fetch_token(code=query_params["code"])
+            flow.fetch_token(code=code)
             creds = flow.credentials
             st.session_state["yt_credentials_json"] = creds.to_json()
+            st.session_state["yt_oauth_processed_code"] = code
             st.session_state.pop("yt_oauth_code_verifier", None)
             st.query_params.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"❌ Login fail हुआ: {e}")
+            st.session_state["yt_oauth_processed_code"] = code  # don't retry this dead code in a loop
+            st.error(
+                f"❌ Login fail हुआ: {e}\n\n"
+                "अगर यह 'Bad Request' है, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
+                "(पुराना redirect link दोबारा खोलने या बैक-बटन इस्तेमाल करने से बचें - Google का code एक ही बार चलता है)।"
+            )
             return None
 
     flow = _get_flow(client_id, client_secret, redirect_uri)

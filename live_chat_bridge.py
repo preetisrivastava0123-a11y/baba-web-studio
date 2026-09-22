@@ -166,16 +166,30 @@ def render_oauth_and_get_youtube_client(st):
 
     query_params = st.query_params
     if "code" in query_params:
+        code = query_params["code"]
+        already_processed = st.session_state.get("chat_oauth_processed_code")
+        if code == already_processed:
+            # Streamlit re-ran the script with the same ?code= still in the
+            # URL - a Google auth code is single-use, re-submitting it
+            # fails with "invalid_grant: Bad Request". Already handled it.
+            st.query_params.clear()
+            st.rerun()
         try:
             code_verifier = st.session_state.get("chat_oauth_code_verifier")
             flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
-            flow.fetch_token(code=query_params["code"])
+            flow.fetch_token(code=code)
             st.session_state["chat_credentials_json"] = flow.credentials.to_json()
+            st.session_state["chat_oauth_processed_code"] = code
             st.session_state.pop("chat_oauth_code_verifier", None)
             st.query_params.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"❌ Login fail हुआ: {e}")
+            st.session_state["chat_oauth_processed_code"] = code  # don't retry this dead code in a loop
+            st.error(
+                f"❌ Login fail हुआ: {e}\n\n"
+                "अगर यह 'Bad Request' है, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
+                "(पुराना redirect link दोबारा खोलने या बैक-बटन इस्तेमाल करने से बचें)।"
+            )
             return None
 
     flow = _get_flow(client_id, client_secret, redirect_uri)

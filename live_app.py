@@ -55,6 +55,25 @@ AI_VOICE_OPTIONS = {
 LIVE_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".live_studio_data")
 os.makedirs(LIVE_CONFIG_DIR, exist_ok=True)
 DESTINATIONS_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "destinations.json")
+APP_URL_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "app_url.json")
+
+
+def _load_app_url() -> str:
+    try:
+        if os.path.exists(APP_URL_STORE_PATH):
+            with open(APP_URL_STORE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f).get("app_url", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _save_app_url(url: str):
+    try:
+        with open(APP_URL_STORE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"app_url": url}, f)
+    except Exception:
+        pass
 
 
 def _load_saved_destinations():
@@ -734,13 +753,36 @@ def _render_schedule_section():
     st.caption(
         "ऊपर के सभी Section (Media, Audio, Mantra, Story, Ticker, Destinations) पहले भर दें, फिर यहाँ समय तय "
         "करके 'Schedule लगाएं' दबाएं — उसके बाद browser/laptop/mobile बंद कर सकते हैं, तय समय पर अपने आप "
-        "live शुरू और बंद हो जाएगा (जब तक server/cloud process चालू है — नीचे की चेतावनी ज़रूर पढ़ें)।"
+        "live शुरू और बंद हो जाएगा।"
     )
-    st.warning(
-        "⚠️ Free **Streamlit Community Cloud** पर ऐप लंबे समय बिना visitor के sleep में चला जाता है — अगर "
-        "schedule का समय आने से पहले ही ऐप sleep हो गया, तो वह कभी नहीं चलेगा। भरोसेमंद unattended scheduling "
-        "के लिए किसी free service (जैसे UptimeRobot, cron-job.org) से अपने ऐप के URL पर हर 5-10 मिनट ping भेजते "
-        "रहें, ताकि ऐप कभी sleep न हो।"
+
+    st.markdown("**🔁 Keep-Alive (एक बार सेट करें, फिर हमेशा अपने-आप चलेगा)**")
+    st.caption(
+        "अपने ऐप का पूरा public URL यहाँ एक बार डाल दें — Schedule लगाते ही (या Live शुरू करते ही) ऐप खुद "
+        "हर 4 मिनट में अपने-आप को ping करता रहेगा, ताकि free hosting पर वह sleep में न जाए। किसी बाहरी "
+        "service (UptimeRobot वगैरह) की अब ज़रूरत नहीं — बस नीचे URL डालकर Save करें, बाकी अपने-आप होगा।"
+    )
+    saved_url = _load_app_url()
+    app_url = st.text_input(
+        "आपके ऐप का पूरा URL", value=saved_url, key="schedule_app_url_input",
+        placeholder="https://your-app.streamlit.app/",
+    )
+    if app_url != saved_url:
+        _save_app_url(app_url)
+    if app_url:
+        if live_engine.is_keepalive_running():
+            st.caption("🟢 Self-ping पहले से चल रहा है।")
+        else:
+            st.caption("⚪ Self-ping अभी बंद है — Schedule लगाते ही या Live शुरू करते ही अपने-आप चालू हो जाएगा।")
+    else:
+        st.caption(
+            "⚠️ URL नहीं भरा है — बिना इसके free hosting पर लंबी unattended scheduling भरोसेमंद नहीं रहेगी, "
+            "ऐप बीच में sleep हो सकता है और schedule कभी नहीं चलेगा।"
+        )
+    st.caption(
+        "ℹ️ ईमानदारी से बता दूँ: यह best-effort तरीका है, 100% गारंटी नहीं — अगर ऐप पहले से पूरी तरह sleep हो "
+        "चुका है तो कोई भी internal thread उसे खुद जगा नहीं सकता (वह process ही रुका हुआ है)। यह सिर्फ़ "
+        "ऐप को sleep होने से **रोकता** है, नियमित रूप से खुद को active रखकर।"
     )
 
     schedule_status = live_engine.get_schedule_status()
@@ -793,6 +835,8 @@ def _render_schedule_section():
         with st.spinner("तैयारी हो रही है..."):
             config = _build_stream_config()
         if live_engine.schedule_stream(config, start_epoch, stop_epoch):
+            if app_url:
+                live_engine.start_keepalive(app_url)
             st.success("✅ Schedule लग गया! अब आप laptop/mobile बंद कर सकते हैं।")
             st.rerun()
         else:
@@ -821,6 +865,9 @@ def _render_control_buttons():
             if started:
                 _set("is_live", True)
                 _set("_last_start_error", None)
+                saved_app_url = _load_app_url()
+                if saved_app_url:
+                    live_engine.start_keepalive(saved_app_url)
                 st.session_state["live_studio"]["_last_pushed_ticker"] = _get("ticker_text")
                 st.session_state["live_studio"]["_last_pushed_mantra"] = _get("mantra_text")
                 st.session_state["live_studio"]["_last_pushed_story"] = config.story_text

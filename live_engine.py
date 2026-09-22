@@ -1622,6 +1622,71 @@ def get_schedule_status() -> Optional[dict]:
     return dict(_scheduler_info)
 
 
+# ---------------------------------------------------------------------------
+# SELF-PING KEEP-ALIVE - lets the app keep ITSELF awake on free hosts like
+# Streamlit Community Cloud, without needing an external service
+# (UptimeRobot/cron-job.org). You enter your own app's public URL ONCE in
+# the UI; from then on, arming a Schedule (or going live) automatically
+# starts this background thread - zero extra effort after that one entry.
+#
+# HONEST LIMITATION: this is a best-effort mitigation, not a guarantee.
+# It works by regularly requesting the app's own URL, which in practice
+# keeps most free hosts (including Streamlit Community Cloud) from
+# treating the app as inactive - but it CANNOT revive an app that has
+# ALREADY fully gone to sleep (a sleeping process can't run a thread to
+# wake itself up - that's a logical impossibility, not a limitation of
+# this code). It only works if the ping interval stays comfortably
+# shorter than the host's inactivity timeout, which is why the default
+# below is a conservative 4 minutes.
+# ---------------------------------------------------------------------------
+_keepalive_thread: Optional[threading.Thread] = None
+_keepalive_stop_event = threading.Event()
+_keepalive_url: Optional[str] = None
+
+
+def start_keepalive(app_url: str, interval_sec: float = 240.0) -> bool:
+    """Starts (or, if already running for the same URL, leaves alone) the
+    self-ping background thread. Safe to call repeatedly - e.g. every
+    time a schedule is armed or the stream starts."""
+    global _keepalive_thread, _keepalive_url
+    if not app_url or not app_url.strip():
+        return False
+
+    if _keepalive_thread is not None and _keepalive_thread.is_alive() and _keepalive_url == app_url:
+        return True  # already pinging this exact URL, nothing to do
+
+    stop_keepalive()  # stop any previous ping loop (e.g. pinging an old URL)
+    _keepalive_url = app_url.strip()
+    _keepalive_stop_event.clear()
+
+    def _worker():
+        try:
+            import requests
+        except ImportError:
+            logger.warning("`requests` install nahi hai - self-ping keep-alive kaam nahi karega. `pip install requests` chalayein.")
+            return
+        while not _keepalive_stop_event.is_set():
+            try:
+                requests.get(_keepalive_url, timeout=10)
+                logger.info("Keep-alive self-ping bheja gaya: %s", _keepalive_url)
+            except Exception as e:
+                logger.warning("Keep-alive ping fail hui (%s) - agli baar phir try karenge.", e)
+            _keepalive_stop_event.wait(interval_sec)
+
+    _keepalive_thread = threading.Thread(target=_worker, name="KeepAlivePing", daemon=True)
+    _keepalive_thread.start()
+    logger.info("Self-ping keep-alive shuru: har %.0f second mein %s ko ping kiya jaayega.", interval_sec, _keepalive_url)
+    return True
+
+
+def stop_keepalive():
+    _keepalive_stop_event.set()
+
+
+def is_keepalive_running() -> bool:
+    return _keepalive_thread is not None and _keepalive_thread.is_alive()
+
+
 if __name__ == "__main__":
     demo_config = StreamConfig(
         destinations=[Destination(platform="YouTube", rtmp_url="rtmp://a.rtmp.youtube.com/live2/REPLACE_ME", enabled=True)],

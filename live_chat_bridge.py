@@ -99,7 +99,7 @@ def _save_oauth_config(client_id, client_secret, redirect_uri):
         pass
 
 
-def _get_flow(client_id, client_secret, redirect_uri):
+def _get_flow(client_id, client_secret, redirect_uri, code_verifier=None):
     client_config = {
         "web": {
             "client_id": client_id,
@@ -109,7 +109,14 @@ def _get_flow(client_id, client_secret, redirect_uri):
             "redirect_uris": [redirect_uri],
         }
     }
-    return Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri=redirect_uri)
+    flow = Flow.from_client_config(client_config, scopes=SCOPES, redirect_uri=redirect_uri)
+    if code_verifier:
+        # PKCE fix: reuse the SAME verifier the authorization_url() step
+        # generated, instead of this fresh Flow generating (or lacking)
+        # its own - Google rejects the token exchange otherwise with
+        # "invalid_grant: Missing code verifier".
+        flow.code_verifier = code_verifier
+    return flow
 
 
 def is_available() -> bool:
@@ -160,9 +167,11 @@ def render_oauth_and_get_youtube_client(st):
     query_params = st.query_params
     if "code" in query_params:
         try:
-            flow = _get_flow(client_id, client_secret, redirect_uri)
+            code_verifier = st.session_state.get("chat_oauth_code_verifier")
+            flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
             flow.fetch_token(code=query_params["code"])
             st.session_state["chat_credentials_json"] = flow.credentials.to_json()
+            st.session_state.pop("chat_oauth_code_verifier", None)
             st.query_params.clear()
             st.rerun()
         except Exception as e:
@@ -171,6 +180,9 @@ def render_oauth_and_get_youtube_client(st):
 
     flow = _get_flow(client_id, client_secret, redirect_uri)
     auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+    # Save this exact Flow's code_verifier so the callback step above can
+    # reuse it - this is the PKCE fix (see _get_flow's docstring note).
+    st.session_state["chat_oauth_code_verifier"] = flow.code_verifier
     st.link_button("🔓 Live Chat के लिए Login करें (लिखने की permission सहित)", auth_url)
     return None
 

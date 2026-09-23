@@ -69,11 +69,47 @@ CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".live_cha
 os.makedirs(CONFIG_DIR, exist_ok=True)
 OAUTH_CONFIG_PATH = os.path.join(CONFIG_DIR, "oauth_config.json")
 SEEN_COMMENTERS_PATH = os.path.join(CONFIG_DIR, "seen_commenters.json")
+PENDING_OAUTH_PATH = os.path.join(CONFIG_DIR, "pending_oauth.json")
 
 DEFAULT_WELCOME_TEMPLATE = (
     "🙏 Welcome to my channel! हमारे चैनल में जुड़ने व सपोर्ट के लिए आपको हृदय से धन्यवाद 🙏 "
     "चैनल को Like, Subscribe करें और कमेंट में हर हर महादेव 🔱 ज़रूर लिखें 🌺"
 )
+
+
+# ---------------------------------------------------------------------------
+# Pending-OAuth (PKCE code_verifier) storage - keyed by the `state` value.
+# See youtube_dashboard.py's identical helper for the full explanation:
+# st.session_state does not reliably survive the real browser round-trip
+# to Google's consent page and back, so this uses disk instead, keyed by
+# the `state` param (which DOES survive, since it's just part of the URL).
+# ---------------------------------------------------------------------------
+def _save_pending_verifier(state: str, code_verifier: str):
+    try:
+        data = {}
+        if os.path.exists(PENDING_OAUTH_PATH):
+            with open(PENDING_OAUTH_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data[state] = code_verifier
+        with open(PENDING_OAUTH_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _pop_pending_verifier(state: str):
+    try:
+        if not os.path.exists(PENDING_OAUTH_PATH):
+            return None
+        with open(PENDING_OAUTH_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        verifier = data.pop(state, None)
+        with open(PENDING_OAUTH_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return verifier
+    except Exception:
+        return None
+
 
 MIN_POLL_INTERVAL_SEC = 5.0  # safety floor regardless of what YouTube suggests, to protect your API quota
 
@@ -167,6 +203,7 @@ def render_oauth_and_get_youtube_client(st):
     query_params = st.query_params
     if "code" in query_params:
         code = query_params["code"]
+        state = query_params.get("state")
         already_processed = st.session_state.get("chat_oauth_processed_code")
         if code == already_processed:
             # Streamlit re-ran the script with the same ?code= still in the
@@ -175,28 +212,31 @@ def render_oauth_and_get_youtube_client(st):
             st.query_params.clear()
             st.rerun()
         try:
-            code_verifier = st.session_state.get("chat_oauth_code_verifier")
+            # Look the verifier up from disk by `state`, NOT session_state -
+            # clicking the Login link is a real navigation to Google and
+            # back, which can start a brand-new Streamlit session.
+            code_verifier = _pop_pending_verifier(state) if state else None
             flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
             flow.fetch_token(code=code)
             st.session_state["chat_credentials_json"] = flow.credentials.to_json()
             st.session_state["chat_oauth_processed_code"] = code
-            st.session_state.pop("chat_oauth_code_verifier", None)
             st.query_params.clear()
             st.rerun()
         except Exception as e:
             st.session_state["chat_oauth_processed_code"] = code  # don't retry this dead code in a loop
             st.error(
                 f"❌ Login fail हुआ: {e}\n\n"
-                "अगर यह 'Bad Request' है, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
+                "अगर यह दोबारा हो, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
                 "(पुराना redirect link दोबारा खोलने या बैक-बटन इस्तेमाल करने से बचें)।"
             )
             return None
 
     flow = _get_flow(client_id, client_secret, redirect_uri)
-    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
-    # Save this exact Flow's code_verifier so the callback step above can
-    # reuse it - this is the PKCE fix (see _get_flow's docstring note).
-    st.session_state["chat_oauth_code_verifier"] = flow.code_verifier
+    auth_url, state = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+    # Save this exact Flow's code_verifier to disk, keyed by `state` - this
+    # is the PKCE fix, done in a way that survives the real redirect to
+    # Google and back.
+    _save_pending_verifier(state, flow.code_verifier)
     st.link_button("🔓 Live Chat के लिए Login करें (लिखने की permission सहित)", auth_url)
     return None
 

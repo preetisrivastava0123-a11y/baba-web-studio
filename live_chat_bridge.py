@@ -16,6 +16,29 @@ don't have to grant write access to your channel just to view analytics,
 and vice versa.
 
 --------------------------------------------------------------------------
+CLIENT ID/SECRET STORAGE - अब स्थायी (persistent) है
+--------------------------------------------------------------------------
+Streamlit Cloud पर filesystem "ephemeral" (अस्थायी) होता है - restart/
+redeploy/sleep पर लिखी हुई local files मिट जाती हैं। इसलिए अब यह पहले
+इस क्रम में देखता है, कहीं भी मिल जाए तो form दिखाना बंद हो जाता है:
+    1) असली environment variables (YOUTUBE_CHAT_CLIENT_ID वगैरह)
+    2) Streamlit Secrets [youtube_chat_oauth] section
+    3) Streamlit Secrets [youtube_oauth] section (Dashboard वाला ही reuse)
+    4) local file (सिर्फ़ testing के लिए, restart पर मिट जाएगी)
+
+Streamlit Cloud पर स्थायी setup के लिए: Manage app → Settings → Secrets
+में जोड़ें:
+    [youtube_chat_oauth]
+    client_id = "आपका Client ID"
+    client_secret = "आपका Client Secret"
+    redirect_uri = "https://your-app.streamlit.app/"
+
+(अगर Dashboard वाला [youtube_oauth] पहले से Secrets में है, तो अलग से
+कुछ जोड़ने की ज़रूरत नहीं - यह अपने आप उसी को reuse कर लेगा, क्योंकि
+docstring में बताया गया है कि same Client ID/Secret दोनों जगह चल सकता
+है, सिर्फ़ permission scope अलग होता है।)
+
+--------------------------------------------------------------------------
 LIMITATIONS - please read before relying on this
 --------------------------------------------------------------------------
 - YouTube has NO chat push/websocket API - this POLLS on the interval
@@ -118,10 +141,44 @@ MIN_POLL_INTERVAL_SEC = 5.0  # safety floor regardless of what YouTube suggests,
 # OAuth (separate credentials/session key from youtube_dashboard.py)
 # ---------------------------------------------------------------------------
 def _load_oauth_config():
+    # 1) असली environment variables (सबसे सुरक्षित - self-hosted/local .env के लिए)
+    env_client_id = os.environ.get("YOUTUBE_CHAT_CLIENT_ID")
+    env_client_secret = os.environ.get("YOUTUBE_CHAT_CLIENT_SECRET")
+    env_redirect_uri = os.environ.get("YOUTUBE_CHAT_REDIRECT_URI")
+    if env_client_id and env_client_secret and env_redirect_uri:
+        return {
+            "client_id": env_client_id, "client_secret": env_client_secret,
+            "redirect_uri": env_redirect_uri, "_source": "env",
+        }
+
+    # 2) Streamlit Secrets - पहले चैट-specific section देखें
+    try:
+        import streamlit as st
+        if "youtube_chat_oauth" in st.secrets:
+            s = st.secrets["youtube_chat_oauth"]
+            return {
+                "client_id": s.get("client_id", ""), "client_secret": s.get("client_secret", ""),
+                "redirect_uri": s.get("redirect_uri", ""), "_source": "secrets",
+            }
+        # 3) न मिले तो Dashboard वाला [youtube_oauth] ही reuse कर लें
+        # (docstring में बताया गया है कि same Client ID/Secret दोनों जगह
+        # काम करता है, सिर्फ़ scope अलग माँगा जाता है)
+        if "youtube_oauth" in st.secrets:
+            s = st.secrets["youtube_oauth"]
+            return {
+                "client_id": s.get("client_id", ""), "client_secret": s.get("client_secret", ""),
+                "redirect_uri": s.get("redirect_uri", ""), "_source": "secrets (dashboard से reuse)",
+            }
+    except Exception:
+        pass
+
+    # 4) आख़िर में local file (सिर्फ़ testing के लिए, restart पर मिट जाएगी)
     try:
         if os.path.exists(OAUTH_CONFIG_PATH):
             with open(OAUTH_CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                data["_source"] = "file"
+                return data
     except Exception:
         pass
     return {}
@@ -171,21 +228,33 @@ def render_oauth_and_get_youtube_client(st):
         return None
 
     saved = _load_oauth_config()
-    with st.expander("⚙️ Live Chat के लिए Google Setup (लिखने की permission सहित)", expanded=not saved):
-        st.caption(
-            f"⚠️ plain text में `{OAUTH_CONFIG_PATH}` में save होता है — `.gitignore` में ज़रूर जोड़ें। "
-            "Dashboard वाला Client ID/Secret भी इस्तेमाल कर सकते हैं (बस login अलग से करना होगा, permission ज़्यादा चाहिए)।"
-        )
-        client_id = st.text_input("Client ID", value=saved.get("client_id", ""), key="chat_client_id")
-        client_secret = st.text_input("Client Secret", value=saved.get("client_secret", ""), type="password", key="chat_client_secret")
-        redirect_uri = st.text_input(
-            "Redirect URI (Cloud Console में हूबहू यही)", value=saved.get("redirect_uri", ""),
-            key="chat_redirect_uri", placeholder="https://your-app.streamlit.app/",
-        )
-        if st.button("💾 Save Setup", key="chat_oauth_save_btn"):
-            _save_oauth_config(client_id, client_secret, redirect_uri)
-            st.success("✅ Save हो गया।")
-            st.rerun()
+
+    if saved.get("_source") in ("env", "secrets", "secrets (dashboard से reuse)"):
+        st.success(f"✅ Setup {saved['_source']} से load हुआ है — restart/redeploy/sleep के बाद भी सुरक्षित रहेगा।")
+    else:
+        with st.expander("⚙️ Live Chat के लिए Google Setup (लिखने की permission सहित)", expanded=not saved):
+            st.warning(
+                "⚠️ यह form-वाला तरीका सिर्फ़ local/testing के लिए है — Streamlit Cloud पर यहाँ भरी हुई "
+                "value हर restart/redeploy/sleep पर मिट जाएगी। स्थायी setup के लिए **Streamlit Cloud → "
+                "Manage app → Settings → Secrets** में `[youtube_chat_oauth]` के नीचे client_id, "
+                "client_secret, redirect_uri डालें (या अगर Dashboard वाला `[youtube_oauth]` पहले से "
+                "Secrets में है, तो कुछ जोड़ने की ज़रूरत ही नहीं, वही अपने आप reuse हो जाएगा) — फिर यह form "
+                "अपने आप दिखना बंद हो जाएगा।"
+            )
+            st.caption(
+                f"plain text में `{OAUTH_CONFIG_PATH}` में save होता है — `.gitignore` में ज़रूर जोड़ें। "
+                "Dashboard वाला Client ID/Secret भी इस्तेमाल कर सकते हैं (बस login अलग से करना होगा, permission ज़्यादा चाहिए)।"
+            )
+            client_id = st.text_input("Client ID", value=saved.get("client_id", ""), key="chat_client_id")
+            client_secret = st.text_input("Client Secret", value=saved.get("client_secret", ""), type="password", key="chat_client_secret")
+            redirect_uri = st.text_input(
+                "Redirect URI (Cloud Console में हूबहू यही)", value=saved.get("redirect_uri", ""),
+                key="chat_redirect_uri", placeholder="https://your-app.streamlit.app/",
+            )
+            if st.button("💾 Save Setup", key="chat_oauth_save_btn"):
+                _save_oauth_config(client_id, client_secret, redirect_uri)
+                st.success("✅ Save हो गया (ध्यान दें: यह अगले restart तक ही रहेगा, ऊपर की चेतावनी देखें)।")
+                st.rerun()
 
     if not (saved.get("client_id") and saved.get("client_secret") and saved.get("redirect_uri")):
         st.info("ℹ️ ऊपर Setup भरकर Save करें, फिर Login का बटन दिखेगा।")

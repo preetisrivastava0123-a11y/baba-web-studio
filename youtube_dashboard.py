@@ -102,10 +102,39 @@ PENDING_OAUTH_PATH = os.path.join(CONFIG_DIR, "pending_oauth.json")
 # OAuth config persistence (Client ID/Secret only - NEVER the token itself)
 # ---------------------------------------------------------------------------
 def _load_oauth_config():
+    # 1) सबसे पहले असली environment variables देखें - self-hosted या local
+    #    .env (python-dotenv से load किया हुआ) के लिए यह सबसे सुरक्षित है,
+    #    क्योंकि यह कभी GitHub repo में नहीं जाता।
+    env_client_id = os.environ.get("YOUTUBE_CLIENT_ID")
+    env_client_secret = os.environ.get("YOUTUBE_CLIENT_SECRET")
+    env_redirect_uri = os.environ.get("YOUTUBE_REDIRECT_URI")
+    if env_client_id and env_client_secret and env_redirect_uri:
+        return {
+            "client_id": env_client_id, "client_secret": env_client_secret,
+            "redirect_uri": env_redirect_uri, "_source": "env",
+        }
+
+    # 2) फिर Streamlit Cloud के Secrets में देखें - यह ephemeral filesystem
+    #    पर save नहीं होता (restart/redeploy/sleep पर भी सुरक्षित रहता है)।
+    try:
+        if "youtube_oauth" in st.secrets:
+            s = st.secrets["youtube_oauth"]
+            return {
+                "client_id": s.get("client_id", ""),
+                "client_secret": s.get("client_secret", ""),
+                "redirect_uri": s.get("redirect_uri", ""),
+                "_source": "secrets",
+            }
+    except Exception:
+        pass
+
+    # 3) आख़िर में local file (सिर्फ़ testing के लिए, restart पर मिट जाएगी)
     try:
         if os.path.exists(OAUTH_CONFIG_PATH):
             with open(OAUTH_CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                data["_source"] = "file"
+                return data
     except Exception:
         pass
     return {}
@@ -182,7 +211,27 @@ def _render_oauth_setup():
     st.subheader("🔐 Google से चैनल जोड़ें")
     saved = _load_oauth_config()
 
+    if saved.get("_source") == "env":
+        st.success(
+            "✅ Setup environment variables से load हुआ है — यह सबसे सुरक्षित तरीका है, "
+            "दोबारा भरने की ज़रूरत नहीं पड़ेगी।"
+        )
+        return saved.get("client_id", ""), saved.get("client_secret", ""), saved.get("redirect_uri", "")
+
+    if saved.get("_source") == "secrets":
+        st.success(
+            "✅ Setup Streamlit Secrets से load हुआ है — यह restart/redeploy/sleep के बाद भी "
+            "सुरक्षित रहेगा, दोबारा भरने की ज़रूरत नहीं पड़ेगी।"
+        )
+        return saved.get("client_id", ""), saved.get("client_secret", ""), saved.get("redirect_uri", "")
+
     with st.expander("⚙️ एक बार का Setup (Client ID/Secret)", expanded=not saved):
+        st.warning(
+            "⚠️ यह form-वाला तरीका सिर्फ़ local/testing के लिए है — Streamlit Cloud पर यहाँ भरी हुई "
+            "value हर restart/redeploy/sleep पर मिट जाएगी। स्थायी setup के लिए **Streamlit Cloud → "
+            "Manage app → Settings → Secrets** में `[youtube_oauth]` के नीचे client_id, "
+            "client_secret, redirect_uri डालें — फिर यह form अपने आप दिखना बंद हो जाएगा।"
+        )
         st.caption(
             "Google Cloud Console से लिया Client ID/Secret यहाँ डालें। ⚠️ यह भी plain text में "
             f"`{OAUTH_CONFIG_PATH}` में save होता है — `.gitignore` में ज़रूर जोड़ें।"
@@ -196,7 +245,7 @@ def _render_oauth_setup():
         )
         if st.button("💾 Save Setup", key="yt_oauth_save_btn"):
             _save_oauth_config(client_id, client_secret, redirect_uri)
-            st.success("✅ Save हो गया।")
+            st.success("✅ Save हो गया (ध्यान दें: यह अगले restart तक ही रहेगा, ऊपर की चेतावनी देखें)।")
             st.rerun()
 
     return saved.get("client_id", ""), saved.get("client_secret", ""), saved.get("redirect_uri", "")

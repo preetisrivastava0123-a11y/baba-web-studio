@@ -68,6 +68,14 @@ import streamlit as st
 from business_report import render_business_report
 from topic_trend_analysis import render_own_topic_performance, render_niche_intelligence
 
+# Google का OAuth कभी-कभी हमने जितना scope माँगा था उससे ज़्यादा दे देता
+# है - जैसे अगर उसी Client ID/Google account से पहले से Live Chat
+# (youtube.force-ssl) login किया गया है, तो include_granted_scopes=true
+# की वजह से वह पहले वाला broader scope भी दोबारा जोड़कर लौटा देता है।
+# डिफ़ॉल्ट रूप से यह library इसे error मान लेती है, भले ही extra
+# permission नुकसानदायक न हो। यह relax flag उस strict check को हटाता है।
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 logger = logging.getLogger("youtube_dashboard")
 
 try:

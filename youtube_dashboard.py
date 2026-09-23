@@ -5,6 +5,11 @@ dashboard, using YouTube's OWN official APIs (Data API v3 + Analytics
 API v2) via OAuth2. Call render_dashboard_ui() from app.py.
 
 --------------------------------------------------------------------------
+यह वर्ज़न business_report.py और topic_trend_analysis.py के साथ पहले से
+जुड़ा (integrated) है — बस इन दोनों फ़ाइलों को इसी फ़ोल्डर में रखें,
+कुछ और नहीं करना है।
+--------------------------------------------------------------------------
+
 WHAT THIS CAN AND CANNOT DO - PLEASE READ
 --------------------------------------------------------------------------
 CAN (real, verified data straight from YouTube's own APIs):
@@ -21,6 +26,11 @@ CAN (real, verified data straight from YouTube's own APIs):
                       on 1 Feb 2027
     - What's currently getting high views in a niche/keyword you choose
       (via public YouTube search) - as INSPIRATION, not a guarantee
+    - एक हिंदी "व्यापार रिपोर्ट" जो बताए क्या सही हुआ, क्या सुधार चाहिए,
+      निष्कर्ष और आगे की रणनीति (business_report.py)
+    - टॉपिक/फॉर्मेट (Shorts बनाम Long-form) के हिसाब से आपके वीडियो का
+      परफॉर्मेंस, और पूरे niche में क्या ज़्यादा चल रहा है
+      (topic_trend_analysis.py)
 
 CANNOT (no tool, including this one, can honestly offer these):
     - "Secret" growth hacks or guaranteed-viral hashtags/titles -
@@ -54,6 +64,9 @@ import logging
 from datetime import datetime, timedelta
 
 import streamlit as st
+
+from business_report import render_business_report
+from topic_trend_analysis import render_own_topic_performance, render_niche_intelligence
 
 logger = logging.getLogger("youtube_dashboard")
 
@@ -403,33 +416,6 @@ def _render_monetization_tracker(subs, watch_hours, shorts_views, upload_count=N
     )
 
 
-def _render_niche_trend_explorer(youtube):
-    st.subheader("🔎 Dharmik Niche Trend Explorer")
-    st.caption(
-        "⚠️ यह असली 'trending' API नहीं है (YouTube ऐसा कुछ पब्लिक नहीं करता) — यह हाल में पब्लिश हुए "
-        "वीडियो को views के हिसाब से sort करके दिखाता है, सिर्फ़ **inspiration** के लिए, guarantee नहीं।"
-    )
-    query = st.text_input(
-        "Keywords (अपने niche के हिसाब से बदलें)",
-        value="bhajan OR katha OR pravachan OR aarti", key="dash_niche_query",
-    )
-    days = st.slider("कितने दिन पुराने वीडियो देखें", 1, 30, 7, key="dash_niche_days")
-
-    if st.button("🔍 खोजें", key="dash_niche_search_btn"):
-        with st.spinner("खोजा जा रहा है..."):
-            try:
-                results = _search_niche_trend(youtube, query, days=days)
-                st.session_state["dash_niche_results"] = results
-            except Exception as e:
-                st.error(f"खोज में दिक्कत आई: {e}")
-
-    results = st.session_state.get("dash_niche_results")
-    if results:
-        for r in results:
-            views_str = f"{r['views']:,} views" if r["views"] is not None else "views उपलब्ध नहीं"
-            st.markdown(f"**[{r['title']}]({r['url']})** — {r['channel']} · {views_str}")
-
-
 def _render_content_tips():
     with st.expander("💡 सामान्य Best-Practice सलाह (कोई गारंटी नहीं, सिर्फ़ सामान्य दिशा-निर्देश)"):
         st.markdown(
@@ -484,6 +470,15 @@ def render_dashboard_ui():
     oc2.metric("कुल Views", f"{overview['total_views']:,}")
     oc3.metric("कुल Videos", f"{overview['video_count']:,}")
 
+    # नीचे के सेक्शन्स को business_report.py और topic_trend_analysis.py में
+    # बिना दोबारा API कॉल किए पास करने के लिए यह वेरिएबल्स पहले से खाली
+    # values के साथ बना रहे हैं - अगर कोई fetch बीच में fail हो जाए, तो
+    # आगे के सेक्शन crash नहीं होंगे, बस उतना डेटा खाली दिखेगा।
+    watch_hours = 0
+    shorts_views = None
+    rows, headers = [], []
+    top_videos = []
+
     st.divider()
     try:
         watch_hours = _fetch_watch_hours_365d(yta)
@@ -533,8 +528,31 @@ def render_dashboard_ui():
     except Exception as e:
         st.error(f"Top videos लाने में दिक्कत: {e}")
 
+    # ------------------------------------------------------------------
+    # 📈 व्यापार रिपोर्ट - जो कुछ ऊपर fetch हो चुका है (rows/headers/
+    # top_videos/watch_hours/shorts_views) उसी को दोबारा इस्तेमाल करता
+    # है, कोई नई API क्वोटा खर्च नहीं होती।
+    # ------------------------------------------------------------------
+    try:
+        render_business_report(youtube, overview, rows, headers, top_videos, watch_hours, shorts_views)
+    except Exception as e:
+        st.error(f"व्यापार रिपोर्ट बनाने में दिक्कत: {e}")
+
+    # ------------------------------------------------------------------
+    # 🧭 टॉपिक/फॉर्मेट परफॉर्मेंस (आपके अपने वीडियो) - यह अपना डेटा खुद
+    # fetch करता है (90-दिन, बटन दबाने पर), इसलिए यहाँ अलग से try/except
+    # module के अंदर ही संभला हुआ है।
+    # ------------------------------------------------------------------
+    try:
+        render_own_topic_performance(youtube, yta)
+    except Exception as e:
+        st.error(f"टॉपिक परफॉर्मेंस में दिक्कत: {e}")
+
     st.divider()
-    _render_niche_trend_explorer(youtube)
+    try:
+        render_niche_intelligence(youtube)
+    except Exception as e:
+        st.error(f"Niche Intelligence में दिक्कत: {e}")
 
     st.divider()
     _render_content_tips()

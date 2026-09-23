@@ -82,6 +82,7 @@ YPP_THRESHOLDS = {
 CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_data")
 os.makedirs(CONFIG_DIR, exist_ok=True)
 OAUTH_CONFIG_PATH = os.path.join(CONFIG_DIR, "oauth_config.json")
+PENDING_OAUTH_PATH = os.path.join(CONFIG_DIR, "pending_oauth.json")
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,45 @@ def _save_oauth_config(client_id, client_secret, redirect_uri):
             json.dump({"client_id": client_id, "client_secret": client_secret, "redirect_uri": redirect_uri}, f)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Pending-OAuth (PKCE code_verifier) storage - keyed by the `state` value.
+#
+# WHY THIS EXISTS: st.session_state does NOT reliably survive the trip to
+# Google's consent page and back - clicking a link_button is a real
+# browser navigation to a different domain, and when Google redirects
+# back, Streamlit can (and often does) start a brand-new session, wiping
+# session_state clean. The `state` parameter Google echoes back in the
+# redirect URL is the one thing that DOES reliably survive (it's just
+# part of the URL), so we use it as the key to look the verifier back up
+# from disk instead of from session_state.
+# ---------------------------------------------------------------------------
+def _save_pending_verifier(state: str, code_verifier: str):
+    try:
+        data = {}
+        if os.path.exists(PENDING_OAUTH_PATH):
+            with open(PENDING_OAUTH_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        data[state] = code_verifier
+        with open(PENDING_OAUTH_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+
+def _pop_pending_verifier(state: str):
+    try:
+        if not os.path.exists(PENDING_OAUTH_PATH):
+            return None
+        with open(PENDING_OAUTH_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        verifier = data.pop(state, None)
+        with open(PENDING_OAUTH_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        return verifier
+    except Exception:
+        return None
 
 
 def _get_flow(client_id, client_secret, redirect_uri, code_verifier=None):
@@ -171,6 +211,7 @@ def _get_credentials():
     query_params = st.query_params
     if "code" in query_params:
         code = query_params["code"]
+        state = query_params.get("state")
         already_processed = st.session_state.get("yt_oauth_processed_code")
         if code == already_processed:
             # Streamlit re-ran the script with the same ?code= still in the
@@ -180,29 +221,33 @@ def _get_credentials():
             st.query_params.clear()
             st.rerun()
         try:
-            code_verifier = st.session_state.get("yt_oauth_code_verifier")
+            # Look the verifier up from disk by `state`, NOT session_state -
+            # clicking the Login link is a real navigation to Google and
+            # back, which can (and often does) start a brand-new Streamlit
+            # session, wiping session_state clean in between.
+            code_verifier = _pop_pending_verifier(state) if state else None
             flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
             flow.fetch_token(code=code)
             creds = flow.credentials
             st.session_state["yt_credentials_json"] = creds.to_json()
             st.session_state["yt_oauth_processed_code"] = code
-            st.session_state.pop("yt_oauth_code_verifier", None)
             st.query_params.clear()
             st.rerun()
         except Exception as e:
             st.session_state["yt_oauth_processed_code"] = code  # don't retry this dead code in a loop
             st.error(
                 f"❌ Login fail हुआ: {e}\n\n"
-                "अगर यह 'Bad Request' है, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
+                "अगर यह दोबारा हो, तो नीचे दोबारा Login बटन दबाकर एक बिल्कुल नई कोशिश करें "
                 "(पुराना redirect link दोबारा खोलने या बैक-बटन इस्तेमाल करने से बचें - Google का code एक ही बार चलता है)।"
             )
             return None
 
     flow = _get_flow(client_id, client_secret, redirect_uri)
-    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
-    # Save this exact Flow's code_verifier so the callback step above can
-    # reuse it - this is the PKCE fix (see _get_flow's docstring note).
-    st.session_state["yt_oauth_code_verifier"] = flow.code_verifier
+    auth_url, state = flow.authorization_url(prompt="consent", access_type="offline", include_granted_scopes="true")
+    # Save this exact Flow's code_verifier to disk, keyed by `state` - this
+    # is the PKCE fix, done in a way that survives the real redirect to
+    # Google and back (see _save_pending_verifier's docstring note).
+    _save_pending_verifier(state, flow.code_verifier)
     st.link_button("🔓 अपने YouTube चैनल से Login करें (Google)", auth_url)
     return None
 

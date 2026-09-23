@@ -68,6 +68,12 @@ import logging
 import threading
 from typing import Optional, List
 
+# Google का OAuth कभी-कभी हमने जितना scope माँगा था उससे ज़्यादा दे देता
+# है (जैसे Dashboard वाले readonly-scope login के साथ पहले से मिला हुआ
+# broader youtube.force-ssl scope भी जुड़ जाना) - यह relax flag उस
+# strict mismatch-check को हटाता है, ताकि यह गलती से error न बने।
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 logger = logging.getLogger("live_chat_bridge")
 
 try:

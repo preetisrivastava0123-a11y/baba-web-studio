@@ -1531,4 +1531,4 @@ elif app_mode == "📊 Business Dashboard":
     render_dashboard_ui()
 
 elif app_mode == "🎵 Sargam & Taal Studio":
-    render_music_studio()
+    render_music_studio_ui()

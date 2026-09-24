@@ -76,16 +76,51 @@ def _save_app_url(url: str):
         pass
 
 
+# ---------------------------------------------------------------------------
+# Destination persistence - अब Secrets/env से भी स्थायी रूप से load होता है
+#
+# WHY: Streamlit Cloud पर filesystem ephemeral होता है - restart/redeploy/
+# sleep पर local file (destinations.json) मिट जाती है, इसलिए YouTube
+# Stream Key बार-बार डालनी पड़ती थी। अब पहले environment variable, फिर
+# Streamlit Secrets [youtube_live_destination] देखा जाता है - वहाँ मिल
+# जाए तो local file खाली होने पर भी वही destination अपने आप वापस आ जाता
+# है, दोबारा हाथ से डालने की ज़रूरत नहीं रहती।
+# ---------------------------------------------------------------------------
+def _load_secret_destination():
+    env_key = os.environ.get("YOUTUBE_LIVE_STREAM_KEY")
+    if env_key:
+        return {
+            "platform": os.environ.get("YOUTUBE_LIVE_PLATFORM", "YouTube"),
+            "stream_key": env_key, "custom_full_url": "", "enabled": True, "_source": "env",
+        }
+    try:
+        if "youtube_live_destination" in st.secrets:
+            s = st.secrets["youtube_live_destination"]
+            stream_key = s.get("stream_key", "")
+            if stream_key:
+                return {
+                    "platform": s.get("platform", "YouTube"),
+                    "stream_key": stream_key, "custom_full_url": "", "enabled": True, "_source": "secrets",
+                }
+    except Exception:
+        pass
+    return None
+
+
 def _load_saved_destinations():
     try:
         if os.path.exists(DESTINATIONS_STORE_PATH):
             with open(DESTINATIONS_STORE_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, list):
+            if isinstance(data, list) and data:
                 return data
     except Exception:
         pass
-    return []
+    # Local file खाली/absent है (जैसा restart के बाद Streamlit Cloud पर
+    # होता है) - Secrets/env से एक स्थायी default destination मिल जाए तो
+    # वही लौटाएं, ताकि Stream Key दोबारा न डालनी पड़े।
+    secret_dest = _load_secret_destination()
+    return [secret_dest] if secret_dest else []
 
 
 def _save_destinations(destinations):
@@ -103,6 +138,33 @@ def _effective_rtmp_url(dest: dict) -> str:
     prefix = PLATFORM_RTMP_PREFIXES.get(platform, "")
     key = (dest.get("stream_key") or "").strip()
     return (prefix + key) if key else ""
+
+
+# ---------------------------------------------------------------------------
+# समय को साफ़-साफ़ पढ़ने लायक बनाना (AM/PM + दिन का हिस्सा)
+#
+# WHY THIS EXISTS: st.time_input डिफ़ॉल्ट रूप से 24-घंटे फॉर्मेट में दिखाता
+# है (जैसे "21:00") बिना किसी AM/PM संकेत के - इससे यह पता नहीं चलता कि
+# चुना गया समय रात का है या दिन का। यह हर बार चुने गए समय के नीचे 12-घंटे
+# वाला AM/PM फॉर्मेट + हिंदी में दिन का हिस्सा (सुबह/दोपहर/शाम/रात) दिखाता है।
+# ---------------------------------------------------------------------------
+_HINDI_TIME_PERIODS = [
+    (0, 5, "आधी रात/रात"),
+    (5, 12, "सुबह"),
+    (12, 17, "दोपहर"),
+    (17, 20, "शाम"),
+    (20, 24, "रात"),
+]
+
+
+def _format_time_readable(t: dtime) -> str:
+    period_label = "रात"
+    for start_h, end_h, label in _HINDI_TIME_PERIODS:
+        if start_h <= t.hour < end_h:
+            period_label = label
+            break
+    time_12h = datetime.combine(date.today(), t).strftime("%I:%M %p")
+    return f"{time_12h} ({period_label})"
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +648,17 @@ def _render_stream_setup():
     if not live_engine.check_ffmpeg_available():
         st.error("⚠️ `ffmpeg` इस सिस्टम के PATH में नहीं मिला।")
 
+    if any(d.get("_source") in ("env", "secrets") for d in _get("destinations")):
+        st.success(
+            "✅ एक Destination environment variable/Streamlit Secrets से load हुआ है — यह restart/redeploy/"
+            "sleep के बाद भी सुरक्षित रहेगा, Stream Key दोबारा डालने की ज़रूरत नहीं पड़ेगी।"
+        )
+    else:
+        st.caption(
+            "💡 स्थायी setup के लिए: Streamlit Cloud → Manage app → Settings → Secrets में "
+            "`[youtube_live_destination]` के नीचे `stream_key = \"...\"` डालें — फिर Stream Key कभी नहीं मिटेगी।"
+        )
+
     st.session_state["live_studio"]["remember_destinations"] = st.checkbox(
         "💾 Destinations याद रखें (refresh के बाद भी)", value=_get("remember_destinations"),
         key="live_remember_dest_checkbox",
@@ -633,6 +706,9 @@ def _render_stream_setup():
                         "सिर्फ़ Stream Key यहाँ पेस्ट करें", value=dest.get("stream_key", ""), type="password",
                         placeholder="xxxx-xxxx-xxxx-xxxx", key=f"live_dest_key_{idx}",
                     )
+
+                if dest.get("_source") in ("env", "secrets"):
+                    st.caption(f"🔒 यह Stream Key {dest['_source']} से आई है — स्थायी है।")
 
                 if not dest["enabled"]:
                     st.caption("🔴 यह destination पूरी तरह OFF है — बैकएंड इसे पूरी तरह इग्नोर करेगा, इससे कोई connection attempt भी नहीं होगी।")
@@ -791,8 +867,16 @@ def _render_schedule_section():
     if is_armed:
         start_at = schedule_status.get("start_at")
         stop_at = schedule_status.get("stop_at")
-        start_str = datetime.fromtimestamp(start_at).strftime("%d-%b %H:%M") if start_at else "अभी"
-        stop_str = datetime.fromtimestamp(stop_at).strftime("%d-%b %H:%M") if stop_at else "मैनुअल तक (कोई तय समय नहीं)"
+        if start_at:
+            start_dt = datetime.fromtimestamp(start_at)
+            start_str = f"{start_dt.strftime('%d-%b')} {_format_time_readable(start_dt.time())}"
+        else:
+            start_str = "अभी"
+        if stop_at:
+            stop_dt = datetime.fromtimestamp(stop_at)
+            stop_str = f"{stop_dt.strftime('%d-%b')} {_format_time_readable(stop_dt.time())}"
+        else:
+            stop_str = "मैनुअल तक (कोई तय समय नहीं)"
         st.success(f"🟢 Schedule ARMED है — Start: **{start_str}**, Stop: **{stop_str}**")
         if st.button("❌ Schedule रद्द करें", key="schedule_cancel_btn"):
             live_engine.cancel_schedule()
@@ -804,6 +888,7 @@ def _render_schedule_section():
     with sc1:
         start_date = st.date_input("शुरू होने की तारीख़", value=_get("schedule_start_date") or now.date(), key="sched_start_date")
         start_time_val = st.time_input("शुरू होने का समय", value=_get("schedule_start_time") or now.time().replace(second=0, microsecond=0), key="sched_start_time")
+        st.caption(f"🕐 यह समय है: **{_format_time_readable(start_time_val)}**")
         _set("schedule_start_date", start_date)
         _set("schedule_start_time", start_time_val)
 
@@ -813,6 +898,7 @@ def _render_schedule_section():
         if has_stop:
             stop_date = st.date_input("बंद होने की तारीख़", value=_get("schedule_stop_date") or now.date(), key="sched_stop_date")
             stop_time_val = st.time_input("बंद होने का समय", value=_get("schedule_stop_time") or now.time().replace(second=0, microsecond=0), key="sched_stop_time")
+            st.caption(f"🕐 यह समय है: **{_format_time_readable(stop_time_val)}**")
             _set("schedule_stop_date", stop_date)
             _set("schedule_stop_time", stop_time_val)
         else:

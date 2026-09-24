@@ -56,11 +56,13 @@ PUBLIC API
     ParseError - raised on malformed script, with a human (Hindi) message
 """
 
+import os
 import re
 import io
 import wave
 import struct
 import math
+import tempfile
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Tuple
 
@@ -698,6 +700,319 @@ def save_wav(audio: np.ndarray, path: str, sr: int = 44100):
 # 6. OPTIONAL: FluidSynth + real soundfont render path (used later once a
 # .sf2 file is available - not required for the default flow above).
 # ==========================================================================
+
+def _placeholder_before_fluidsynth():
+    pass
+
+
+# ==========================================================================
+# 7. VOCAL PROCESSING - record/upload -> Auto-Perfect or Custom DSP chain
+# ==========================================================================
+"""
+Yeh section user ki apni gaayi/boli hui awaaz (record ya upload ki hui)
+ko process karta hai - EQ, compression, warmth/saturation, brilliance
+(exciter) aur ek "crowd chorus" (bhakton ki bheed jaisa) effect.
+
+Do mode:
+  - AUTO_PERFECT_PRESET  -> ek click mein bhakti-sangeet ke liye tuned
+    default values (garmahat badhao, boxy mids kaato, upar thoda "air")
+  - Custom mode          -> user khud sliders se har cheez adjust kare
+
+DSP pura numpy/scipy se hai - koi external binary/plugin nahi chahiye.
+Vocal audio LOAD karne ke liye moviepy (jo is project mein pehle se hi
+Track 5/6 ke liye dependency hai) use hota hai - isse WAV aur MP3 dono
+seedhe padh sakte hain, alag se ffmpeg-wrapper library (pydub/soundfile)
+add karne ki zaroorat nahi padi.
+"""
+
+try:
+    from scipy.signal import lfilter
+except ImportError:  # pragma: no cover
+    lfilter = None
+
+
+# ---- Auto-Perfect preset: devotional-vocal-tuned defaults ----------------
+AUTO_PERFECT_PRESET: Dict[str, float] = {
+    "brilliance": 58,       # 0-100  (खनक / exciter intensity)
+    "warmth": 52,           # 0-100  (सुरीलापन / harmonic saturation)
+    "bass_db": 2.5,         # -12..+12 dB (भारीपन/वजन, 150 Hz shelf)
+    "treble_db": 3.5,       # -12..+12 dB (तीखा सुर, 6 kHz shelf)
+    "crowd_intensity": 22,  # 0-100  (भक्तों की भीड़ प्रभाव)
+}
+
+DEFAULT_CUSTOM_PRESET: Dict[str, float] = {
+    "brilliance": 0, "warmth": 0, "bass_db": 0.0, "treble_db": 0.0, "crowd_intensity": 0,
+}
+
+MAX_VOCAL_UPLOAD_MB = 10
+
+
+class VocalLoadError(Exception):
+    """Raised when a recorded/uploaded vocal file can't be read. .args[0]
+    is a ready-to-show Hindi message."""
+    pass
+
+
+def load_vocal_audio(path: str, target_sr: int = 44100) -> Tuple[np.ndarray, int]:
+    """
+    Loads a WAV/MP3 file into a mono float32 array (-1..1) at target_sr.
+
+    Converts via a direct `ffmpeg` subprocess call (same pattern already
+    used elsewhere in this project, e.g. live_app.py's playlist concat) -
+    this avoids moviepy's AudioClip.to_soundarray(), whose internal
+    np.vstack-on-a-generator call breaks under current numpy and would
+    silently make every vocal upload fail.
+    """
+    import shutil
+    import subprocess
+
+    if not path or not os.path.exists(path):
+        raise VocalLoadError(f"Audio file nahi mili: {path}")
+
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    if size_mb > MAX_VOCAL_UPLOAD_MB:
+        raise VocalLoadError(
+            f"File {size_mb:.1f} MB ki hai - {MAX_VOCAL_UPLOAD_MB} MB se choti file upload/record karein."
+        )
+
+    if shutil.which("ffmpeg") is None:
+        raise VocalLoadError(
+            "ffmpeg system PATH mein nahi mila - audio load nahi ho sakta. "
+            "Isi project ki baaki cheezein (video/audio render) bhi ffmpeg par "
+            "depend karti hain, isliye yeh pehle se install hona chahiye."
+        )
+
+    tmp_wav = os.path.join(tempfile.gettempdir(), f"vocal_load_{os.getpid()}_{id(path)}.wav")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", path, "-ac", "1", "-ar", str(target_sr), "-f", "wav", tmp_wav],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=60,
+        )
+    except subprocess.CalledProcessError as e:
+        raise VocalLoadError(
+            f"ffmpeg se audio convert nahi ho paya (file corrupt/unsupported ho sakti hai): "
+            f"{e.stderr.decode('utf-8', errors='ignore')[-300:] if e.stderr else e}"
+        )
+    except Exception as e:
+        raise VocalLoadError(f"Audio load karte waqt error: {e}")
+
+    try:
+        with wave.open(tmp_wav, "rb") as wf:
+            n_frames = wf.getnframes()
+            sampwidth = wf.getsampwidth()
+            raw = wf.readframes(n_frames)
+    finally:
+        if os.path.exists(tmp_wav):
+            os.remove(tmp_wav)
+
+    if sampwidth != 2:
+        raise VocalLoadError(f"Unsupported audio sample width: {sampwidth} bytes.")
+
+    arr = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    if arr.size == 0:
+        raise VocalLoadError("Audio file khali hai (0 samples).")
+
+    peak = float(np.max(np.abs(arr))) or 1.0
+    arr = (arr / peak) * 0.95
+    return arr.astype(np.float32), target_sr
+
+
+# ---- Biquad EQ filters (RBJ Audio-EQ-Cookbook formulas) -------------------
+def _biquad_peaking(sr: float, freq: float, gain_db: float, q: float = 1.0):
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * math.pi * freq / sr
+    alpha = math.sin(w0) / (2 * q)
+    cosw0 = math.cos(w0)
+    b0 = 1 + alpha * A
+    b1 = -2 * cosw0
+    b2 = 1 - alpha * A
+    a0 = 1 + alpha / A
+    a1 = -2 * cosw0
+    a2 = 1 - alpha / A
+    return [b0 / a0, b1 / a0, b2 / a0], [1.0, a1 / a0, a2 / a0]
+
+
+def _biquad_low_shelf(sr: float, freq: float, gain_db: float, slope: float = 1.0):
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * math.pi * freq / sr
+    cosw0 = math.cos(w0)
+    alpha = math.sin(w0) / 2.0 * math.sqrt((A + 1 / A) * (1 / slope - 1) + 2)
+    sqrtA = math.sqrt(A)
+    b0 = A * ((A + 1) - (A - 1) * cosw0 + 2 * sqrtA * alpha)
+    b1 = 2 * A * ((A - 1) - (A + 1) * cosw0)
+    b2 = A * ((A + 1) - (A - 1) * cosw0 - 2 * sqrtA * alpha)
+    a0 = (A + 1) + (A - 1) * cosw0 + 2 * sqrtA * alpha
+    a1 = -2 * ((A - 1) + (A + 1) * cosw0)
+    a2 = (A + 1) + (A - 1) * cosw0 - 2 * sqrtA * alpha
+    return [b0 / a0, b1 / a0, b2 / a0], [1.0, a1 / a0, a2 / a0]
+
+
+def _biquad_high_shelf(sr: float, freq: float, gain_db: float, slope: float = 1.0):
+    A = 10 ** (gain_db / 40.0)
+    w0 = 2 * math.pi * freq / sr
+    cosw0 = math.cos(w0)
+    alpha = math.sin(w0) / 2.0 * math.sqrt((A + 1 / A) * (1 / slope - 1) + 2)
+    sqrtA = math.sqrt(A)
+    b0 = A * ((A + 1) + (A - 1) * cosw0 + 2 * sqrtA * alpha)
+    b1 = -2 * A * ((A - 1) + (A + 1) * cosw0)
+    b2 = A * ((A + 1) + (A - 1) * cosw0 - 2 * sqrtA * alpha)
+    a0 = (A + 1) - (A - 1) * cosw0 + 2 * sqrtA * alpha
+    a1 = 2 * ((A - 1) - (A + 1) * cosw0)
+    a2 = (A + 1) - (A - 1) * cosw0 - 2 * sqrtA * alpha
+    return [b0 / a0, b1 / a0, b2 / a0], [1.0, a1 / a0, a2 / a0]
+
+
+def _apply_biquad(audio: np.ndarray, b, a) -> np.ndarray:
+    if lfilter is None or abs(b[0]) < 1e-12 and abs(a[0] - 1.0) < 1e-12:
+        return audio
+    return lfilter(b, a, audio).astype(np.float32)
+
+
+def _butter_highpass(audio: np.ndarray, sr: float, cutoff: float, order: int = 2) -> np.ndarray:
+    from scipy.signal import butter
+    b, a = butter(order, cutoff / (sr / 2.0), btype="highpass")
+    return lfilter(b, a, audio).astype(np.float32)
+
+
+def _butter_lowpass(audio: np.ndarray, sr: float, cutoff: float, order: int = 2) -> np.ndarray:
+    from scipy.signal import butter
+    b, a = butter(order, min(0.99, cutoff / (sr / 2.0)), btype="lowpass")
+    return lfilter(b, a, audio).astype(np.float32)
+
+
+# ---- Warmth / Brilliance / Compression / Crowd-chorus ---------------------
+def _warmth_saturation(audio: np.ndarray, intensity_pct: float) -> np.ndarray:
+    """सुरीलापन/मिठास: gentle even-harmonic saturation (tanh soft-clip),
+    blended in proportion to intensity so 0% = bilkul untouched."""
+    if intensity_pct <= 0:
+        return audio
+    mix = min(1.0, intensity_pct / 100.0)
+    drive = 1.0 + mix * 2.2
+    saturated = np.tanh(audio * drive) / math.tanh(drive)
+    return (audio * (1 - mix) + saturated * mix).astype(np.float32)
+
+
+def _brilliance_exciter(audio: np.ndarray, sr: float, intensity_pct: float) -> np.ndarray:
+    """खनक: high-band (>5kHz) nikaal ke usme harmonics generate karke
+    wapas halke se mix karna - "aural exciter" jaisa effect."""
+    if intensity_pct <= 0 or lfilter is None:
+        return audio
+    hi = _butter_highpass(audio, sr, 5000.0)
+    excited = np.tanh(hi * 5.5)
+    mix = min(1.0, intensity_pct / 100.0) * 0.30
+    return (audio + excited * mix).astype(np.float32)
+
+
+def _gentle_compressor(audio: np.ndarray, sr: float, threshold_db: float = -18.0,
+                        ratio: float = 2.8, attack_ms: float = 8.0,
+                        release_ms: float = 90.0, makeup_db: float = 3.5) -> np.ndarray:
+    """Simple feed-forward envelope-follower compressor - fixed/gentle,
+    applied in BOTH auto and custom mode so levels stay controlled."""
+    n = len(audio)
+    if n == 0:
+        return audio
+    attack_coef = math.exp(-1.0 / (sr * attack_ms / 1000.0))
+    release_coef = math.exp(-1.0 / (sr * release_ms / 1000.0))
+    env = 0.0
+    envelope = np.zeros(n, dtype=np.float32)
+    abs_audio = np.abs(audio)
+    for i in range(n):
+        level = abs_audio[i]
+        coef = attack_coef if level > env else release_coef
+        env = coef * env + (1 - coef) * level
+        envelope[i] = env
+
+    threshold_lin = 10 ** (threshold_db / 20.0)
+    envelope_db = 20 * np.log10(np.maximum(envelope, 1e-6))
+    over_db = np.maximum(0.0, envelope_db - threshold_db)
+    gain_reduction_db = over_db * (1.0 - 1.0 / ratio)
+    gain = 10 ** (-gain_reduction_db / 20.0)
+    makeup = 10 ** (makeup_db / 20.0)
+    return (audio * gain * makeup).astype(np.float32)
+
+
+def add_crowd_chorus(vocal: np.ndarray, sr: float, intensity_pct: float,
+                      num_voices: int = 5) -> np.ndarray:
+    """भक्तों की भीड़ प्रभाव: vocal ki kai halki, delayed, thodi muffled
+    (door se aati) copies banake neeche mix karta hai - jaise bahut se
+    log saath mein gaa rahe hon. Yeh true pitch-shifted harmonization
+    nahi hai (halka delay+lowpass-based chorus hai), par crowd/congregation
+    jaisa aabhaas theek se deta hai."""
+    if intensity_pct <= 0 or lfilter is None:
+        return vocal
+    rng = np.random.default_rng(42)
+    crowd = np.zeros_like(vocal)
+    for _ in range(num_voices):
+        delay_sec = rng.uniform(0.02, 0.09)
+        delay_samples = int(delay_sec * sr)
+        gain = rng.uniform(0.22, 0.50)
+        cutoff = rng.uniform(2200, 5200)
+        voice_copy = _butter_lowpass(vocal, sr, cutoff, order=2)
+        shifted = np.zeros_like(vocal)
+        if delay_samples < len(vocal):
+            shifted[delay_samples:] = voice_copy[: len(vocal) - delay_samples]
+        crowd += shifted * gain
+    mix_level = min(1.0, intensity_pct / 100.0) * 0.55
+    return (vocal + crowd * mix_level).astype(np.float32)
+
+
+def process_vocal(audio: np.ndarray, sr: int, params: Optional[Dict[str, float]] = None) -> np.ndarray:
+    """
+    Poora vocal-processing chain. `params` na diya jaaye to
+    AUTO_PERFECT_PRESET use hota hai. Fixed steps (boxy-mid cut,
+    compression) hamesha lagte hain - sirf 5 named controls (brilliance,
+    warmth, bass_db, treble_db, crowd_intensity) hi user-adjustable hain.
+    """
+    if lfilter is None:
+        raise VocalLoadError("scipy install nahi hai - vocal processing nahi ho sakti.")
+    p = dict(AUTO_PERFECT_PRESET if params is None else params)
+    for key, default in AUTO_PERFECT_PRESET.items():
+        p.setdefault(key, 0 if "db" not in key else 0.0)
+
+    out = audio.astype(np.float32).copy()
+
+    # 1. boxy-mid cut - fixed, always on (300-500Hz box-iness kam karta hai)
+    b, a = _biquad_peaking(sr, freq=420.0, gain_db=-3.0, q=1.3)
+    out = _apply_biquad(out, b, a)
+
+    # 2. bass shelf (भारीपन/वजन)
+    if abs(p["bass_db"]) > 0.05:
+        b, a = _biquad_low_shelf(sr, freq=150.0, gain_db=p["bass_db"])
+        out = _apply_biquad(out, b, a)
+
+    # 3. treble shelf (तीखा सुर)
+    if abs(p["treble_db"]) > 0.05:
+        b, a = _biquad_high_shelf(sr, freq=6000.0, gain_db=p["treble_db"])
+        out = _apply_biquad(out, b, a)
+
+    # 4. warmth/saturation (सुरीलापन और मिठास)
+    out = _warmth_saturation(out, p["warmth"])
+
+    # 5. brilliance/exciter (आवाज़ की खनक)
+    out = _brilliance_exciter(out, sr, p["brilliance"])
+
+    # 6. gentle compression - fixed, always on
+    out = _gentle_compressor(out, sr)
+
+    # 7. crowd chorus (भक्तों की भीड़ प्रभाव)
+    out = add_crowd_chorus(out, sr, p["crowd_intensity"])
+
+    # 8. final safety limiter
+    peak = float(np.max(np.abs(out))) or 1.0
+    if peak > 0.98:
+        out = np.tanh(out / peak * 1.1) * 0.95
+    return out.astype(np.float32)
+
+
+def save_mono_wav(audio: np.ndarray, path: str, sr: int = 44100):
+    pcm = np.clip(audio, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype(np.int16)
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+
 
 def render_with_fluidsynth(comp: Composition, soundfont_path: str, sr: int = 44100) -> np.ndarray:
     """

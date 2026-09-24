@@ -69,7 +69,7 @@ import streamlit as st
 
 from live_app import render_live_studio_ui
 from youtube_dashboard import render_dashboard_ui
-from music_studio import render_music_studio
+from music_studio import render_music_studio_ui
 
 # --------------------------------------------------------------------------
 # PAGE CONFIG

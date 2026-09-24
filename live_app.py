@@ -167,6 +167,41 @@ def _format_time_readable(t: dtime) -> str:
     return f"{time_12h} ({period_label})"
 
 
+def _time_picker_ampm(label: str, key_prefix: str, default_time: dtime) -> dtime:
+    """छोटे-छोटे 3 बॉक्स — घंटा, मिनट, AM/PM — st.time_input के भारी बॉक्स
+    की जगह, ताकि AM/PM साफ़ अलग से चुना जा सके, अंदाज़ा न लगाना पड़े।"""
+    default_hour_12 = default_time.hour % 12
+    if default_hour_12 == 0:
+        default_hour_12 = 12
+    default_period = "AM" if default_time.hour < 12 else "PM"
+
+    st.markdown(f"**{label}**")
+    c1, c2, c3 = st.columns([1, 1, 1.2])
+    with c1:
+        hour_12 = st.selectbox(
+            "घंटा", options=list(range(1, 13)), index=default_hour_12 - 1,
+            key=f"{key_prefix}_hour",
+        )
+    with c2:
+        minute = st.selectbox(
+            "मिनट", options=[f"{m:02d}" for m in range(60)], index=default_time.minute,
+            key=f"{key_prefix}_minute",
+        )
+    with c3:
+        period = st.selectbox(
+            "AM/PM", options=["AM (सुबह/रात)", "PM (दोपहर/शाम)"],
+            index=0 if default_period == "AM" else 1,
+            key=f"{key_prefix}_period",
+        )
+
+    hour_24 = hour_12 % 12
+    if period.startswith("PM"):
+        hour_24 += 12
+    result_time = dtime(hour=hour_24, minute=int(minute))
+    st.caption(f"🕐 यह समय है: **{_format_time_readable(result_time)}**")
+    return result_time
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -867,6 +902,8 @@ def _render_schedule_section():
     if is_armed:
         start_at = schedule_status.get("start_at")
         stop_at = schedule_status.get("stop_at")
+        now_ts = datetime.now().timestamp()
+
         if start_at:
             start_dt = datetime.fromtimestamp(start_at)
             start_str = f"{start_dt.strftime('%d-%b')} {_format_time_readable(start_dt.time())}"
@@ -877,7 +914,23 @@ def _render_schedule_section():
             stop_str = f"{stop_dt.strftime('%d-%b')} {_format_time_readable(stop_dt.time())}"
         else:
             stop_str = "मैनुअल तक (कोई तय समय नहीं)"
+
         st.success(f"🟢 Schedule ARMED है — Start: **{start_str}**, Stop: **{stop_str}**")
+
+        if start_at and start_at > now_ts and not schedule_status.get("fired_start"):
+            remaining = int(start_at - now_ts)
+            hours, remainder = divmod(remaining, 3600)
+            minutes = remainder // 60
+            st.info(f"⏳ आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+        elif schedule_status.get("fired_start") and not schedule_status.get("fired_stop"):
+            st.info("🔴 Live पहले से शुरू हो चुका है।")
+
+        if start_at and stop_at:
+            duration_sec = int(stop_at - start_at)
+            d_hours, d_remainder = divmod(duration_sec, 3600)
+            d_minutes = d_remainder // 60
+            st.info(f"⏱️ यह Live कुल **{d_hours} घंटे {d_minutes} मिनट** तक चलेगा।")
+
         if st.button("❌ Schedule रद्द करें", key="schedule_cancel_btn"):
             live_engine.cancel_schedule()
             st.rerun()
@@ -887,8 +940,10 @@ def _render_schedule_section():
     sc1, sc2 = st.columns(2)
     with sc1:
         start_date = st.date_input("शुरू होने की तारीख़", value=_get("schedule_start_date") or now.date(), key="sched_start_date")
-        start_time_val = st.time_input("शुरू होने का समय", value=_get("schedule_start_time") or now.time().replace(second=0, microsecond=0), key="sched_start_time")
-        st.caption(f"🕐 यह समय है: **{_format_time_readable(start_time_val)}**")
+        start_time_val = _time_picker_ampm(
+            "शुरू होने का समय", "sched_start_time_picker",
+            _get("schedule_start_time") or now.time().replace(second=0, microsecond=0),
+        )
         _set("schedule_start_date", start_date)
         _set("schedule_start_time", start_time_val)
 
@@ -897,12 +952,32 @@ def _render_schedule_section():
         _set("schedule_has_stop", has_stop)
         if has_stop:
             stop_date = st.date_input("बंद होने की तारीख़", value=_get("schedule_stop_date") or now.date(), key="sched_stop_date")
-            stop_time_val = st.time_input("बंद होने का समय", value=_get("schedule_stop_time") or now.time().replace(second=0, microsecond=0), key="sched_stop_time")
-            st.caption(f"🕐 यह समय है: **{_format_time_readable(stop_time_val)}**")
+            stop_time_val = _time_picker_ampm(
+                "बंद होने का समय", "sched_stop_time_picker",
+                _get("schedule_stop_time") or now.time().replace(second=0, microsecond=0),
+            )
             _set("schedule_stop_date", stop_date)
             _set("schedule_stop_time", stop_time_val)
         else:
             st.caption("ℹ️ कोई stop समय नहीं — जब तक आप या YouTube Studio से मैनुअल बंद न करें, तब तक चलता रहेगा।")
+
+    # -- शुरू होने में कितनी देर बाकी है + (अगर stop समय दिया हो तो) कुल कितनी देर चलेगा --
+    start_dt_preview = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"))
+    delta_seconds = (start_dt_preview - now).total_seconds()
+    if delta_seconds > 0:
+        hours, remainder = divmod(int(delta_seconds), 3600)
+        minutes = remainder // 60
+        st.info(f"⏳ Schedule लगाने पर आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+    else:
+        st.warning("⚠️ चुना गया शुरू होने का समय बीत चुका है — Schedule लगाते ही Live लगभग तुरंत शुरू हो जाएगा।")
+
+    if _get("schedule_has_stop"):
+        stop_dt_preview = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"))
+        duration_seconds = (stop_dt_preview - start_dt_preview).total_seconds()
+        if duration_seconds > 0:
+            d_hours, d_remainder = divmod(int(duration_seconds), 3600)
+            d_minutes = d_remainder // 60
+            st.info(f"⏱️ यह Live कुल **{d_hours} घंटे {d_minutes} मिनट** तक चलेगा।")
 
     enabled_dest_count = sum(1 for d in _get("destinations") if d.get("enabled") and _effective_rtmp_url(d))
     schedule_disabled = enabled_dest_count == 0 or _get("is_live") or not live_engine.check_ffmpeg_available()

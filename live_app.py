@@ -21,6 +21,7 @@ import subprocess
 import uuid
 import tempfile
 from datetime import datetime, date, time as dtime
+from zoneinfo import ZoneInfo
 from typing import Optional
 
 import streamlit as st
@@ -29,6 +30,13 @@ import live_engine
 from live_engine import Destination, StreamConfig, MediaItem
 import live_chat_bridge
 
+
+# Streamlit Cloud जैसे hosting पर सर्वर अक्सर UTC टाइमज़ोन में चलता है,
+# भारत के समय (IST) में नहीं। Schedule के सभी समय (date/time picker,
+# countdown, असली epoch calculation) यहाँ पक्के तौर पर Asia/Kolkata माने
+# जाते हैं - चाहे सर्वर की अपनी टाइमज़ोन कुछ भी हो - ताकि आपने जो समय
+# भारतीय समय के हिसाब से डाला, live ठीक उसी असली समय पर शुरू/बंद हो।
+IST = ZoneInfo("Asia/Kolkata")
 
 UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "live_studio_uploads")
 os.makedirs(UPLOAD_ROOT, exist_ok=True)
@@ -902,15 +910,15 @@ def _render_schedule_section():
     if is_armed:
         start_at = schedule_status.get("start_at")
         stop_at = schedule_status.get("stop_at")
-        now_ts = datetime.now().timestamp()
+        now_ts = datetime.now(IST).timestamp()
 
         if start_at:
-            start_dt = datetime.fromtimestamp(start_at)
+            start_dt = datetime.fromtimestamp(start_at, IST)
             start_str = f"{start_dt.strftime('%d-%b')} {_format_time_readable(start_dt.time())}"
         else:
             start_str = "अभी"
         if stop_at:
-            stop_dt = datetime.fromtimestamp(stop_at)
+            stop_dt = datetime.fromtimestamp(stop_at, IST)
             stop_str = f"{stop_dt.strftime('%d-%b')} {_format_time_readable(stop_dt.time())}"
         else:
             stop_str = "मैनुअल तक (कोई तय समय नहीं)"
@@ -936,7 +944,7 @@ def _render_schedule_section():
             st.rerun()
         return
 
-    now = datetime.now()
+    now = datetime.now(IST)
     sc1, sc2 = st.columns(2)
     with sc1:
         start_date = st.date_input("शुरू होने की तारीख़", value=_get("schedule_start_date") or now.date(), key="sched_start_date")
@@ -962,7 +970,7 @@ def _render_schedule_section():
             st.caption("ℹ️ कोई stop समय नहीं — जब तक आप या YouTube Studio से मैनुअल बंद न करें, तब तक चलता रहेगा।")
 
     # -- शुरू होने में कितनी देर बाकी है + (अगर stop समय दिया हो तो) कुल कितनी देर चलेगा --
-    start_dt_preview = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"))
+    start_dt_preview = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"), tzinfo=IST)
     delta_seconds = (start_dt_preview - now).total_seconds()
     if delta_seconds > 0:
         hours, remainder = divmod(int(delta_seconds), 3600)
@@ -972,7 +980,7 @@ def _render_schedule_section():
         st.warning("⚠️ चुना गया शुरू होने का समय बीत चुका है — Schedule लगाते ही Live लगभग तुरंत शुरू हो जाएगा।")
 
     if _get("schedule_has_stop"):
-        stop_dt_preview = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"))
+        stop_dt_preview = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"), tzinfo=IST)
         duration_seconds = (stop_dt_preview - start_dt_preview).total_seconds()
         if duration_seconds > 0:
             d_hours, d_remainder = divmod(int(duration_seconds), 3600)
@@ -983,11 +991,11 @@ def _render_schedule_section():
     schedule_disabled = enabled_dest_count == 0 or _get("is_live") or not live_engine.check_ffmpeg_available()
 
     if st.button("📅 Schedule लगाएं", type="primary", disabled=schedule_disabled, key="schedule_set_btn"):
-        start_dt = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"))
+        start_dt = datetime.combine(_get("schedule_start_date"), _get("schedule_start_time"), tzinfo=IST)
         start_epoch = start_dt.timestamp()
         stop_epoch = None
         if _get("schedule_has_stop"):
-            stop_dt = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"))
+            stop_dt = datetime.combine(_get("schedule_stop_date"), _get("schedule_stop_time"), tzinfo=IST)
             stop_epoch = stop_dt.timestamp()
             if stop_epoch <= start_epoch:
                 st.error("❌ Stop समय, Start समय के बाद का होना चाहिए।")

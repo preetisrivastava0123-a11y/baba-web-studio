@@ -975,7 +975,7 @@ def _render_schedule_section():
     if delta_seconds > 0:
         hours, remainder = divmod(int(delta_seconds), 3600)
         minutes = remainder // 60
-        st.info(f"⏳ Schedule लगाने पर आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+        st.info(f"⏳ Schedule आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
     else:
         st.warning("⚠️ चुना गया शुरू होने का समय बीत चुका है — Schedule लगाते ही Live लगभग तुरंत शुरू हो जाएगा।")
 

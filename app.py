@@ -69,6 +69,7 @@ import streamlit as st
 
 from live_app import render_live_studio_ui
 from youtube_dashboard import render_dashboard_ui
+from music_studio import render_music_studio
 
 # --------------------------------------------------------------------------
 # PAGE CONFIG
@@ -134,7 +135,7 @@ with st.sidebar:
 # MODE SELECTOR - switch between the Video Generator and the Live Studio
 # --------------------------------------------------------------------------
 app_mode = st.sidebar.radio(
-    "Select Mode", ["🎬 Video Generator", "🔴 Live Broadcast Studio", "📊 Business Dashboard"], key="app_mode_radio"
+    "Select Mode", ["🎬 Video Generator", "🔴 Live Broadcast Studio", "📊 Business Dashboard", "🎵 Sargam & Taal Studio"], key="app_mode_radio"
 )
 
 # --------------------------------------------------------------------------
@@ -1528,3 +1529,6 @@ elif app_mode == "🔴 Live Broadcast Studio":
 
 elif app_mode == "📊 Business Dashboard":
     render_dashboard_ui()
+
+elif app_mode == "🎵 Sargam & Taal Studio":
+    render_music_studio()

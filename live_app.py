@@ -929,7 +929,7 @@ def _render_schedule_section():
             remaining = int(start_at - now_ts)
             hours, remainder = divmod(remaining, 3600)
             minutes = remainder // 60
-            st.info(f"⏳ आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+            st.info(f"⏳ ये हो प्रीती जी आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
         elif schedule_status.get("fired_start") and not schedule_status.get("fired_stop"):
             st.info("🔴 Live पहले से शुरू हो चुका है।")
 

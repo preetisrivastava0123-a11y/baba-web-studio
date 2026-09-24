@@ -1,14 +1,16 @@
-1  streamlit>=1.31.0
-2  pandas
-3  moviepy==1.0.3
-4  opencv-python-headless
-5  numpy
-6  imageio-ffmpeg
-7  edge-tts
-8  pillow
-9  gTTS
-10 mediapipe
-11 obsws-python
-12 google-auth-oauthlib
-13 google-api-python-client
-14 scipy
+streamlit>=1.31.0
+pandas
+moviepy==1.0.3
+opencv-python-headless
+numpy
+imageio-ffmpeg
+edge-tts
+pillow
+gTTS
+mediapipe
+obsws-python
+google-auth-oauthlib
+google-api-python-client
+scipy
+pretty_midi
+matplotlib

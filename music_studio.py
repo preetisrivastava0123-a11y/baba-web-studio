@@ -93,6 +93,16 @@ DEFAULTS = {
     "music_midi_path": None,
     "music_parse_error": None,
     "music_last_rendered_script": None,
+    # -- Vocal section --
+    "vocal_input_mode": "🎤 लाइव रिकॉर्ड करें",
+    "vocal_raw_path": None,
+    "vocal_raw_name": None,
+    "vocal_advanced_mode": False,
+    "vocal_custom_values": dict(me.AUTO_PERFECT_PRESET),
+    "vocal_active_params": None,      # params that produced the CURRENT processed file
+    "vocal_active_mode_label": None,  # "auto" | "custom" - for the UI badge
+    "vocal_processed_path": None,
+    "vocal_error": None,
 }
 
 
@@ -190,6 +200,186 @@ def _render_compose_tab():
         st.markdown("---")
         st.markdown("**🔊 Preview**")
         st.audio(st.session_state["music_wav_path"])
+
+
+VOCAL_UPLOAD_ROOT = os.path.join(tempfile.gettempdir(), "music_studio_vocals")
+os.makedirs(VOCAL_UPLOAD_ROOT, exist_ok=True)
+
+SLIDER_SPECS = [
+    ("brilliance", "✨ आवाज़ की खनक (Brilliance)", 0, 100, "%"),
+    ("warmth", "🍯 सुरीलापन और मिठास (Warmth)", 0, 100, "%"),
+    ("bass_db", "🎚️ भारीपन/वजन (Bass)", -12.0, 12.0, "dB"),
+    ("treble_db", "🎚️ तीखा सुर (Treble)", -12.0, 12.0, "dB"),
+    ("crowd_intensity", "🙏 भक्तों की भीड़ प्रभाव (Crowd Chorus)", 0, 100, "%"),
+]
+
+
+def _save_vocal_bytes(data: bytes, suffix: str, label: str) -> str:
+    ts = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    path = os.path.join(VOCAL_UPLOAD_ROOT, f"{label}_{ts}{suffix}")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def _reset_vocal_processed_state():
+    st.session_state["vocal_processed_path"] = None
+    st.session_state["vocal_active_params"] = None
+    st.session_state["vocal_active_mode_label"] = None
+
+
+def _run_vocal_processing(params: dict, mode_label: str):
+    raw_path = st.session_state.get("vocal_raw_path")
+    if not raw_path or not os.path.exists(raw_path):
+        st.session_state["vocal_error"] = "पहले ऊपर से आवाज़ रिकॉर्ड करें या अपलोड करें।"
+        return
+    try:
+        with st.spinner("आवाज़ प्रोसेस हो रही है..."):
+            audio, sr = me.load_vocal_audio(raw_path)
+            processed = me.process_vocal(audio, sr, params)
+            ts = datetime.now().strftime("%Y%m%d%H%M%S")
+            out_path = os.path.join(VOCAL_UPLOAD_ROOT, f"processed_{mode_label}_{ts}.wav")
+            me.save_mono_wav(processed, out_path, sr)
+        st.session_state["vocal_processed_path"] = out_path
+        st.session_state["vocal_active_params"] = dict(params)
+        st.session_state["vocal_active_mode_label"] = mode_label
+        st.session_state["vocal_error"] = None
+    except me.VocalLoadError as e:
+        st.session_state["vocal_error"] = str(e)
+    except Exception as e:
+        st.session_state["vocal_error"] = f"अनपेक्षित गड़बड़ी: {e}"
+
+
+def _render_vocal_tab():
+    st.subheader("🎙️ Vocal — अपनी आवाज़ रिकॉर्ड/अपलोड करें और परफेक्ट बनाएं")
+    st.caption("गाना, मंत्र या कथा अपनी असली आवाज़ में — फिर एक क्लिक में स्टूडियो-क्वालिटी साउंड।")
+
+    # -------------------------------------------------------------
+    # 1. INPUT: Record vs Upload
+    # -------------------------------------------------------------
+    st.markdown("#### 1️⃣ आवाज़ कहाँ से लें")
+    mode_options = ["🎤 लाइव रिकॉर्ड करें", "📤 ऑडियो फ़ाइल अपलोड करें"]
+    st.session_state["vocal_input_mode"] = st.radio(
+        "इनपुट तरीका चुनें", options=mode_options,
+        index=mode_options.index(st.session_state["vocal_input_mode"]),
+        key="vocal_input_mode_radio", horizontal=True, label_visibility="collapsed",
+    )
+
+    if st.session_state["vocal_input_mode"] == "🎤 लाइव रिकॉर्ड करें":
+        try:
+            recorded = st.audio_input("🎤 यहाँ दबाकर रिकॉर्ड करें", key="vocal_audio_input_widget")
+        except AttributeError:
+            recorded = None
+            st.warning(
+                "⚠️ आपके Streamlit वर्शन में लाइव रिकॉर्डिंग (st.audio_input) उपलब्ध नहीं है "
+                "(`pip install --upgrade streamlit` करें, version ≥ 1.31 चाहिए)। "
+                "तब तक कृपया 'फ़ाइल अपलोड करें' वाला तरीका इस्तेमाल करें।"
+            )
+        if recorded is not None:
+            data = recorded.getvalue()
+            size_mb = len(data) / (1024 * 1024)
+            if size_mb > me.MAX_VOCAL_UPLOAD_MB:
+                st.error(f"⚠️ रिकॉर्डिंग {size_mb:.1f} MB की है — {me.MAX_VOCAL_UPLOAD_MB} MB से छोटी होनी चाहिए।")
+            else:
+                path = _save_vocal_bytes(data, ".wav", "recorded")
+                if path != st.session_state.get("vocal_raw_path"):
+                    st.session_state["vocal_raw_path"] = path
+                    st.session_state["vocal_raw_name"] = "लाइव रिकॉर्डिंग"
+                    _reset_vocal_processed_state()
+    else:
+        uploaded = st.file_uploader(
+            "ऑडियो फ़ाइल चुनें (WAV/MP3, अधिकतम 10MB)", type=["wav", "mp3"],
+            key="vocal_file_uploader",
+        )
+        if uploaded is not None:
+            size_mb = uploaded.size / (1024 * 1024)
+            if size_mb > me.MAX_VOCAL_UPLOAD_MB:
+                st.error(f"⚠️ फ़ाइल {size_mb:.1f} MB की है — {me.MAX_VOCAL_UPLOAD_MB} MB से छोटी होनी चाहिए।")
+            else:
+                suffix = os.path.splitext(uploaded.name)[1].lower() or ".wav"
+                data = uploaded.getvalue()
+                path = _save_vocal_bytes(data, suffix, "uploaded")
+                if uploaded.name != st.session_state.get("vocal_raw_name"):
+                    st.session_state["vocal_raw_path"] = path
+                    st.session_state["vocal_raw_name"] = uploaded.name
+                    _reset_vocal_processed_state()
+
+    if st.session_state.get("vocal_raw_path") and os.path.exists(st.session_state["vocal_raw_path"]):
+        st.success(f"✅ आवाज़ तैयार है: **{st.session_state['vocal_raw_name']}**")
+        st.audio(st.session_state["vocal_raw_path"])
+    else:
+        st.info("ℹ️ ऊपर से रिकॉर्ड करें या फ़ाइल अपलोड करें, फिर नीचे प्रोसेसिंग शुरू करें।")
+        return
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # 2. AUTO-PERFECT MAGIC BUTTON
+    # -------------------------------------------------------------
+    st.markdown("#### 2️⃣ एक क्लिक में तैयार")
+    if st.button("✨ ऑटो-वॉइस परफेक्ट करें", type="primary", key="vocal_auto_perfect_btn", use_container_width=True):
+        _run_vocal_processing(me.AUTO_PERFECT_PRESET, "auto")
+
+    st.caption(
+        "यह बटन आवाज़ पर भक्ति-संगीत के लिए पहले से तय किए गए स्मार्ट EQ, compression, "
+        "खनक (brilliance) और सुरीलापन (warmth) अपने आप लगा देता है — production-ready साउंड, "
+        "बिना किसी सेटिंग छेड़े।"
+    )
+
+    # -------------------------------------------------------------
+    # 3. ADVANCED CUSTOMIZE MODE
+    # -------------------------------------------------------------
+    st.markdown("---")
+    st.session_state["vocal_advanced_mode"] = st.checkbox(
+        "⚙️ एडवांस्ड कस्टमाइज़/एडिट मोड", value=st.session_state["vocal_advanced_mode"],
+        key="vocal_advanced_mode_checkbox",
+    )
+
+    if st.session_state["vocal_advanced_mode"]:
+        st.markdown("#### 3️⃣ खुद सेट करें")
+        cv = st.session_state["vocal_custom_values"]
+        for key, label, min_v, max_v, unit in SLIDER_SPECS:
+            step = 1 if unit == "%" else 0.5
+            cv[key] = st.slider(
+                f"{label}", min_value=float(min_v), max_value=float(max_v),
+                value=float(cv.get(key, 0)), step=float(step),
+                format=f"%.1f {unit}" if unit == "dB" else f"%.0f {unit}",
+                key=f"vocal_slider_{key}",
+            )
+        st.session_state["vocal_custom_values"] = cv
+
+        cc1, cc2 = st.columns([1, 1])
+        with cc1:
+            if st.button("🎚️ कस्टम सेटिंग लगाएं", key="vocal_apply_custom_btn", use_container_width=True):
+                _run_vocal_processing(cv, "custom")
+        with cc2:
+            if st.button("↩️ Auto-Perfect वैल्यू पर वापस लाएं", key="vocal_reset_to_auto_btn", use_container_width=True):
+                st.session_state["vocal_custom_values"] = dict(me.AUTO_PERFECT_PRESET)
+                st.rerun()
+
+    if st.session_state.get("vocal_error"):
+        st.error(f"❌ {st.session_state['vocal_error']}")
+
+    # -------------------------------------------------------------
+    # 4. RESULT
+    # -------------------------------------------------------------
+    processed_path = st.session_state.get("vocal_processed_path")
+    if processed_path and os.path.exists(processed_path):
+        st.markdown("---")
+        st.markdown("#### 🎧 नतीजा")
+        mode_badge = "✨ Auto-Perfect" if st.session_state["vocal_active_mode_label"] == "auto" else "⚙️ Custom"
+        st.caption(f"मोड: **{mode_badge}**")
+        st.audio(processed_path)
+        with open(processed_path, "rb") as f:
+            st.download_button(
+                "⬇️ प्रोसेस्ड आवाज़ डाउनलोड करें (WAV)", data=f,
+                file_name=os.path.basename(processed_path), mime="audio/wav",
+                key="vocal_download_processed_btn",
+            )
+        st.info(
+            "📌 इस फ़ाइल को Video Generator मोड के Track 5 (अपनी वॉइसओवर अपलोड करें) में "
+            "इस्तेमाल करें, फिर Compose टैब वाले instrumental के साथ मिलाकर मिक्स करें।"
+        )
 
 
 def _render_midi_viewer_tab():
@@ -309,12 +499,14 @@ def render_music_studio_ui():
     st.title("🎼 Music Studio")
     st.caption("टेक्स्ट स्क्रिप्ट से ताल+सरगम कंपोज़ करें, मल्टी-इंस्ट्रूमेंट ऑडियो+MIDI बनाएं।")
 
-    tab1, tab2, tab3 = st.tabs(["✍️ Compose", "👁️ MIDI Viewer", "📤 Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["✍️ Compose", "🎙️ Vocal", "👁️ MIDI Viewer", "📤 Export"])
     with tab1:
         _render_compose_tab()
     with tab2:
-        _render_midi_viewer_tab()
+        _render_vocal_tab()
     with tab3:
+        _render_midi_viewer_tab()
+    with tab4:
         _render_export_tab()
 
 

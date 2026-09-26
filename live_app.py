@@ -64,9 +64,80 @@ LIVE_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".liv
 os.makedirs(LIVE_CONFIG_DIR, exist_ok=True)
 DESTINATIONS_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "destinations.json")
 APP_URL_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "app_url.json")
+WELCOME_TEMPLATE_STORE_PATH = os.path.join(LIVE_CONFIG_DIR, "welcome_template.json")
+
+
+# ---------------------------------------------------------------------------
+# Welcome template storage - plain file I/O (st.session_state नहीं) ताकि
+# यह Schedule वाले background thread से भी बिना किसी browser session के
+# पढ़ा जा सके (देखें live_engine.py का lifecycle-hooks नोट)।
+# ---------------------------------------------------------------------------
+def _load_welcome_template() -> str:
+    env_tpl = os.environ.get("LIVE_CHAT_WELCOME_TEMPLATE")
+    if env_tpl:
+        return env_tpl
+    try:
+        if "live_chat" in st.secrets:
+            secret_tpl = st.secrets["live_chat"].get("welcome_template", "")
+            if secret_tpl:
+                return secret_tpl
+    except Exception:
+        pass
+    try:
+        if os.path.exists(WELCOME_TEMPLATE_STORE_PATH):
+            with open(WELCOME_TEMPLATE_STORE_PATH, "r", encoding="utf-8") as f:
+                saved = json.load(f).get("welcome_template", "")
+                if saved:
+                    return saved
+    except Exception:
+        pass
+    return live_chat_bridge.DEFAULT_WELCOME_TEMPLATE
+
+
+def _save_welcome_template(text: str):
+    try:
+        with open(WELCOME_TEMPLATE_STORE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"welcome_template": text}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Live शुरू/बंद होते ही Chat welcome-bot अपने-आप जुड़े/हटे - चाहे "START
+# LIVE BROADCAST" बटन से हो या Schedule से (live_engine.py के lifecycle
+# hooks यहीं इस्तेमाल होते हैं)।
+# ---------------------------------------------------------------------------
+def _auto_start_chat_monitor():
+    if not live_chat_bridge.is_available() or live_chat_bridge.is_monitoring():
+        return
+    youtube = live_chat_bridge.get_cached_youtube_client()
+    if youtube is None:
+        # इस process में अभी तक कभी login नहीं हुआ - चुपचाप छोड़ देते हैं,
+        # UI में एक बार login करने का हल्का सा एक-लाइन संकेत दिख जाएगा।
+        return
+    template = _load_welcome_template()
+    live_chat_bridge.start_chat_monitor(youtube, template, True, False)
+
+
+def _auto_stop_chat_monitor():
+    live_chat_bridge.stop_chat_monitor()
 
 
 def _load_app_url() -> str:
+    # 1) असली environment variable - सबसे सुरक्षित (self-hosted/local .env)
+    env_url = os.environ.get("APP_PUBLIC_URL")
+    if env_url:
+        return env_url
+    # 2) Streamlit Secrets - restart/redeploy/sleep पर भी सुरक्षित रहता है,
+    #    ताकि Keep-Alive URL बार-बार हाथ से डालना न पड़े और भूल-चूक न हो
+    try:
+        if "app_config" in st.secrets:
+            secret_url = st.secrets["app_config"].get("app_url", "")
+            if secret_url:
+                return secret_url
+    except Exception:
+        pass
+    # 3) आख़िर में local file (सिर्फ़ testing के लिए, restart पर मिट जाएगी)
     try:
         if os.path.exists(APP_URL_STORE_PATH):
             with open(APP_URL_STORE_PATH, "r", encoding="utf-8") as f:
@@ -74,6 +145,17 @@ def _load_app_url() -> str:
     except Exception:
         pass
     return ""
+
+
+def _app_url_source() -> Optional[str]:
+    if os.environ.get("APP_PUBLIC_URL"):
+        return "env"
+    try:
+        if "app_config" in st.secrets and st.secrets["app_config"].get("app_url", ""):
+            return "secrets"
+    except Exception:
+        pass
+    return None
 
 
 def _save_app_url(url: str):
@@ -275,10 +357,8 @@ DEFAULT_STATE = {
     "schedule_stop_date": None,
     "schedule_stop_time": None,
 
-    # Live Chat Bridge (real YouTube chat, first-time-commenter auto-welcome)
-    "chat_welcome_template": live_chat_bridge.DEFAULT_WELCOME_TEMPLATE,
-    "chat_auto_welcome_enabled": True,
-    "chat_translate_to_hindi": True,
+    # Live Chat Bridge welcome-template अब file/Secrets में save होता है
+    # (देखें _load_welcome_template), session_state में नहीं रखा जाता।
 }
 
 
@@ -876,18 +956,36 @@ def _render_schedule_section():
     )
 
     st.markdown("**🔁 Keep-Alive (एक बार सेट करें, फिर हमेशा अपने-आप चलेगा)**")
-    st.caption(
-        "अपने ऐप का पूरा public URL यहाँ एक बार डाल दें — Schedule लगाते ही (या Live शुरू करते ही) ऐप खुद "
-        "हर 4 मिनट में अपने-आप को ping करता रहेगा, ताकि free hosting पर वह sleep में न जाए। किसी बाहरी "
-        "service (UptimeRobot वगैरह) की अब ज़रूरत नहीं — बस नीचे URL डालकर Save करें, बाकी अपने-आप होगा।"
-    )
-    saved_url = _load_app_url()
-    app_url = st.text_input(
-        "आपके ऐप का पूरा URL", value=saved_url, key="schedule_app_url_input",
-        placeholder="https://your-app.streamlit.app/",
-    )
-    if app_url != saved_url:
-        _save_app_url(app_url)
+
+    url_source = _app_url_source()
+    if url_source:
+        saved_url = _load_app_url()
+        app_url = saved_url
+        st.success(
+            f"✅ आपके ऐप का URL {url_source} से अपने-आप मिल गया है — Schedule लगाते ही या Live शुरू करते ही "
+            "यह अपने-आप इस्तेमाल हो जाएगा, कहीं कुछ और डालने की ज़रूरत नहीं। भूल-चूक की गुंजाइश ही नहीं रहेगी।"
+        )
+        st.caption(f"🔗 `{app_url}`")
+    else:
+        st.caption(
+            "अपने ऐप का पूरा public URL यहाँ एक बार डाल दें — Schedule लगाते ही (या Live शुरू करते ही) ऐप खुद "
+            "हर 4 मिनट में अपने-आप को ping करता रहेगा, ताकि free hosting पर वह sleep में न जाए। किसी बाहरी "
+            "service (UptimeRobot वगैरह) की अब ज़रूरत नहीं — बस नीचे URL डालकर Save करें, बाकी अपने-आप होगा।"
+        )
+        st.info(
+            "💡 **इसे हमेशा के लिए, हाथ से डालने की झंझट से मुक्त करने का तरीका:** Streamlit Cloud → "
+            "Manage app → Settings → Secrets में यह जोड़ें:\n\n"
+            "```\n[app_config]\napp_url = \"https://your-app.streamlit.app/\"\n```\n\n"
+            "इसके बाद यह URL हर बार अपने-आप मिल जाएगा — नीचे वाला box फिर कभी नहीं दिखेगा, और भूलने का कोई डर नहीं रहेगा।"
+        )
+        saved_url = _load_app_url()
+        app_url = st.text_input(
+            "आपके ऐप का पूरा URL", value=saved_url, key="schedule_app_url_input",
+            placeholder="https://your-app.streamlit.app/",
+        )
+        if app_url != saved_url:
+            _save_app_url(app_url)
+
     if app_url:
         if live_engine.is_keepalive_running():
             st.caption("🟢 Self-ping पहले से चल रहा है।")
@@ -929,7 +1027,7 @@ def _render_schedule_section():
             remaining = int(start_at - now_ts)
             hours, remainder = divmod(remaining, 3600)
             minutes = remainder // 60
-            st.info(f"⏳ ये हो प्रीती जी आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+            st.info(f"⏳ आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
         elif schedule_status.get("fired_start") and not schedule_status.get("fired_stop"):
             st.info("🔴 Live पहले से शुरू हो चुका है।")
 
@@ -975,7 +1073,7 @@ def _render_schedule_section():
     if delta_seconds > 0:
         hours, remainder = divmod(int(delta_seconds), 3600)
         minutes = remainder // 60
-        st.info(f"⏳ Schedule आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
+        st.info(f"⏳ Schedule लगाने पर आपका Live अभी से **{hours} घंटे {minutes} मिनट** बाद शुरू होगा।")
     else:
         st.warning("⚠️ चुना गया शुरू होने का समय बीत चुका है — Schedule लगाते ही Live लगभग तुरंत शुरू हो जाएगा।")
 
@@ -1071,89 +1169,34 @@ def _render_control_buttons():
 
 
 def _render_live_chat_feed():
-    st.subheader("💬 Live Chat")
+    st.subheader("🙏 पहली बार Comment करने वालों का Welcome Message")
     st.caption(
-        "यहाँ आप YouTube की असली Live Chat से जुड़ सकते हैं — पहली बार comment करने वालों को अपने-आप "
-        "welcome-template भेजा जा सकता है, और चाहें तो comments इसी ऐप में Hindi में दिखेंगे।"
-    )
-    st.info(
-        "💡 सिर्फ़ comments पढ़ने के लिए Hindi चाहिए (auto-welcome नहीं चाहिए) तो इसकी ज़रूरत नहीं — "
-        "YouTube Studio का अपना Live Control Room खोलकर वहाँ account की भाषा Hindi रखें और "
-        "'Automatic chat translation' ON करें, वह मुफ़्त में अपने-आप हो जाता है।"
+        "जब भी आपकी Live शुरू होगी — चाहे 'START LIVE BROADCAST' दबाकर हो या Schedule के ज़रिए अपने-आप — "
+        "पहली बार comment करने वाले को नीचे लिखा गया message अपने-आप भेज दिया जाएगा। अलग से कुछ "
+        "'Connect' करने की ज़रूरत नहीं है।"
     )
 
     if not live_chat_bridge.is_available():
         st.warning("⚠️ Terminal में चलाएँ: `pip install google-auth-oauthlib google-api-python-client deep-translator`")
         return
 
-    if not live_chat_bridge.is_monitoring():
-        youtube = live_chat_bridge.render_oauth_and_get_youtube_client(st)
-        if youtube is None:
-            return
+    current_template = _load_welcome_template()
+    new_template = st.text_area(
+        "Welcome Template (अपने मन से लिखें, symbols भी डाल सकते हैं 🙏🌺🔱)",
+        value=current_template, height=100, key="chat_welcome_template_input",
+    )
+    if new_template != current_template:
+        _save_welcome_template(new_template)
 
-        st.markdown("**पहली बार Comment करने वालों के लिए Welcome Template**")
-        _set("chat_welcome_template", st.text_area(
-            "Welcome Template (अपने मन से लिखें, symbols भी डाल सकते हैं 🙏🌺🔱)",
-            value=_get("chat_welcome_template"), height=100, key="chat_welcome_template_input",
-        ))
-        cw1, cw2 = st.columns(2)
-        with cw1:
-            _set("chat_auto_welcome_enabled", st.checkbox(
-                "🙏 पहली बार comment करने वालों को Auto-Welcome भेजें",
-                value=_get("chat_auto_welcome_enabled"), key="chat_auto_welcome_checkbox",
-            ))
-        with cw2:
-            _set("chat_translate_to_hindi", st.checkbox(
-                "🇮🇳 Comments इसी ऐप में Hindi में दिखाएं (Auto-Translate)",
-                value=_get("chat_translate_to_hindi"), key="chat_translate_checkbox",
-            ))
-
-        if st.button("🔌 Live Chat से जुड़ें", key="chat_connect_btn"):
-            started = live_chat_bridge.start_chat_monitor(
-                youtube, _get("chat_welcome_template"),
-                _get("chat_auto_welcome_enabled"), _get("chat_translate_to_hindi"),
-            )
-            if started:
-                st.success("✅ Live Chat से जुड़ गया!")
-            else:
-                st.error(f"❌ नहीं जुड़ पाया: {live_chat_bridge.get_monitor_error()}")
-            st.rerun()
+    if live_chat_bridge.get_cached_youtube_client() is None:
+        st.info("🔒 इसे चालू करने के लिए एक बार Google से जुड़ना ज़रूरी है (लिखने की permission चाहिए) — एक बार login करने के बाद यह हमेशा अपने-आप काम करता रहेगा:")
+        live_chat_bridge.render_oauth_and_get_youtube_client(st)
         return
 
-    # -- connected: show live messages + controls --
-    cc1, cc2, cc3 = st.columns([1, 1, 2])
-    with cc1:
-        if st.button("🔌 Disconnect", key="chat_disconnect_btn"):
-            live_chat_bridge.stop_chat_monitor()
-            st.rerun()
-    with cc2:
-        if st.button("♻️ 'पहली बार' याददाश्त रीसेट करें", key="chat_reset_seen_btn"):
-            live_chat_bridge.reset_seen_commenters()
-            st.success("✅ अब सबको फिर से 'पहली बार' माना जाएगा।")
-    with cc3:
-        st.success(f"🟢 Live Chat से जुड़ा है — अब तक {live_chat_bridge.get_welcomed_count()} लोगों को Welcome भेजा गया।")
-
-    err = live_chat_bridge.get_monitor_error()
-    if err:
-        st.caption(f"⚠️ आख़िरी warning: {err}")
-
-    chat_container = st.container(height=280, border=True)
-    with chat_container:
-        messages = live_chat_bridge.get_chat_messages()
-        if not messages:
-            st.caption("अभी कोई comment नहीं आया।")
-        else:
-            for msg in messages[-100:]:
-                tag = " *(translated)*" if msg.get("translated") else ""
-                st.write(f"**{msg['author']}:** {msg['text']}{tag}")
-
-    with st.form(key="chat_manual_send_form", clear_on_submit=True):
-        manual_text = st.text_input("Chat में मैनुअल मैसेज भेजें", key="chat_manual_send_input")
-        if st.form_submit_button("भेजें") and manual_text:
-            if live_chat_bridge.send_chat_message(manual_text):
-                st.success("✅ भेज दिया।")
-            else:
-                st.error("❌ नहीं भेज पाया।")
+    if live_chat_bridge.is_monitoring():
+        st.success(f"🟢 अभी Live Chat से जुड़ा है — अब तक {live_chat_bridge.get_welcomed_count()} लोगों को Welcome भेजा गया।")
+    else:
+        st.caption("⚪ अभी Live नहीं चल रही — Live शुरू होते ही (मैनुअल या Schedule से) यह अपने-आप जुड़ जाएगा।")
 
 
 def _render_config_summary():
@@ -1175,6 +1218,10 @@ def _render_config_summary():
 # ---------------------------------------------------------------------------
 def render_live_studio_ui():
     _init_session_state()
+    # Live शुरू/बंद होते ही (मैनुअल बटन या Schedule, दोनों से) Chat
+    # welcome-bot अपने-आप जुड़े/हटे - हर rerun पर दोबारा register करना
+    # harmless है (बस वही 2 function फिर से जोड़ देता है)।
+    live_engine.set_stream_lifecycle_hooks(_auto_start_chat_monitor, _auto_stop_chat_monitor)
 
     st.title("📡 Live Broadcast Studio")
     st.caption("5-Section Architecture — Media Canvas / Audio Hub / Mantra Flash / Story Hub / Ticker")

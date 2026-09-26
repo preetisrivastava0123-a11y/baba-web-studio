@@ -222,6 +222,34 @@ def is_available() -> bool:
     return _GOOGLE_LIBS_AVAILABLE
 
 
+# ---------------------------------------------------------------------------
+# Process-wide credential cache
+#
+# WHY: st.session_state सिर्फ़ उसी browser session तक सीमित होता है, लेकिन
+# Schedule वाला auto-start एक background thread से चलता है, जिसका कोई
+# browser session नहीं होता। इसलिए एक बार login हो जाने पर, यह client पूरे
+# server process के लिए (module-level) याद रखा जाता है - चाहे "START LIVE
+# BROADCAST" दबाया जाए या Schedule अपने-आप चले, दोनों इसी cached client को
+# इस्तेमाल कर पाएंगे, बिना दोबारा login किए। (सीमा: यह सिर्फ़ तब तक चलता
+# है जब तक यह process ज़िंदा है - restart/redeploy/sleep के बाद एक बार
+# फिर से login करना पड़ेगा, ठीक वैसे ही जैसे बाकी session-based चीज़ों में।)
+# ---------------------------------------------------------------------------
+_cached_credentials_json: Optional[str] = None
+
+
+def get_cached_youtube_client():
+    """किसी भी जगह से (बटन, background thread) इस्तेमाल करने लायक - अगर
+    इस session में या पहले किसी और session में एक बार login हो चुका है,
+    तो सीधे एक youtube client लौटा देता है, वरना None।"""
+    if not _GOOGLE_LIBS_AVAILABLE or not _cached_credentials_json:
+        return None
+    try:
+        creds = Credentials.from_authorized_user_info(json.loads(_cached_credentials_json), SCOPES)
+        return build("youtube", "v3", credentials=creds)
+    except Exception:
+        return None
+
+
 def render_oauth_and_get_youtube_client(st):
     """
     Renders the (collapsed-by-default) setup expander + Login button, and
@@ -229,6 +257,7 @@ def render_oauth_and_get_youtube_client(st):
     still waiting on setup/login. `st` is passed in so this stays
     Streamlit-import-free at module load (mirrors youtube_dashboard.py).
     """
+    global _cached_credentials_json
     if not _GOOGLE_LIBS_AVAILABLE:
         st.error("⚠️ ज़रूरी libraries install नहीं हैं। `pip install google-auth-oauthlib google-api-python-client`")
         return None
@@ -271,6 +300,7 @@ def render_oauth_and_get_youtube_client(st):
     if "chat_credentials_json" in st.session_state:
         try:
             creds = Credentials.from_authorized_user_info(json.loads(st.session_state["chat_credentials_json"]), SCOPES)
+            _cached_credentials_json = st.session_state["chat_credentials_json"]
             return build("youtube", "v3", credentials=creds)
         except Exception:
             del st.session_state["chat_credentials_json"]
@@ -294,6 +324,7 @@ def render_oauth_and_get_youtube_client(st):
             flow = _get_flow(client_id, client_secret, redirect_uri, code_verifier=code_verifier)
             flow.fetch_token(code=code)
             st.session_state["chat_credentials_json"] = flow.credentials.to_json()
+            _cached_credentials_json = flow.credentials.to_json()
             st.session_state["chat_oauth_processed_code"] = code
             st.query_params.clear()
             st.rerun()
@@ -375,6 +406,12 @@ class LiveChatMonitor:
         self._lock = threading.Lock()
         self._last_error: Optional[str] = None
         self.welcomed_count = 0
+        # Debug counters - taaki UI mein dikha sakein ki poll loop actually
+        # kuch dekh bhi raha hai ya nahi, aur first-time detection kaam kar
+        # raha hai ya sab pehle se "seen" maane ja rahe hain.
+        self.total_comments_seen = 0
+        self.total_new_commenters_seen = 0
+        self.last_poll_error_detail: Optional[str] = None
 
     def _resolve_live_chat_id(self) -> Optional[str]:
         resp = self.youtube.liveBroadcasts().list(part="snippet", broadcastStatus="active", broadcastType="all").execute()
@@ -417,13 +454,27 @@ class LiveChatMonitor:
             return True
         except Exception as e:
             logger.exception("Chat message post karne mein fail hui.")
-            self._last_error = str(e)
+            # Poori detail rakhte hain (error type + message) - "permission
+            # denied" (scope galat) aur "quota exceeded" jaise अलग-अलग
+            # असली कारणों को अलग पहचानने के लिए, ताकि सही fix पता चले।
+            self._last_error = f"{type(e).__name__}: {e}"
             return False
 
     def post_message(self, text: str) -> bool:
         """Public: send any message into the live chat (not just the
         auto-welcome) - e.g. a manual reply typed by you in the UI."""
         return self._post_message(text)
+
+    def send_test_welcome_now(self) -> bool:
+        """Diagnostic: sends the current welcome_template into the live
+        chat RIGHT NOW, bypassing 'first-time commenter' detection
+        entirely. Use this to isolate the problem - if this button
+        itself fails, the issue is posting permission/quota/scope, NOT
+        the first-time-detection logic. If this succeeds but real
+        commenters still don't get welcomed, the issue is in
+        detection (likely: they were already marked 'seen' before -
+        use 'पहली बार याददाश्त रीसेट करें')."""
+        return self._post_message(self.welcome_template)
 
     def _run_loop(self):
         interval = MIN_POLL_INTERVAL_SEC
@@ -444,6 +495,7 @@ class LiveChatMonitor:
                     channel_id = author.get("channelId", "")
                     original_text = snippet.get("displayMessage", "")
                     shown_text = translate_to_hindi(original_text) if self.translate_enabled else original_text
+                    self.total_comments_seen += 1
 
                     with self._lock:
                         self._messages.append({
@@ -456,10 +508,13 @@ class LiveChatMonitor:
                             self._messages = self._messages[-200:]
 
                     if self.auto_welcome_enabled and channel_id and channel_id not in self._seen_commenters:
+                        self.total_new_commenters_seen += 1
                         self._seen_commenters.add(channel_id)
                         _save_seen_commenters(self._seen_commenters)
                         if self._post_message(self.welcome_template):
                             self.welcomed_count += 1
+                        else:
+                            self.last_poll_error_detail = self._last_error
 
             except Exception as e:
                 logger.exception("Chat poll mein error.")
@@ -533,3 +588,26 @@ def get_welcomed_count() -> int:
     if _monitor is not None:
         return _monitor.welcomed_count
     return 0
+
+
+def send_test_welcome_now() -> bool:
+    """Diagnostic helper for the UI's '🧪 अभी टेस्ट Welcome भेजें' button -
+    see LiveChatMonitor.send_test_welcome_now() docstring."""
+    if _monitor is not None:
+        return _monitor.send_test_welcome_now()
+    return False
+
+
+def get_debug_stats() -> dict:
+    """UI इसे दिखा सकता है ताकि साफ़ पता चले कि poll loop कुछ देख भी रहा है
+    या नहीं, और first-time detection काम कर रहा है या हर कोई पहले से
+    'seen' माना जा रहा है (पुराने test comments की वजह से)।"""
+    if _monitor is None:
+        return {}
+    return {
+        "total_comments_seen": _monitor.total_comments_seen,
+        "total_new_commenters_seen": _monitor.total_new_commenters_seen,
+        "welcomed_count": _monitor.welcomed_count,
+        "last_poll_error_detail": _monitor.last_poll_error_detail,
+        "seen_commenters_count": len(_monitor._seen_commenters),
+    }

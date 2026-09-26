@@ -33,6 +33,20 @@ music, story voice-over/TTS), not something that needs live text updates
 inside the render loop. So audio mixing uses a REAL FFmpeg
 `-filter_complex ... amix` graph, per the product spec, via
 TeeFFmpegPublisher._build_audio_pipeline().
+
+--------------------------------------------------------------------------
+STREAM LIFECYCLE HOOKS - why these exist
+--------------------------------------------------------------------------
+live_app.py needs to auto-connect the Live Chat welcome-bot the moment a
+broadcast actually goes live, and disconnect it the moment it stops -
+regardless of WHICH path triggered start/stop (the manual "START LIVE
+BROADCAST" button, or the Schedule background thread firing on its own,
+with no browser attached). Rather than have this engine file import
+live_chat_bridge directly (which would tangle two independently-scoped
+concerns - streaming vs. chat/OAuth), live_app.py registers two plain
+callback functions once via set_stream_lifecycle_hooks(); this module
+calls them right after a stream actually starts/stops, from wherever
+that happened to be triggered.
 --------------------------------------------------------------------------
 """
 
@@ -276,6 +290,41 @@ def _set_last_error(msg: Optional[str]):
 
 def get_last_error() -> Optional[str]:
     return _last_error
+
+
+# ---------------------------------------------------------------------------
+# Stream lifecycle hooks (see module docstring above)
+# ---------------------------------------------------------------------------
+_on_stream_started: Optional[Callable[[], None]] = None
+_on_stream_stopped: Optional[Callable[[], None]] = None
+
+
+def set_stream_lifecycle_hooks(on_started: Optional[Callable[[], None]] = None,
+                                on_stopped: Optional[Callable[[], None]] = None):
+    """live_app.py इसे एक बार call करता है (हर rerun पर दोबारा, हर्ज़ नहीं) -
+    ताकि Live असल में शुरू/बंद होने पर (चाहे मैनुअल बटन से या Schedule से)
+    यह इंजन खुद-ब-खुद वह काम भी कर सके जिसका streaming से सीधा नाता नहीं
+    है (जैसे Live Chat welcome-bot जोड़ना/हटाना), बिना यहां उस दूसरे module
+    को import किए।"""
+    global _on_stream_started, _on_stream_stopped
+    _on_stream_started = on_started
+    _on_stream_stopped = on_stopped
+
+
+def _fire_started_hook():
+    if _on_stream_started is not None:
+        try:
+            _on_stream_started()
+        except Exception:
+            logger.exception("on_stream_started hook mein error aayi - stream khud chalti rahegi.")
+
+
+def _fire_stopped_hook():
+    if _on_stream_stopped is not None:
+        try:
+            _on_stream_stopped()
+        except Exception:
+            logger.exception("on_stream_stopped hook mein error aayi.")
 
 
 # ---------------------------------------------------------------------------
@@ -1444,7 +1493,10 @@ def start_stream(stream_configs: StreamConfig) -> bool:
         if not engine.start():
             return False
         _engine = engine
-        return True
+    # Lock ke bahar - taaki hook ke andar kuch der lagne wala kaam
+    # (jaise OAuth client banana) is lock ko rok kar na baitha rahe.
+    _fire_started_hook()
+    return True
 
 
 def stop_stream() -> bool:
@@ -1454,7 +1506,8 @@ def stop_stream() -> bool:
             return False
         _engine.stop()
         _engine = None
-        return True
+    _fire_stopped_hook()
+    return True
 
 
 def update_live_ticker(text: str):
@@ -1552,11 +1605,13 @@ def schedule_stream(config: StreamConfig, start_at_epoch: Optional[float],
                     stop_at_epoch: Optional[float]) -> bool:
     """
     Arms the scheduler: waits (if needed) until start_at_epoch, then
-    calls start_stream(config); if stop_at_epoch is given, later calls
-    stop_stream() at that time too. Pass start_at_epoch=None to start
-    immediately, and stop_at_epoch=None to run until manually stopped.
-    Returns False (with get_last_error() explaining why) if a schedule
-    is already armed.
+    calls start_stream(config) - which itself fires the lifecycle hooks,
+    so Schedule-triggered starts get the same auto-connect behaviour
+    (e.g. Live Chat welcome-bot) as a manual button press; if
+    stop_at_epoch is given, later calls stop_stream() at that time too.
+    Pass start_at_epoch=None to start immediately, and stop_at_epoch=None
+    to run until manually stopped. Returns False (with get_last_error()
+    explaining why) if a schedule is already armed.
     """
     global _scheduler_thread
     with _scheduler_lock:

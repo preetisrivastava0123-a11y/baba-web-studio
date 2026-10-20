@@ -754,6 +754,22 @@ def _build_stream_config() -> StreamConfig:
 # ---------------------------------------------------------------------------
 # Schedule — sab kuch bharke, samay tay karke, browser band kar sakein
 # ---------------------------------------------------------------------------
+def _ampm_time_input(label, default_time, key):
+    """12-ghante wala time chunav: Ghanta (1-12) + Minute + AM/PM. Returns datetime.time."""
+    from datetime import time as _t
+    h24 = default_time.hour
+    d_ampm = "AM" if h24 < 12 else "PM"
+    d_h12 = h24 % 12 or 12
+    st.markdown(f"**{label}**")
+    c1, c2, c3 = st.columns(3)
+    h12 = c1.selectbox("घंटा", list(range(1, 13)), index=d_h12 - 1, key=f"{key}_h")
+    minute = c2.selectbox("मिनट", list(range(0, 60)), index=default_time.minute,
+                          format_func=lambda m: f"{m:02d}", key=f"{key}_m")
+    ampm = c3.selectbox("AM / PM", ["AM", "PM"], index=0 if d_ampm == "AM" else 1, key=f"{key}_ap")
+    h24_new = (h12 % 12) + (12 if ampm == "PM" else 0)
+    return _t(h24_new, minute)
+
+
 def _render_schedule_section():
     st.subheader("⏰ Schedule (तय समय पर अपने-आप Live शुरू/बंद)")
     st.caption(
@@ -797,8 +813,8 @@ def _render_schedule_section():
     if is_armed:
         start_at = schedule_status.get("start_at")
         stop_at = schedule_status.get("stop_at")
-        start_str = datetime.fromtimestamp(start_at, tz=IST).strftime("%d-%b %H:%M IST") if start_at else "अभी"
-        stop_str = datetime.fromtimestamp(stop_at, tz=IST).strftime("%d-%b %H:%M IST") if stop_at else "मैनुअल तक (कोई तय समय नहीं)"
+        start_str = datetime.fromtimestamp(start_at, tz=IST).strftime("%d-%b %I:%M %p IST") if start_at else "अभी"
+        stop_str = datetime.fromtimestamp(stop_at, tz=IST).strftime("%d-%b %I:%M %p IST") if stop_at else "मैनुअल तक (कोई तय समय नहीं)"
         st.success(f"🟢 Schedule ARMED है — Start: **{start_str}**, Stop: **{stop_str}**")
         if st.button("❌ Schedule रद्द करें", key="schedule_cancel_btn"):
             live_engine.cancel_schedule()
@@ -810,7 +826,7 @@ def _render_schedule_section():
     sc1, sc2 = st.columns(2)
     with sc1:
         start_date = st.date_input("शुरू होने की तारीख़", value=_get("schedule_start_date") or now.date(), key="sched_start_date")
-        start_time_val = st.time_input("शुरू होने का समय", value=_get("schedule_start_time") or now.time().replace(second=0, microsecond=0), key="sched_start_time")
+        start_time_val = _ampm_time_input("शुरू होने का समय", _get("schedule_start_time") or now.time().replace(second=0, microsecond=0), "sched_start_time")
         _set("schedule_start_date", start_date)
         _set("schedule_start_time", start_time_val)
 
@@ -819,7 +835,7 @@ def _render_schedule_section():
         _set("schedule_has_stop", has_stop)
         if has_stop:
             stop_date = st.date_input("बंद होने की तारीख़", value=_get("schedule_stop_date") or now.date(), key="sched_stop_date")
-            stop_time_val = st.time_input("बंद होने का समय", value=_get("schedule_stop_time") or now.time().replace(second=0, microsecond=0), key="sched_stop_time")
+            stop_time_val = _ampm_time_input("बंद होने का समय", _get("schedule_stop_time") or now.time().replace(second=0, microsecond=0), "sched_stop_time")
             _set("schedule_stop_date", stop_date)
             _set("schedule_stop_time", stop_time_val)
         else:

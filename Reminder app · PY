@@ -1,0 +1,221 @@
+# -*- coding: utf-8 -*-
+"""
+reminder_app.py - 💬 Live Comment Reminder (alag, standalone app)
+
+Chalane ke liye:   streamlit run reminder_app.py
+Requirements:      sirf `streamlit`
+
+Kaam: aap kai live links daalte ho. Har link ka apna timer hai (links ek ke baad
+ek thoda aage-peeche shuru hote hain, taaki sab ek saath na aayein). Jab kisi link
+ka time aata hai to uska CARD beep ke saath dikhta hai aur 1-2 minute rukta hai.
+Comment copy karke live chat me AAP khud paste/send karte ho.
+Yeh app kuch bhi apne aap post nahi karta aur kisi login ki zaroorat nahi.
+Tab khula rehna chahiye.
+"""
+
+import json
+import os
+import random
+import time
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+st.set_page_config(page_title="Live Comment Reminder", page_icon="💬", layout="wide")
+
+DATA_DIR = ".reminder_data"
+SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
+
+DEFAULT_COMMENTS = [
+    "🙏 हर हर महादेव 🔱", "🕉️ ॐ नमः शिवाय 🙏", "🚩 जय श्री राम 🙏", "🌺 जय माता दी 🙏",
+    "🔱 जय भोलेनाथ 🕉️", "📿 राधे राधे 🌸", "🙏 जय श्री कृष्ण 🦚", "🚩 जय बजरंग बली 💪",
+    "🌼 ॐ गण गणपतये नमः 🙏", "✨ बहुत सुंदर भजन 🙏", "🔔 मन को शांति मिली 🙏🕉️",
+    "🌸 जय हो महाकाल की 🔱", "🙏 सबका कल्याण हो 🌺", "🕉️ हर हर गंगे 🌊", "🚩 जय सियाराम 🙏",
+    "🌺 जय शनि देव 🙏", "📿 ॐ साईं राम 🙏", "🔱 बम बम भोले 🕉️", "🙏 जय गुरुदेव 🌸",
+    "🌼 शुभ दिन की शुभकामनाएं 🙏", "✨ भगवान सबको सुखी रखें 🙏", "🚩 जय हनुमान 🙏",
+    "🕉️ ॐ नमो भगवते वासुदेवाय 🙏", "🌺 जय अम्बे 🙏", "🔱 महादेव की कृपा बनी रहे 🙏",
+]
+
+DEFAULTS = {
+    "links_text": "",
+    "comments_text": "\n".join(DEFAULT_COMMENTS),
+    "interval_min": 6,
+    "stay_min": 2,
+}
+
+
+def load_settings():
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        out = dict(DEFAULTS)
+        out.update({k: v for k, v in d.items() if k in DEFAULTS})
+        return out
+    except Exception:
+        return dict(DEFAULTS)
+
+
+def save_settings(s):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(s, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def lines(text):
+    return [x.strip() for x in (text or "").splitlines() if x.strip()]
+
+
+def beep():
+    components.html(
+        """<script>try{const c=new (window.AudioContext||window.webkitAudioContext)();
+        [0,0.25].forEach(d=>{const o=c.createOscillator(),g=c.createGain();o.frequency.value=880;
+        o.connect(g);g.connect(c.destination);g.gain.setValueAtTime(0.15,c.currentTime+d);
+        o.start(c.currentTime+d);o.stop(c.currentTime+d+0.18);});}catch(e){}</script>""",
+        height=0,
+    )
+
+
+def pick_comment(pool, avoid):
+    if not pool:
+        return ""
+    fresh = [c for c in pool if c not in avoid] or pool
+    return random.choice(fresh)
+
+
+def init_state():
+    s = st.session_state
+    s.setdefault("running", False)
+    s.setdefault("slots", {})     # link -> {"next_at", "until", "comment"}
+    s.setdefault("recent", [])    # last comments used (all links)
+
+
+def start_all(links, interval_min):
+    """Har link ko thoda alag offset do taaki sab ek saath na fire hon."""
+    now = time.time()
+    n = max(1, len(links))
+    gap = interval_min * 60 / n
+    st.session_state.slots = {
+        link: {"next_at": now + i * gap, "until": 0.0, "comment": ""}
+        for i, link in enumerate(links)
+    }
+    st.session_state.running = True
+
+
+def fire(link, pool, stay_min):
+    s = st.session_state
+    c = pick_comment(pool, s.recent[-8:])
+    s.recent = (s.recent + [c])[-20:]
+    slot = s.slots[link]
+    slot["comment"] = c
+    slot["until"] = time.time() + stay_min * 60
+    return True
+
+
+def cards_loop():
+    s = st.session_state
+    cfg = load_settings()
+    pool = lines(cfg["comments_text"])
+    interval = float(cfg["interval_min"]) * 60
+    stay = float(cfg["stay_min"])
+    now = time.time()
+    fired_now = False
+
+    for link, slot in s.slots.items():
+        if s.running and now >= slot["next_at"] and now > slot["until"]:
+            fire(link, pool, stay)
+            slot["next_at"] = now + interval
+            fired_now = True
+
+    if fired_now:
+        beep()
+        try:
+            st.toast("💬 Comment करने का समय!", icon="🔔")
+        except Exception:
+            pass
+
+    active = [(l, sl) for l, sl in s.slots.items() if sl["until"] > now]
+    if active:
+        st.subheader(f"🔔 अभी {len(active)} live में comment करना है")
+        cols = st.columns(min(3, len(active)))
+        for i, (link, slot) in enumerate(active):
+            with cols[i % len(cols)]:
+                with st.container(border=True):
+                    left = int(slot["until"] - now)
+                    st.caption(f"⏱️ {left // 60}:{left % 60:02d} बाकी")
+                    st.link_button("🔴 Live खोलें", link, use_container_width=True)
+                    st.code(slot["comment"], language=None)   # copy icon built-in
+                    b1, b2 = st.columns(2)
+                    if b1.button("🔄 दूसरा", key=f"o_{i}_{link}"):
+                        slot["comment"] = pick_comment(pool, s.recent[-8:])
+                        st.rerun()
+                    if b2.button("✅ हो गया", key=f"d_{i}_{link}"):
+                        slot["until"] = 0.0
+                        st.rerun()
+    elif s.running:
+        nxt = min((sl["next_at"] for sl in s.slots.values()), default=now)
+        w = max(0, int(nxt - now))
+        st.info(f"⏳ अगला reminder {w // 60}:{w % 60:02d} बाद")
+    else:
+        st.caption("▶️ Start दबाएं।")
+
+
+if hasattr(st, "fragment"):
+    live_cards = st.fragment(run_every=5)(cards_loop)
+else:
+    live_cards = cards_loop
+
+
+def main():
+    init_state()
+    cfg = load_settings()
+
+    st.title("💬 Live Comment Reminder")
+    st.caption(
+        "हर live का अपना timer और अपना card। Card आने पर comment copy करें और live chat में खुद भेजें। "
+        "यह app कुछ भी अपने आप post नहीं करता। यह tab खुला रहना चाहिए।"
+    )
+
+    links_text = st.text_area(
+        "🔗 Live links (हर लाइन में एक)", value=cfg["links_text"], height=110,
+        placeholder="https://www.youtube.com/watch?v=XXXXXXXXXXX",
+    )
+    comments_text = st.text_area("💬 Comments की list (हर लाइन में एक)", value=cfg["comments_text"], height=180)
+    c1, c2 = st.columns(2)
+    interval = c1.number_input("हर live के लिए कितने मिनट पर reminder", 1, 120, int(cfg["interval_min"]))
+    stay = c2.number_input("Card कितने मिनट दिखे", 1, 10, int(cfg["stay_min"]))
+
+    new_cfg = {"links_text": links_text, "comments_text": comments_text,
+               "interval_min": int(interval), "stay_min": int(stay)}
+    if new_cfg != cfg:
+        save_settings(new_cfg)
+
+    links = lines(links_text)
+    if len(links) > 6:
+        st.warning("⚠️ 6 से ज़्यादा live एक साथ मुश्किल पड़ेंगे और spam जैसा लग सकता है। 3–5 रखना बेहतर है।")
+
+    b1, b2, b3 = st.columns(3)
+    if b1.button("▶️ Start", type="primary", disabled=st.session_state.running or not links):
+        start_all(links, int(interval))
+        st.rerun()
+    if b2.button("⏹️ Stop", disabled=not st.session_state.running):
+        st.session_state.running = False
+        for sl in st.session_state.slots.values():
+            sl["until"] = 0.0
+        st.rerun()
+    if b3.button("🧪 Test (सब links का card अभी)", disabled=not links):
+        if not st.session_state.slots:
+            st.session_state.slots = {l: {"next_at": 0.0, "until": 0.0, "comment": ""} for l in links}
+        pool = lines(comments_text)
+        for l in links:
+            st.session_state.slots.setdefault(l, {"next_at": 0.0, "until": 0.0, "comment": ""})
+            fire(l, pool, int(stay))
+        st.rerun()
+
+    st.divider()
+    live_cards()
+
+
+main()
